@@ -219,6 +219,9 @@ func TestCloneLiveAcceptanceAgainstOwnedVM(t *testing.T) {
 	if workdir == "" || !posixpath.IsAbs(workdir) || posixpath.Clean(workdir) != workdir {
 		t.Fatalf("guest workdir is not a clean absolute POSIX path: %q", workdir)
 	}
+	if want := filepath.ToSlash(repoDir); workdir != want {
+		t.Fatalf("guest workdir = %q, want host workspace path %q", workdir, want)
+	}
 	if want := "sandbox-" + sandboxName; info.RemoteName != want {
 		t.Fatalf("clone remote name = %q, want %q", info.RemoteName, want)
 	}
@@ -242,16 +245,31 @@ func TestCloneLiveAcceptanceAgainstOwnedVM(t *testing.T) {
 		t.Fatalf("guest HEAD = %q, want host HEAD %q", got, hostHead)
 	}
 
-	// 2. The source path remote must be gone.
-	out, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID, []string{"git", "-C", workdir, "remote", "-v"}, nil)
-	if err != nil || code != 0 {
-		t.Fatalf("git remote -v: code=%d err=%v stderr=%q", code, err, stderr)
-	}
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("guest clone retained remotes:\n%s", out)
+	// 2. Origin must stay on the read-only source path.
+	for _, args := range [][]string{
+		{"git", "-C", workdir, "remote", "get-url", "origin"},
+		{"git", "-C", workdir, "remote", "get-url", "--push", "origin"},
+	} {
+		out, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID, args, nil)
+		if err != nil || code != 0 {
+			t.Fatalf("%s: code=%d err=%v stderr=%q", strings.Join(args, " "), code, err, stderr)
+		}
+		if got := strings.TrimSpace(out); got != cloneSourceGuestPath {
+			t.Fatalf("guest clone origin = %q, want %q", got, cloneSourceGuestPath)
+		}
 	}
 
-	// 3. Hooks and credential helpers must be disabled locally.
+	// 3. The Git export entry must use the gitdir indirection.
+	out, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID,
+		[]string{"cat", posixpath.Join(cloneExportGuestDir, posixpath.Base(workdir), ".git")}, nil)
+	if err != nil || code != 0 {
+		t.Fatalf("cat clone export entry: code=%d err=%v stderr=%q", code, err, stderr)
+	}
+	if want := "gitdir: " + posixpath.Join(workdir, ".git"); strings.TrimSpace(out) != want {
+		t.Fatalf("clone export entry = %q, want %q", strings.TrimSpace(out), want)
+	}
+
+	// 4. Hooks and credential helpers must be disabled locally.
 	out, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID, []string{"git", "-C", workdir, "config", "--get", "core.hooksPath"}, nil)
 	if err != nil || code != 0 {
 		t.Fatalf("git config core.hooksPath: code=%d err=%v stderr=%q", code, err, stderr)
@@ -510,9 +528,9 @@ func cloneLiveEndpointURL(t *testing.T, endpoint sandbox.GitEndpoint) string {
 	if endpoint.Repository == "" || endpoint.Repository == "." || endpoint.Repository == ".." || strings.ContainsAny(endpoint.Repository, "/\\\x00\r\n") {
 		t.Fatalf("unsafe clone repository name: %q", endpoint.Repository)
 	}
-	// The managed forward exports the clone's Git directory, and the CLI
-	// client addresses it as <repository>/.git over the Git protocol.
-	return "git://" + net.JoinHostPort(endpoint.HostIP, strconv.FormatUint(uint64(endpoint.Port), 10)) + "/" + endpoint.Repository + "/.git"
+	// The managed forward exports the clone's Git directory, so the CLI
+	// client addresses it as /<repository> over the Git protocol.
+	return "git://" + net.JoinHostPort(endpoint.HostIP, strconv.FormatUint(uint64(endpoint.Port), 10)) + "/" + endpoint.Repository
 }
 
 func waitCloneLiveLSRemote(ctx context.Context, endpointURL, wantCommit string) string {
