@@ -21,6 +21,7 @@ import (
 
 const (
 	cloneSourceGuestPath = "/run/sandbox/source"
+	cloneExportGuestDir  = "/run/sandbox/export"
 	cloneGitGuestIP      = "192.168.127.3"
 	cloneGitGuestPort    = 9418
 	cloneGitHostIP       = "127.0.0.1"
@@ -185,7 +186,7 @@ func (s *Service) bootstrapClone(ctx context.Context, handle runtime.Handle, nam
 	if err := s.requireCloneTooling(ctx, handle); err != nil {
 		return err
 	}
-	workdir, err := s.resolveCloneWorkdir(ctx, handle, clone)
+	workdir, err := resolveCloneWorkdir(clone)
 	if err != nil {
 		return err
 	}
@@ -219,42 +220,24 @@ func (s *Service) requireCloneTooling(ctx context.Context, handle runtime.Handle
 	return nil
 }
 
-func (s *Service) resolveCloneWorkdir(ctx context.Context, handle runtime.Handle, clone *sandbox.CloneOptions) (string, error) {
+// resolveCloneWorkdir mirrors sbx: the private clone lands at the host
+// workspace path itself inside the guest, unless the caller chose an explicit
+// guest workdir.
+func resolveCloneWorkdir(clone *sandbox.CloneOptions) (string, error) {
 	if clone.GuestWorkdir != nil {
 		return *clone.GuestWorkdir, nil
 	}
-	output, err := s.runCloneCommand(ctx, handle, []string{"/bin/pwd"}, nil)
-	if err != nil {
-		return "", fmt.Errorf("discover guest working directory: %w", err)
-	}
-	base, err := parseClonePwd(output)
-	if err != nil {
-		return "", err
-	}
-	if base == "/" {
-		// Never clone into the image root: agents get a dedicated project
-		// directory instead of a checkout that fills the root filesystem.
-		base = "/workspace"
-	}
-	repository := posixpath.Base(filepath.ToSlash(clone.SourceWorkspacePath))
-	if !validCloneRepositorySlug(repository) {
-		return "", fmt.Errorf("%w: clone source has an unsafe repository name", core.ErrConflict)
-	}
-	return posixpath.Join(base, repository), nil
-}
-
-func parseClonePwd(output string) (string, error) {
-	if !strings.HasSuffix(output, "\n") || strings.Count(output, "\n") != 1 {
-		return "", errors.New("guest pwd returned an invalid working directory")
-	}
-	workdir := strings.TrimSuffix(output, "\n")
-	if !validCloneGuestPath(workdir) {
-		return "", errors.New("guest pwd returned an invalid working directory")
+	workdir := filepath.ToSlash(clone.SourceWorkspacePath)
+	if !validCloneGuestPath(workdir) || !validCloneRepositorySlug(posixpath.Base(workdir)) {
+		return "", fmt.Errorf("%w: clone source path cannot be used as a guest working directory", core.ErrConflict)
 	}
 	return workdir, nil
 }
 
 func (s *Service) prepareCloneWorkdir(ctx context.Context, handle runtime.Handle, workdir string, workspaces []sandbox.Workspace) error {
+	if !validCloneGuestPath(workdir) {
+		return fmt.Errorf("%w: clone guest workdir must be a clean absolute POSIX path", core.ErrConflict)
+	}
 	if !validCloneRepositorySlug(posixpath.Base(workdir)) {
 		return errors.New("clone working directory has an unsafe repository name")
 	}
@@ -306,8 +289,8 @@ func (s *Service) initializeGuestClone(ctx context.Context, handle runtime.Handl
 	if _, err := s.runCloneCommand(ctx, handle, []string{cloneGitCommand, "clone", "--no-local", "--no-hardlinks", "--no-recurse-submodules", "--", cloneSourceGuestPath, workdir}, trustEnv); err != nil {
 		return fmt.Errorf("create private guest clone: %w", err)
 	}
-	if _, err := s.runCloneCommand(ctx, handle, []string{cloneGitCommand, "-C", workdir, "remote", "remove", "origin"}, cloneEnv); err != nil {
-		return fmt.Errorf("remove source path from guest clone configuration: %w", err)
+	if _, err := s.runCloneCommand(ctx, handle, []string{cloneGitCommand, "-C", workdir, "remote", "set-url", "origin", cloneSourceGuestPath}, cloneEnv); err != nil {
+		return fmt.Errorf("keep read-only source as guest clone origin: %w", err)
 	}
 	if _, err := s.runCloneCommand(ctx, handle, []string{cloneGitCommand, "-C", workdir, cloneGitConfig, cloneGitLocalFlag, "core.hooksPath", "/dev/null"}, cloneEnv); err != nil {
 		return fmt.Errorf("disable clone hooks: %w", err)
@@ -344,16 +327,21 @@ func validateCloneWorkdirAgainstWorkspaces(workdir string, workspaces []sandbox.
 
 func (s *Service) startCloneGitDaemon(ctx context.Context, handle runtime.Handle, name string, info *sandbox.CloneInfo) (uint16, error) {
 	workdir := info.GuestWorkdir
-	// A Git working tree is not itself a Git directory, so the daemon is
-	// pointed at exactly one exported directory: the clone's .git directory.
-	// Clients address it as <repository>/.git below the base path.
+	repository := posixpath.Base(workdir)
+	// A Git working tree is not itself a Git directory, so export exactly one
+	// entry whose .git file carries the gitdir indirection. The daemon serves
+	// it at /<repository>, matching sbx instead of exposing /<repository>/.git.
+	entry, err := s.prepareCloneExport(ctx, handle, workdir, repository)
+	if err != nil {
+		return 0, err
+	}
 	args := []string{cloneGitCommand, "daemon", "--detach", "--reuseaddr", "--listen=" + cloneGitGuestIP,
-		"--port=" + strconv.Itoa(cloneGitGuestPort), "--base-path=" + posixpath.Dir(workdir), "--strict-paths", "--export-all",
-		"--enable=upload-pack", "--disable=receive-pack", posixpath.Join(workdir, ".git")}
+		"--port=" + strconv.Itoa(cloneGitGuestPort), "--base-path=" + cloneExportGuestDir, "--export-all",
+		"--enable=upload-pack", "--disable=receive-pack", entry}
 	if _, err := s.runCloneCommand(ctx, handle, args, daemonGitEnvironment()); err != nil {
 		return 0, fmt.Errorf("start guest Git daemon: %w", err)
 	}
-	if err := s.waitCloneGitDaemon(ctx, handle, posixpath.Base(workdir)); err != nil {
+	if err := s.waitCloneGitDaemon(ctx, handle, repository); err != nil {
 		return 0, err
 	}
 	forwarder := s.backend.(runtime.GitDaemonForwarder)
@@ -367,10 +355,29 @@ func (s *Service) startCloneGitDaemon(ctx context.Context, handle runtime.Handle
 	return port, nil
 }
 
+// prepareCloneExport recreates the single-entry export directory that makes
+// the clone's Git directory reachable as /<repository> through git daemon.
+func (s *Service) prepareCloneExport(ctx context.Context, handle runtime.Handle, workdir, repository string) (string, error) {
+	script := `set -eu; umask 077; rm -rf -- "$1"; mkdir -p -- "$1/$2"; printf 'gitdir: %s/.git\n' "$3" > "$1/$2/.git"`
+	if _, err := s.runCloneCommand(ctx, handle, []string{cloneShellCommand, "-c", script, "clone-export", cloneExportGuestDir, repository, workdir}, nil); err != nil {
+		return "", fmt.Errorf("prepare guest Git export: %w", err)
+	}
+	return posixpath.Join(cloneExportGuestDir, repository), nil
+}
+
+func (s *Service) removeCloneExport(ctx context.Context, handle runtime.Handle) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if _, err := s.runCloneCommand(cleanupCtx, handle, []string{"rm", "-rf", "--", cloneExportGuestDir}, nil); err != nil {
+		return fmt.Errorf("remove guest Git export: %w", err)
+	}
+	return nil
+}
+
 // waitCloneGitDaemon confirms the guest Git daemon really serves the clone
 // before its forward is published: --detach hides bind and startup failures.
 func (s *Service) waitCloneGitDaemon(ctx context.Context, handle runtime.Handle, repository string) error {
-	url := "git://" + net.JoinHostPort(cloneGitGuestIP, strconv.Itoa(cloneGitGuestPort)) + "/" + repository + "/.git"
+	url := "git://" + net.JoinHostPort(cloneGitGuestIP, strconv.Itoa(cloneGitGuestPort)) + "/" + repository
 	deadline := time.Now().Add(cloneGitReadyTimeout)
 	var lastErr error
 	for {
@@ -535,6 +542,9 @@ func (s *Service) stopStoredClone(ctx context.Context, sb *sandbox.Sandbox) erro
 		return nil
 	}
 	if err := s.withdrawCloneGitForward(ctx, sb.Name); err != nil {
+		return err
+	}
+	if err := s.removeCloneExport(ctx, s.backend.Handle(sb.Name)); err != nil {
 		return err
 	}
 	if sb.Meta.Clone.Info != nil {

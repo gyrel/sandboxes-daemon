@@ -258,16 +258,15 @@ type fakeRuntime struct {
 
 type fakeCloneRuntime struct {
 	fakeRuntime
-	defaultGuestCWD string
-	execRequests    []runtime.ExecRequest
-	execFailMatch   string
-	execFailure     error
-	forwardCalls    []bool
-	forwardPorts    []uint16
-	forwardError    error
-	withdrawError   error
-	guestRealpaths  map[string]string
-	gitUnavailable  bool
+	execRequests   []runtime.ExecRequest
+	execFailMatch  string
+	execFailure    error
+	forwardCalls   []bool
+	forwardPorts   []uint16
+	forwardError   error
+	withdrawError  error
+	guestRealpaths map[string]string
+	gitUnavailable bool
 }
 
 func (f *fakeCloneRuntime) Capabilities(context.Context) (runtime.Capabilities, error) {
@@ -285,11 +284,6 @@ func (f *fakeCloneRuntime) ExecNative(_ context.Context, _ runtime.Handle, req r
 	}
 	if f.gitUnavailable && len(command) > 0 && command[0] == "git" {
 		return 127, errors.New("git not found")
-	}
-	if len(command) == 1 && command[0] == "/bin/pwd" && req.Stdout != nil {
-		if _, err := io.WriteString(req.Stdout, f.defaultGuestCWD+"\n"); err != nil {
-			return 1, err
-		}
 	}
 	if len(command) == 2 && command[0] == "git" && command[1] == "--version" && req.Stdout != nil {
 		if _, err := io.WriteString(req.Stdout, "git version 2.50.1\n"); err != nil {
@@ -330,11 +324,25 @@ func (f *fakeCloneRuntime) SetGitDaemon(_ context.Context, _ string, enabled boo
 
 func cloneGuestCommand(argv []string) []string {
 	for i, arg := range argv {
-		if arg == "git" || arg == "mkdir" || arg == "/bin/pwd" || arg == "realpath" || arg == "/bin/sh" {
+		if arg == "git" || arg == "mkdir" || arg == "rm" || arg == "realpath" || arg == "/bin/sh" {
 			return argv[i:]
 		}
 	}
 	return nil
+}
+
+// cloneExportPrepared reports whether the guest command created the single
+// export entry that git daemon serves.
+func cloneExportPrepared(request runtime.ExecRequest) bool {
+	command := cloneGuestCommand(request.Argv)
+	return len(command) == 7 && command[0] == cloneShellCommand && command[3] == "clone-export"
+}
+
+// cloneExportRemoved reports whether the guest command removed the export
+// directory on clone teardown.
+func cloneExportRemoved(request runtime.ExecRequest) bool {
+	command := cloneGuestCommand(request.Argv)
+	return len(command) == 4 && command[0] == "rm" && command[1] == "-rf" && command[2] == "--" && command[3] == cloneExportGuestDir
 }
 
 type blockingStopRuntime struct {
@@ -910,6 +918,20 @@ func TestCloneSourceRejectsWorktreesAndSymlinks(t *testing.T) {
 	}
 }
 
+func TestResolveCloneWorkdirUsesHostPathUnlessExplicit(t *testing.T) {
+	requirePOSIXCloneHost(t)
+	explicit := "/workspace/project"
+	if got, err := resolveCloneWorkdir(&sandbox.CloneOptions{SourceWorkspacePath: "/private/tmp/lab/repo", GuestWorkdir: &explicit}); err != nil || got != explicit {
+		t.Fatalf("explicit workdir = %q, err=%v, want %q", got, err, explicit)
+	}
+	if got, err := resolveCloneWorkdir(&sandbox.CloneOptions{SourceWorkspacePath: "/private/tmp/lab/repo"}); err != nil || got != "/private/tmp/lab/repo" {
+		t.Fatalf("default workdir = %q, err=%v, want host workspace path", got, err)
+	}
+	if _, err := resolveCloneWorkdir(&sandbox.CloneOptions{SourceWorkspacePath: "relative/repo"}); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("relative default workdir error = %v, want conflict", err)
+	}
+}
+
 func TestStateOnlyCloneFailsClosedBeforePersistence(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "state-only-clone.db"))
@@ -928,17 +950,20 @@ func TestStateOnlyCloneFailsClosedBeforePersistence(t *testing.T) {
 }
 
 func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152}}
+	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152}}
 	svc := New(st, backend)
 	source := makeCloneSourceRepository(t)
 	repository := filepath.Base(source)
-	workdir := posixpath.Join(backend.defaultGuestCWD, repository)
+	workdir := filepath.ToSlash(source)
+	exportEntry := posixpath.Join(cloneExportGuestDir, repository)
+	probeURL := fmt.Sprintf("git://%s:%d/%s", cloneGitGuestIP, cloneGitGuestPort, repository)
 	op, err := svc.Create(ctx, CreateRequest{Name: "clone-demo", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
 	if err != nil {
 		t.Fatal(err)
@@ -957,7 +982,7 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 		t.Fatalf("clone state = %+v", sb.Meta.Clone)
 	}
 
-	var sawClone, sawRemoteRemoval, sawHooksDisabled, sawCredentialsDisabled, sawUploadDaemon, sawTrustConfig bool
+	var sawClone, sawOriginRetained, sawHooksDisabled, sawCredentialsDisabled, sawExportPrep, sawUploadDaemon, sawProbe, sawTrustConfig bool
 	for _, request := range backend.execRequests {
 		command := cloneGuestCommand(request.Argv)
 		joined := strings.Join(command, " ")
@@ -966,15 +991,21 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 			sawClone = strings.Contains(joined, "--no-local") && strings.Contains(joined, "--no-hardlinks") &&
 				strings.Contains(joined, "--no-recurse-submodules") && strings.Contains(joined, "-- /run/sandbox/source "+workdir) &&
 				strings.Contains(strings.Join(request.Argv, " "), "GIT_CONFIG_GLOBAL=/tmp/.rheic-clone-gitconfig")
-		case strings.Contains(joined, "remote remove origin"):
-			sawRemoteRemoval = true
+		case strings.Contains(joined, "remote set-url origin"):
+			sawOriginRetained = strings.HasSuffix(joined, "remote set-url origin "+cloneSourceGuestPath)
 		case strings.Contains(joined, "core.hooksPath /dev/null"):
 			sawHooksDisabled = true
 		case strings.Contains(joined, "credential.helper "):
 			sawCredentialsDisabled = true
 		case strings.Contains(joined, "git daemon"):
-			sawUploadDaemon = strings.Contains(joined, "--strict-paths") && strings.Contains(joined, "--enable=upload-pack") &&
-				strings.Contains(joined, "--disable=receive-pack") && strings.HasSuffix(joined, " "+posixpath.Join(workdir, ".git")) && !strings.Contains(joined, "sh -c")
+			sawUploadDaemon = strings.Contains(joined, "--base-path="+cloneExportGuestDir) && !strings.Contains(joined, "--strict-paths") &&
+				strings.Contains(joined, "--enable=upload-pack") && strings.Contains(joined, "--disable=receive-pack") &&
+				strings.HasSuffix(joined, " "+exportEntry) && !strings.Contains(joined, "sh -c")
+		case len(command) > 1 && command[0] == "git" && command[1] == "ls-remote":
+			sawProbe = strings.Contains(joined, " "+probeURL+" HEAD") && !strings.Contains(joined, "/.git")
+		case len(command) == 7 && command[0] == cloneShellCommand && command[3] == "clone-export":
+			sawExportPrep = strings.Contains(command[2], "rm -rf") && strings.Contains(command[2], `printf 'gitdir: %s/.git\n'`) &&
+				command[4] == cloneExportGuestDir && command[5] == repository && command[6] == workdir
 		}
 		if strings.Contains(joined, "clone-trust-config") {
 			sawTrustConfig = true
@@ -983,8 +1014,10 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 			t.Fatalf("clone command did not clear inherited guest environment: %v", request.Argv)
 		}
 	}
-	if !sawClone || !sawRemoteRemoval || !sawHooksDisabled || !sawCredentialsDisabled || !sawUploadDaemon || !sawTrustConfig {
-		t.Fatalf("clone commands missing: clone=%v trust=%v remove-origin=%v hooks=%v credentials=%v daemon=%v", sawClone, sawTrustConfig, sawRemoteRemoval, sawHooksDisabled, sawCredentialsDisabled, sawUploadDaemon)
+	if !sawClone || !sawOriginRetained || !sawHooksDisabled || !sawCredentialsDisabled || !sawExportPrep ||
+		!sawUploadDaemon || !sawProbe || !sawTrustConfig {
+		t.Fatalf("clone commands missing: clone=%v trust=%v origin=%v hooks=%v credentials=%v export=%v daemon=%v probe=%v",
+			sawClone, sawTrustConfig, sawOriginRetained, sawHooksDisabled, sawCredentialsDisabled, sawExportPrep, sawUploadDaemon, sawProbe)
 	}
 }
 
@@ -1010,13 +1043,14 @@ func TestCloneWorkdirCannotOverlapAnyWorkspaceMount(t *testing.T) {
 }
 
 func TestCreateCloneRejectsExtraWorkspaceBeforeRuntimeSideEffects(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-extra-workspace.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project"}
+	backend := &fakeCloneRuntime{}
 	svc := New(st, backend)
 	source := makeCloneSourceRepository(t)
 	other := t.TempDir()
@@ -1032,16 +1066,17 @@ func TestCreateCloneRejectsExtraWorkspaceBeforeRuntimeSideEffects(t *testing.T) 
 }
 
 func TestCreateCloneRejectsGuestPathSymlinkResolution(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-symlink.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/workspace", guestRealpaths: map[string]string{"/workspace": "/mnt/host-backed"}}
+	backend := &fakeCloneRuntime{guestRealpaths: map[string]string{"/workspace": "/mnt/host-backed"}}
 	svc := New(st, backend)
 	source := makeCloneSourceRepository(t)
-	_, err = svc.Create(ctx, CreateRequest{Name: "clone-symlink", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
+	_, err = svc.Create(ctx, CreateRequest{Name: "clone-symlink", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source, GuestWorkdir: ptrString("/workspace/project")}})
 	if err == nil || !strings.Contains(err.Error(), "different or ambiguous destination") {
 		t.Fatalf("symlinked guest path accepted: %v", err)
 	}
@@ -1053,6 +1088,7 @@ func TestCreateCloneRejectsGuestPathSymlinkResolution(t *testing.T) {
 }
 
 func TestCloneCreateFailureUnwindsRuntimeAndForward(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	for _, test := range []struct {
 		name            string
 		execFailMatch   string
@@ -1073,7 +1109,7 @@ func TestCloneCreateFailureUnwindsRuntimeAndForward(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = st.Close() }()
-			backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", execFailMatch: test.execFailMatch, execFailure: errors.New("synthetic exec failure"), forwardError: test.forwardError, gitUnavailable: test.gitUnavailable}
+			backend := &fakeCloneRuntime{execFailMatch: test.execFailMatch, execFailure: errors.New("synthetic exec failure"), forwardError: test.forwardError, gitUnavailable: test.gitUnavailable}
 			svc := New(st, backend)
 			source := makeCloneSourceRepository(t)
 			if _, err := svc.Create(ctx, CreateRequest{Name: "clone-fail", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}}); err == nil {
@@ -1092,35 +1128,51 @@ func TestCloneCreateFailureUnwindsRuntimeAndForward(t *testing.T) {
 }
 
 func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-lifecycle.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152, 49153}}
+	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152, 49153}}
 	svc := New(st, backend)
 	source := makeCloneSourceRepository(t)
 	op, err := svc.Create(ctx, CreateRequest{Name: "clone-life", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !slices.ContainsFunc(backend.execRequests, cloneExportPrepared) {
+		t.Fatal("clone create did not prepare the Git export entry")
+	}
+	stopFrom := len(backend.execRequests)
 	if _, err := svc.Stop(ctx, op.SandboxID); err != nil {
 		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(backend.execRequests[stopFrom:], cloneExportRemoved) {
+		t.Fatal("clone stop did not remove the Git export directory")
 	}
 	stopped, err := svc.Get(ctx, op.SandboxID)
 	if err != nil || stopped.State != sandbox.Stopped || stopped.Meta.Clone == nil || stopped.Meta.Clone.Info == nil || stopped.Meta.Clone.Info.GitEndpoint != nil {
 		t.Fatalf("stopped clone = %+v, err=%v", stopped, err)
 	}
+	startFrom := len(backend.execRequests)
 	if _, err := svc.Start(ctx, op.SandboxID); err != nil {
 		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(backend.execRequests[startFrom:], cloneExportPrepared) {
+		t.Fatal("clone start did not recreate the Git export entry")
 	}
 	running, err := svc.Get(ctx, op.SandboxID)
 	if err != nil || running.State != sandbox.Running || running.Meta.Clone == nil || running.Meta.Clone.Info == nil || running.Meta.Clone.Info.GitEndpoint == nil || running.Meta.Clone.Info.GitEndpoint.Port != 49153 {
 		t.Fatalf("restarted clone = %+v, err=%v", running, err)
 	}
+	deleteFrom := len(backend.execRequests)
 	if _, err := svc.Delete(ctx, op.SandboxID, true); err != nil {
 		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(backend.execRequests[deleteFrom:], cloneExportRemoved) {
+		t.Fatal("clone delete did not remove the Git export directory")
 	}
 	if _, err := svc.Get(ctx, op.SandboxID); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("deleted clone still exists: %v", err)
@@ -1131,8 +1183,9 @@ func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
 }
 
 func TestStartRunningCloneKeepsReachableForward(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152, 49152}}
+	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152, 49152}}
 	svc, id := newCloneRepairSandbox(t, backend)
 	execBefore := len(backend.execRequests)
 
@@ -1155,8 +1208,9 @@ func TestStartRunningCloneKeepsReachableForward(t *testing.T) {
 }
 
 func TestStartRunningCloneRepublishesLostForward(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152, 49153}}
+	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152, 49153}}
 	svc, id := newCloneRepairSandbox(t, backend)
 
 	if _, err := svc.Start(ctx, id); !errors.Is(err, core.ErrConflict) {
@@ -1175,8 +1229,9 @@ func TestStartRunningCloneRepublishesLostForward(t *testing.T) {
 }
 
 func TestStartRunningCloneFailsClosedWithoutGateway(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152}}
+	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152}}
 	svc, id := newCloneRepairSandbox(t, backend)
 	backend.forwardError = errors.New("gateway for clone-repair is not running")
 	backend.withdrawError = errors.New("gateway for clone-repair is not running")
@@ -1207,7 +1262,7 @@ func TestStartRunningNonCloneIsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project"}
+	backend := &fakeCloneRuntime{}
 	svc := New(st, backend)
 	op, err := svc.Create(ctx, CreateRequest{Name: "plain-running"})
 	if err != nil {
@@ -1251,13 +1306,14 @@ func newCloneRepairSandbox(t *testing.T, backend *fakeCloneRuntime) (*Service, s
 }
 
 func TestReconcileClearsStaleCloneEndpoint(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-reconcile.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152}}
+	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152}}
 	svc := New(st, backend)
 	source := makeCloneSourceRepository(t)
 	op, err := svc.Create(ctx, CreateRequest{Name: "clone-reconcile", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
@@ -1287,6 +1343,15 @@ func TestReconcileClearsStaleCloneEndpoint(t *testing.T) {
 }
 
 func ptrString(value string) *string { return &value }
+
+// requirePOSIXCloneHost skips clone lifecycle tests on hosts whose workspace
+// paths are not POSIX: clone mode places the private clone at the host path.
+func requirePOSIXCloneHost(t *testing.T) {
+	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("clone mode requires a POSIX host workspace path")
+	}
+}
 
 func makeCloneSourceRepository(t *testing.T) string {
 	t.Helper()
