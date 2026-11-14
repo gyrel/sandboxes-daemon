@@ -973,7 +973,7 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 			sawCredentialsDisabled = true
 		case strings.Contains(joined, "git daemon"):
 			sawUploadDaemon = strings.Contains(joined, "--strict-paths") && strings.Contains(joined, "--enable=upload-pack") &&
-				strings.Contains(joined, "--disable=receive-pack") && strings.HasSuffix(joined, " "+filepath.Join(workdir, ".git")) && !strings.Contains(joined, "sh -c")
+				strings.Contains(joined, "--disable=receive-pack") && strings.HasSuffix(joined, " "+posixpath.Join(workdir, ".git")) && !strings.Contains(joined, "sh -c")
 		}
 		if strings.Contains(joined, "clone-trust-config") {
 			sawTrustConfig = true
