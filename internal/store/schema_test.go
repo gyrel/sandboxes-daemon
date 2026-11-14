@@ -103,6 +103,42 @@ func TestOpenRefusesNewerSchema(t *testing.T) {
 	}
 }
 
+func TestCloneSchemaUpgradeRejectsOlderDaemon(t *testing.T) {
+	if schemaVersion != 4 {
+		t.Fatalf("schema version = %d, want 4 for clone contract", schemaVersion)
+	}
+	if err := schemaVersionCompatibilityError(schemaVersion, 3); !errors.Is(err, ErrSchemaNewer) {
+		t.Fatalf("older daemon compatibility error = %v, want ErrSchemaNewer", err)
+	}
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sandboxes.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE legacy_marker (value TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA user_version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(path + ".pre-v3-*.bak")
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("version 3 backups = %v, %v", matches, err)
+	}
+}
+
 func TestBackupRestoresPreUpgradeDatabase(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sandboxes.db")

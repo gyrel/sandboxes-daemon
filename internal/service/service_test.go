@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
+	posixpath "path"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -251,6 +254,86 @@ type fakeRuntime struct {
 	afterCreate      func()
 	deleteCtxErr     error
 	stopGrace        time.Duration
+}
+
+type fakeCloneRuntime struct {
+	fakeRuntime
+	defaultGuestCWD string
+	execRequests    []runtime.ExecRequest
+	execFailMatch   string
+	execFailure     error
+	forwardCalls    []bool
+	forwardPorts    []uint16
+	forwardError    error
+	guestRealpaths  map[string]string
+	gitUnavailable  bool
+}
+
+func (f *fakeCloneRuntime) Capabilities(context.Context) (runtime.Capabilities, error) {
+	return runtime.Capabilities{Workspace: true, Network: true}, nil
+}
+
+func (f *fakeCloneRuntime) ExecNative(_ context.Context, _ runtime.Handle, req runtime.ExecRequest) (int, error) {
+	copyReq := req
+	copyReq.Argv = append([]string(nil), req.Argv...)
+	copyReq.Env = append([]string(nil), req.Env...)
+	f.execRequests = append(f.execRequests, copyReq)
+	command := cloneGuestCommand(req.Argv)
+	if f.execFailMatch != "" && strings.Contains(strings.Join(command, " "), f.execFailMatch) {
+		return 1, f.execFailure
+	}
+	if f.gitUnavailable && len(command) > 0 && command[0] == "git" {
+		return 127, errors.New("git not found")
+	}
+	if len(command) == 1 && command[0] == "/bin/pwd" && req.Stdout != nil {
+		if _, err := io.WriteString(req.Stdout, f.defaultGuestCWD+"\n"); err != nil {
+			return 1, err
+		}
+	}
+	if len(command) == 2 && command[0] == "git" && command[1] == "--version" && req.Stdout != nil {
+		if _, err := io.WriteString(req.Stdout, "git version 2.50.1\n"); err != nil {
+			return 1, err
+		}
+	}
+	if len(command) == 4 && command[0] == "realpath" && req.Stdout != nil {
+		resolved := command[3]
+		if configured, ok := f.guestRealpaths[resolved]; ok {
+			resolved = configured
+		}
+		if _, err := io.WriteString(req.Stdout, resolved+"\n"); err != nil {
+			return 1, err
+		}
+	}
+	return 0, nil
+}
+
+func (f *fakeCloneRuntime) SetGitDaemon(_ context.Context, _ string, enabled bool) (uint16, error) {
+	f.forwardCalls = append(f.forwardCalls, enabled)
+	if enabled && f.forwardError != nil {
+		return 0, f.forwardError
+	}
+	if !enabled {
+		return 0, nil
+	}
+	index := 0
+	for _, call := range f.forwardCalls[:len(f.forwardCalls)-1] {
+		if call {
+			index++
+		}
+	}
+	if index >= len(f.forwardPorts) {
+		return 49152, nil
+	}
+	return f.forwardPorts[index], nil
+}
+
+func cloneGuestCommand(argv []string) []string {
+	for i, arg := range argv {
+		if arg == "git" || arg == "mkdir" || arg == "/bin/pwd" || arg == "realpath" || arg == "/bin/sh" {
+			return argv[i:]
+		}
+	}
+	return nil
 }
 
 type blockingStopRuntime struct {
@@ -726,17 +809,17 @@ func TestCreatePassesWorkspacesAndStoresThem(t *testing.T) {
 	docs := filepath.Join(t.TempDir(), "docs")
 	hostPort := availableHostTCPPort(t)
 	op, err := svc.Create(ctx, CreateRequest{Name: "multi", Agent: "shell", Detached: true, Workspaces: []sandbox.Workspace{
-		{Path: work}, {Path: docs, ReadOnly: true},
+		{Path: work}, {Path: docs, GuestPath: "/mnt/docs", ReadOnly: true},
 	}, Ports: []sandbox.Port{{Host: hostPort, Guest: 3000}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(backend.lastConfig.Workspaces) != 2 || !backend.lastConfig.Workspaces[1].ReadOnly ||
+	if len(backend.lastConfig.Workspaces) != 2 || !backend.lastConfig.Workspaces[1].ReadOnly || backend.lastConfig.Workspaces[1].GuestPath != "/mnt/docs" ||
 		backend.lastConfig.Workspace != work || len(backend.lastConfig.Ports) != 1 || backend.lastConfig.Ports[0].Host != hostPort {
 		t.Fatalf("runtime config=%+v", backend.lastConfig)
 	}
 	sb, err := svc.Get(ctx, op.SandboxID)
-	if err != nil || len(sb.Workspaces) != 2 || sb.Workspace != work || !sb.Workspaces[1].ReadOnly ||
+	if err != nil || len(sb.Workspaces) != 2 || sb.Workspace != work || sb.Workspaces[1].GuestPath != "/mnt/docs" || !sb.Workspaces[1].ReadOnly ||
 		len(sb.Ports) != 1 || sb.Ports[0].Host != hostPort || sb.Ports[0].Guest != 3000 || sb.Meta == nil || sb.Meta.Agent != "shell" || !sb.Meta.Detached {
 		t.Fatalf("sandbox=%+v err=%v", sb, err)
 	}
@@ -757,6 +840,383 @@ func TestCreateRejectsInvalidWorkspaces(t *testing.T) {
 	} {
 		if _, err := svc.Create(ctx, CreateRequest{Name: "bad", Workspaces: workspaces}); err == nil {
 			t.Fatalf("invalid workspaces accepted: %+v", workspaces)
+		}
+	}
+}
+
+func TestNormalizeCloneOptionsRequiresOneRealGitWorkspaceAndMountsItReadOnly(t *testing.T) {
+	source := makeCloneSourceRepository(t)
+	other := t.TempDir()
+	guestWorkdir := "/workspace/project"
+	workspaces, err := normalizeWorkspaces(CreateRequest{Workspaces: []sandbox.Workspace{{Path: source}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, err := normalizeCloneOptions(&sandbox.CloneOptions{SourceWorkspacePath: source, GuestWorkdir: &guestWorkdir}, workspaces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone == nil || len(workspaces) != 1 || !workspaces[0].ReadOnly || workspaces[0].GuestPath != cloneSourceGuestPath {
+		t.Fatalf("normalized clone=%+v workspaces=%+v", clone, workspaces)
+	}
+
+	for _, test := range []struct {
+		name       string
+		clone      *sandbox.CloneOptions
+		workspaces []sandbox.Workspace
+	}{
+		{name: "source missing", clone: &sandbox.CloneOptions{SourceWorkspacePath: filepath.Join(t.TempDir(), "missing")}, workspaces: []sandbox.Workspace{{Path: source}}},
+		{name: "source path not a workspace", clone: &sandbox.CloneOptions{SourceWorkspacePath: other}, workspaces: []sandbox.Workspace{{Path: source}}},
+		{name: "unsafe repository slug", clone: &sandbox.CloneOptions{SourceWorkspacePath: source, GuestWorkdir: ptrString("/workspace/unsafe repo")}, workspaces: []sandbox.Workspace{{Path: source}}},
+		{name: "extra workspace", clone: &sandbox.CloneOptions{SourceWorkspacePath: source}, workspaces: []sandbox.Workspace{{Path: source}, {Path: other, GuestPath: "/workspace/cache"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := normalizeCloneOptions(test.clone, test.workspaces); !errors.Is(err, core.ErrConflict) {
+				t.Fatalf("normalizeCloneOptions error=%v, want conflict", err)
+			}
+		})
+	}
+}
+
+func TestCloneSourceRejectsWorktreesAndSymlinks(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: /tmp/external"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCloneSourceRepository(worktree); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf(".git file was accepted: %v", err)
+	}
+
+	gitDirectory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(gitDirectory, "config"), []byte("[core]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlinkedGit := t.TempDir()
+	if err := os.Symlink(gitDirectory, filepath.Join(symlinkedGit, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCloneSourceRepository(symlinkedGit); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf(".git symlink was accepted: %v", err)
+	}
+
+	sourceRepository := makeCloneSourceRepository(t)
+	alias := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(sourceRepository, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCloneSourceRepository(alias); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("workspace symlink was accepted: %v", err)
+	}
+}
+
+func TestStateOnlyCloneFailsClosedBeforePersistence(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "state-only-clone.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	svc := New(st, nil)
+	source := makeCloneSourceRepository(t)
+	if _, err := svc.Create(ctx, CreateRequest{Name: "clone", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}}); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("state-only clone error=%v, want conflict", err)
+	}
+	if _, err := svc.GetByName(ctx, "clone"); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("state-only clone persisted sandbox: %v", err)
+	}
+}
+
+func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152}}
+	svc := New(st, backend)
+	source := makeCloneSourceRepository(t)
+	repository := filepath.Base(source)
+	workdir := posixpath.Join(backend.defaultGuestCWD, repository)
+	op, err := svc.Create(ctx, CreateRequest{Name: "clone-demo", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := svc.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.lastConfig.Workspaces) != 1 || backend.lastConfig.Workspaces[0].Path != source ||
+		!backend.lastConfig.Workspaces[0].ReadOnly || backend.lastConfig.Workspaces[0].GuestPath != cloneSourceGuestPath {
+		t.Fatalf("runtime clone source mount = %+v", backend.lastConfig.Workspaces)
+	}
+	if sb.Meta.Clone == nil || sb.Meta.Clone.Options.SourceWorkspacePath != source || sb.Meta.Clone.Options.GuestWorkdir != nil || sb.Meta.Clone.Info == nil ||
+		sb.Meta.Clone.Info.GuestWorkdir != workdir || sb.Meta.Clone.Info.RemoteName != "sandbox-clone-demo" || sb.Meta.Clone.Info.GitEndpoint == nil ||
+		sb.Meta.Clone.Info.GitEndpoint.HostIP != cloneGitHostIP || sb.Meta.Clone.Info.GitEndpoint.Port != 49152 || sb.Meta.Clone.Info.GitEndpoint.Repository != repository {
+		t.Fatalf("clone state = %+v", sb.Meta.Clone)
+	}
+
+	var sawClone, sawRemoteRemoval, sawHooksDisabled, sawCredentialsDisabled, sawUploadDaemon, sawTrustConfig bool
+	for _, request := range backend.execRequests {
+		command := cloneGuestCommand(request.Argv)
+		joined := strings.Join(command, " ")
+		switch {
+		case strings.Contains(joined, " clone "):
+			sawClone = strings.Contains(joined, "--no-local") && strings.Contains(joined, "--no-hardlinks") &&
+				strings.Contains(joined, "--no-recurse-submodules") && strings.Contains(joined, "-- /run/sandbox/source "+workdir) &&
+				strings.Contains(strings.Join(request.Argv, " "), "GIT_CONFIG_GLOBAL=/tmp/.rheic-clone-gitconfig")
+		case strings.Contains(joined, "remote remove origin"):
+			sawRemoteRemoval = true
+		case strings.Contains(joined, "core.hooksPath /dev/null"):
+			sawHooksDisabled = true
+		case strings.Contains(joined, "credential.helper "):
+			sawCredentialsDisabled = true
+		case strings.Contains(joined, "git daemon"):
+			sawUploadDaemon = strings.Contains(joined, "--strict-paths") && strings.Contains(joined, "--enable=upload-pack") &&
+				strings.Contains(joined, "--disable=receive-pack") && strings.HasSuffix(joined, " "+posixpath.Join(workdir, ".git")) && !strings.Contains(joined, "sh -c")
+		}
+		if strings.Contains(joined, "clone-trust-config") {
+			sawTrustConfig = true
+		}
+		if request.Argv[0] != "/usr/bin/env" || request.Argv[1] != "-i" {
+			t.Fatalf("clone command did not clear inherited guest environment: %v", request.Argv)
+		}
+	}
+	if !sawClone || !sawRemoteRemoval || !sawHooksDisabled || !sawCredentialsDisabled || !sawUploadDaemon || !sawTrustConfig {
+		t.Fatalf("clone commands missing: clone=%v trust=%v remove-origin=%v hooks=%v credentials=%v daemon=%v", sawClone, sawTrustConfig, sawRemoteRemoval, sawHooksDisabled, sawCredentialsDisabled, sawUploadDaemon)
+	}
+}
+
+func TestCloneWorkdirCannotOverlapAnyWorkspaceMount(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		workdir    string
+		workspaces []sandbox.Workspace
+	}{
+		{name: "explicit overlaps writable", workdir: "/workspace/project", workspaces: []sandbox.Workspace{{Path: "/host/source", GuestPath: cloneSourceGuestPath}, {Path: "/host/other", GuestPath: "/workspace", ReadOnly: false}}},
+		{name: "explicit is parent of mount", workdir: "/workspace", workspaces: []sandbox.Workspace{{Path: "/host/source", GuestPath: cloneSourceGuestPath}, {Path: "/host/other", GuestPath: "/workspace/project"}}},
+		{name: "implicit default overlaps writable", workdir: "/workspace/project", workspaces: []sandbox.Workspace{{Path: "/host/source", GuestPath: cloneSourceGuestPath}, {Path: "/host/other", GuestPath: "/workspace", ReadOnly: false}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateCloneWorkdirAgainstWorkspaces(test.workdir, test.workspaces); !errors.Is(err, core.ErrConflict) {
+				t.Fatalf("overlapping clone workdir accepted: %v", err)
+			}
+		})
+	}
+	if err := validateCloneWorkdirAgainstWorkspaces("/home/agent/project", []sandbox.Workspace{{Path: "/host/source", GuestPath: cloneSourceGuestPath}, {Path: "/host/other", GuestPath: "/workspace", ReadOnly: false}}); err != nil {
+		t.Fatalf("private non-overlapping clone destination rejected: %v", err)
+	}
+}
+
+func TestCreateCloneRejectsExtraWorkspaceBeforeRuntimeSideEffects(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-extra-workspace.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project"}
+	svc := New(st, backend)
+	source := makeCloneSourceRepository(t)
+	other := t.TempDir()
+	_, err = svc.Create(ctx, CreateRequest{Name: "clone-extra", Workspaces: []sandbox.Workspace{
+		{Path: source}, {Path: other, GuestPath: "/workspace"},
+	}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
+	if !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("clone with extra workspace error=%v, want conflict", err)
+	}
+	if backend.created != 0 || len(backend.execRequests) != 0 {
+		t.Fatalf("runtime side effects happened before rejection: create=%d exec=%d", backend.created, len(backend.execRequests))
+	}
+}
+
+func TestCreateCloneRejectsGuestPathSymlinkResolution(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-symlink.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/workspace", guestRealpaths: map[string]string{"/workspace": "/mnt/host-backed"}}
+	svc := New(st, backend)
+	source := makeCloneSourceRepository(t)
+	_, err = svc.Create(ctx, CreateRequest{Name: "clone-symlink", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
+	if err == nil || !strings.Contains(err.Error(), "different or ambiguous destination") {
+		t.Fatalf("symlinked guest path accepted: %v", err)
+	}
+	for _, request := range backend.execRequests {
+		if strings.Contains(strings.Join(cloneGuestCommand(request.Argv), " "), "git clone") {
+			t.Fatal("clone ran after guest path resolved through a symlink")
+		}
+	}
+}
+
+func TestCloneCreateFailureUnwindsRuntimeAndForward(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		execFailMatch   string
+		gitUnavailable  bool
+		forwardError    error
+		wantForwardCall []bool
+	}{
+		{name: "clone command", execFailMatch: " clone "},
+		{name: "missing git prerequisite", gitUnavailable: true},
+		{name: "publish", forwardError: errors.New("synthetic gateway failure"), wantForwardCall: []bool{true, false}},
+		{name: "git daemon readiness", execFailMatch: "ls-remote"},
+		{name: "non-empty destination", execFailMatch: "ls -A"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-failure.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = st.Close() }()
+			backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", execFailMatch: test.execFailMatch, execFailure: errors.New("synthetic exec failure"), forwardError: test.forwardError, gitUnavailable: test.gitUnavailable}
+			svc := New(st, backend)
+			source := makeCloneSourceRepository(t)
+			if _, err := svc.Create(ctx, CreateRequest{Name: "clone-fail", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}}); err == nil {
+				t.Fatal("clone failure was accepted")
+			} else if test.gitUnavailable && !strings.Contains(err.Error(), "clone image must include a working Git client") {
+				t.Fatalf("missing Git error is not actionable: %v", err)
+			}
+			if backend.deleted != 1 || !slices.Equal(backend.forwardCalls, test.wantForwardCall) {
+				t.Fatalf("cleanup deleted=%d forward calls=%v", backend.deleted, backend.forwardCalls)
+			}
+			if _, err := svc.GetByName(ctx, "clone-fail"); !errors.Is(err, core.ErrNotFound) {
+				t.Fatalf("failed clone persisted sandbox: %v", err)
+			}
+		})
+	}
+}
+
+func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-lifecycle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152, 49153}}
+	svc := New(st, backend)
+	source := makeCloneSourceRepository(t)
+	op, err := svc.Create(ctx, CreateRequest{Name: "clone-life", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Stop(ctx, op.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := svc.Get(ctx, op.SandboxID)
+	if err != nil || stopped.State != sandbox.Stopped || stopped.Meta.Clone == nil || stopped.Meta.Clone.Info == nil || stopped.Meta.Clone.Info.GitEndpoint != nil {
+		t.Fatalf("stopped clone = %+v, err=%v", stopped, err)
+	}
+	if _, err := svc.Start(ctx, op.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	running, err := svc.Get(ctx, op.SandboxID)
+	if err != nil || running.State != sandbox.Running || running.Meta.Clone == nil || running.Meta.Clone.Info == nil || running.Meta.Clone.Info.GitEndpoint == nil || running.Meta.Clone.Info.GitEndpoint.Port != 49153 {
+		t.Fatalf("restarted clone = %+v, err=%v", running, err)
+	}
+	if _, err := svc.Delete(ctx, op.SandboxID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Get(ctx, op.SandboxID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("deleted clone still exists: %v", err)
+	}
+	if !slices.Equal(backend.forwardCalls, []bool{true, false, true, false}) {
+		t.Fatalf("clone forward lifecycle = %v", backend.forwardCalls)
+	}
+}
+
+func TestReconcileClearsStaleCloneEndpoint(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-reconcile.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152}}
+	svc := New(st, backend)
+	source := makeCloneSourceRepository(t)
+	op, err := svc.Create(ctx, CreateRequest{Name: "clone-reconcile", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := svc.Get(ctx, op.SandboxID)
+	if err != nil || created.Meta.Clone == nil || created.Meta.Clone.Info == nil || created.Meta.Clone.Info.GitEndpoint == nil {
+		t.Fatalf("created clone has no live endpoint: %+v, %v", created.Meta, err)
+	}
+	if _, err := svc.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile clone state: %v", err)
+	}
+	reconciled, err := svc.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.State != sandbox.Unknown {
+		t.Fatalf("reconciled clone state = %s, want unknown", reconciled.State)
+	}
+	if reconciled.Meta.Clone == nil || reconciled.Meta.Clone.Info == nil || reconciled.Meta.Clone.Info.GitEndpoint != nil {
+		t.Fatalf("reconcile kept a stale Git endpoint: %+v", reconciled.Meta)
+	}
+	if reconciled.Meta.Clone.Options.SourceWorkspacePath != source {
+		t.Fatalf("reconcile dropped the clone request: %+v", reconciled.Meta.Clone.Options)
+	}
+}
+
+func ptrString(value string) *string { return &value }
+
+func makeCloneSourceRepository(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	gitDir := filepath.Join(root, ".git")
+	if err := os.Mkdir(gitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n\trepositoryformatversion = 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestStateOnlyCreateValidatesGuestPathsBeforePersistence(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "state-only.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	svc := New(st, nil)
+
+	hostPath := filepath.Join(t.TempDir(), "repo")
+	op, err := svc.Create(ctx, CreateRequest{Name: "valid", Workspaces: []sandbox.Workspace{{Path: hostPath, GuestPath: "/workspace/repo"}}})
+	if err != nil {
+		t.Fatalf("state-only create with a valid guest path: %v", err)
+	}
+	sb, err := svc.Get(ctx, op.SandboxID)
+	if err != nil || len(sb.Workspaces) != 1 || sb.Workspaces[0].GuestPath != "/workspace/repo" {
+		t.Fatalf("persisted workspace = %+v, err=%v", sb.Workspaces, err)
+	}
+
+	invalid := [][]sandbox.Workspace{
+		{{Path: "/host/a", GuestPath: "relative"}},
+		{{Path: "/host/a", GuestPath: "/workspace/../repo"}},
+		{{Path: "/host/a", GuestPath: "/workspace,repo"}},
+		{{Path: "/host/a", GuestPath: "/workspace=repo"}},
+		{{Path: "/host/a", GuestPath: "/workspace\x00repo"}},
+		{{Path: "/host/a", GuestPath: "/workspace\rrepo"}},
+		{{Path: "/host/a", GuestPath: "/workspace\nrepo"}},
+		{{Path: "/host/a", GuestPath: "/workspace/shared"}, {Path: "/host/b", GuestPath: "/workspace/shared"}},
+		{{Path: "/workspace/shared"}, {Path: "/host/b", GuestPath: "/workspace/shared"}},
+	}
+	for i, workspaces := range invalid {
+		name := fmt.Sprintf("invalid-%d", i)
+		if _, err := svc.Create(ctx, CreateRequest{Name: name, Workspaces: workspaces}); !errors.Is(err, core.ErrConflict) {
+			t.Errorf("state-only create accepted invalid workspaces %+v: %v", workspaces, err)
+		}
+		if _, err := svc.GetByName(ctx, name); !errors.Is(err, core.ErrNotFound) {
+			t.Errorf("invalid state-only create %q persisted a sandbox: %v", name, err)
 		}
 	}
 }

@@ -399,6 +399,7 @@ func (s *SandboxServer) Create(ctx context.Context, req *localv1.CreateRequest) 
 		CPUs:           req.GetCpus(),
 		MemoryMiB:      req.GetMemoryMib(),
 		Workspaces:     fromProtoWorkspaces(req.GetWorkspaces()),
+		Clone:          fromProtoCloneOptions(req.GetClone()),
 		Ports:          fromProtoPorts(req.GetPorts()),
 		Allow:          allow,
 		Deny:           deny,
@@ -640,6 +641,7 @@ func toProtoSandbox(sb sandbox.Sandbox) *localv1.Sandbox {
 		MemoryMib:          sb.MemoryMiB,
 		StoppedAtUnix:      unix(sb.StoppedAt),
 		Workspaces:         toProtoWorkspaces(sb.Workspaces),
+		CloneInfo:          toProtoCloneInfo(sandboxCloneInfo(sb.Meta.Clone), sb.State),
 		Ports:              toProtoPorts(sb.Ports),
 		Allow:              toProtoRules(policyRules(sb.Policy, true)),
 		Deny:               toProtoRules(policyRules(sb.Policy, false)),
@@ -727,7 +729,7 @@ func operationState(v operation.State) localv1.OperationState {
 func toProtoWorkspaces(workspaces []sandbox.Workspace) []*localv1.Workspace {
 	out := make([]*localv1.Workspace, 0, len(workspaces))
 	for i := range workspaces {
-		out = append(out, &localv1.Workspace{Path: workspaces[i].Path, ReadOnly: workspaces[i].ReadOnly})
+		out = append(out, &localv1.Workspace{Path: workspaces[i].Path, GuestPath: workspaces[i].GuestPath, ReadOnly: workspaces[i].ReadOnly})
 	}
 	return out
 }
@@ -738,9 +740,44 @@ func fromProtoWorkspaces(workspaces []*localv1.Workspace) []sandbox.Workspace {
 		if workspace == nil {
 			continue
 		}
-		out = append(out, sandbox.Workspace{Path: workspace.GetPath(), ReadOnly: workspace.GetReadOnly()})
+		out = append(out, sandbox.Workspace{Path: workspace.GetPath(), GuestPath: workspace.GetGuestPath(), ReadOnly: workspace.GetReadOnly()})
 	}
 	return out
+}
+
+func fromProtoCloneOptions(clone *localv1.CloneOptions) *sandbox.CloneOptions {
+	if clone == nil {
+		return nil
+	}
+	result := &sandbox.CloneOptions{SourceWorkspacePath: clone.GetSourceWorkspacePath()}
+	if clone.GuestWorkdir != nil {
+		workdir := clone.GetGuestWorkdir()
+		result.GuestWorkdir = &workdir
+	}
+	return result
+}
+
+// toProtoCloneInfo reports the live Git endpoint only for a running sandbox:
+// a stopped or unknown sandbox cannot serve the forward, and the persisted
+// port may already be reused by an unrelated process.
+func toProtoCloneInfo(clone *sandbox.CloneInfo, state sandbox.State) *localv1.CloneInfo {
+	if clone == nil {
+		return nil
+	}
+	result := &localv1.CloneInfo{GuestWorkdir: clone.GuestWorkdir, RemoteName: clone.RemoteName}
+	if clone.GitEndpoint != nil && state == sandbox.Running {
+		result.GitEndpoint = &localv1.GitEndpoint{
+			HostIp: clone.GitEndpoint.HostIP, Port: uint32(clone.GitEndpoint.Port), Repository: clone.GitEndpoint.Repository,
+		}
+	}
+	return result
+}
+
+func sandboxCloneInfo(clone *sandbox.CloneState) *sandbox.CloneInfo {
+	if clone == nil {
+		return nil
+	}
+	return clone.Info
 }
 
 func toProtoPorts(ports []sandbox.Port) []*localv1.Port {
