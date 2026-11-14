@@ -2,6 +2,8 @@ module github.com/rheic/sandboxes-daemon
 
 go 1.27
 
+toolchain go1.27.4
+
 require (
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/modelcontextprotocol/go-sdk v1.8.0
