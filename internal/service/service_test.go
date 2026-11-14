@@ -919,6 +919,7 @@ func TestCloneSourceRejectsWorktreesAndSymlinks(t *testing.T) {
 }
 
 func TestResolveCloneWorkdirUsesHostPathUnlessExplicit(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	explicit := "/workspace/project"
 	if got, err := resolveCloneWorkdir(&sandbox.CloneOptions{SourceWorkspacePath: "/private/tmp/lab/repo", GuestWorkdir: &explicit}); err != nil || got != explicit {
 		t.Fatalf("explicit workdir = %q, err=%v, want %q", got, err, explicit)
@@ -949,6 +950,7 @@ func TestStateOnlyCloneFailsClosedBeforePersistence(t *testing.T) {
 }
 
 func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone.db"))
 	if err != nil {
@@ -1041,6 +1043,7 @@ func TestCloneWorkdirCannotOverlapAnyWorkspaceMount(t *testing.T) {
 }
 
 func TestCreateCloneRejectsExtraWorkspaceBeforeRuntimeSideEffects(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-extra-workspace.db"))
 	if err != nil {
@@ -1063,6 +1066,7 @@ func TestCreateCloneRejectsExtraWorkspaceBeforeRuntimeSideEffects(t *testing.T) 
 }
 
 func TestCreateCloneRejectsGuestPathSymlinkResolution(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-symlink.db"))
 	if err != nil {
@@ -1084,6 +1088,7 @@ func TestCreateCloneRejectsGuestPathSymlinkResolution(t *testing.T) {
 }
 
 func TestCloneCreateFailureUnwindsRuntimeAndForward(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	for _, test := range []struct {
 		name            string
 		execFailMatch   string
@@ -1123,6 +1128,7 @@ func TestCloneCreateFailureUnwindsRuntimeAndForward(t *testing.T) {
 }
 
 func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-lifecycle.db"))
 	if err != nil {
@@ -1177,6 +1183,7 @@ func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
 }
 
 func TestStartRunningCloneKeepsReachableForward(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152, 49152}}
 	svc, id := newCloneRepairSandbox(t, backend)
@@ -1201,6 +1208,7 @@ func TestStartRunningCloneKeepsReachableForward(t *testing.T) {
 }
 
 func TestStartRunningCloneRepublishesLostForward(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152, 49153}}
 	svc, id := newCloneRepairSandbox(t, backend)
@@ -1221,6 +1229,7 @@ func TestStartRunningCloneRepublishesLostForward(t *testing.T) {
 }
 
 func TestStartRunningCloneFailsClosedWithoutGateway(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152}}
 	svc, id := newCloneRepairSandbox(t, backend)
@@ -1297,6 +1306,7 @@ func newCloneRepairSandbox(t *testing.T, backend *fakeCloneRuntime) (*Service, s
 }
 
 func TestReconcileClearsStaleCloneEndpoint(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-reconcile.db"))
 	if err != nil {
@@ -1333,6 +1343,15 @@ func TestReconcileClearsStaleCloneEndpoint(t *testing.T) {
 }
 
 func ptrString(value string) *string { return &value }
+
+// requirePOSIXCloneHost skips clone lifecycle tests on hosts whose workspace
+// paths are not POSIX: clone mode places the private clone at the host path.
+func requirePOSIXCloneHost(t *testing.T) {
+	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("clone mode requires a POSIX host workspace path")
+	}
+}
 
 func makeCloneSourceRepository(t *testing.T) string {
 	t.Helper()
