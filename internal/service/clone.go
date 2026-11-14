@@ -36,6 +36,11 @@ const (
 
 var cloneRepositorySlug = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
+// errCloneForwardUnavailable reports that a persisted clone Git endpoint could
+// not be verified or republished. Callers must treat the clone as unusable
+// until the sandbox is restarted rather than trusting a stale host port.
+var errCloneForwardUnavailable = errors.New("clone Git forward is unavailable")
+
 // normalizeCloneOptions validates a non-nil clone request. Callers must skip
 // this function when no clone options were supplied.
 func normalizeCloneOptions(clone *sandbox.CloneOptions, workspaces []sandbox.Workspace) (*sandbox.CloneOptions, error) {
@@ -393,6 +398,115 @@ func (s *Service) withdrawCloneGitForward(ctx context.Context, name string) erro
 		return fmt.Errorf("withdraw guest Git daemon forward: %w", err)
 	}
 	return nil
+}
+
+// ensureCloneForward repairs a Running clone's persisted host endpoint when the
+// gateway forward no longer reaches the guest Git daemon. It never invents an
+// endpoint: if the stale forward cannot be withdrawn or the replacement cannot
+// be verified, the endpoint is cleared and a typed error is returned.
+func (s *Service) ensureCloneForward(ctx context.Context, sb *sandbox.Sandbox) error {
+	if sb == nil || sb.State != sandbox.Running || sb.Meta == nil || sb.Meta.Clone == nil ||
+		sb.Meta.Clone.Info == nil || sb.Meta.Clone.Info.GitEndpoint == nil {
+		return nil
+	}
+	if s.backend == nil {
+		return s.clearCloneEndpoint(ctx, sb, fmt.Errorf("%w: clone runtime is unavailable", errCloneForwardUnavailable))
+	}
+	info := sb.Meta.Clone.Info
+	repository, err := cloneForwardRepository(info)
+	if err != nil {
+		return s.clearCloneEndpoint(ctx, sb, fmt.Errorf("%w: %w", errCloneForwardUnavailable, err))
+	}
+	port, err := s.verifyCloneForward(ctx, sb.Name, repository)
+	if err == nil {
+		if port == info.GitEndpoint.Port && info.GitEndpoint.HostIP == cloneGitHostIP && info.GitEndpoint.Repository == repository {
+			return nil
+		}
+		// The gateway verified ownership by replacing the stale forward with a
+		// new one. Persist that verified endpoint instead of publishing again.
+		return s.persistCloneEndpoint(ctx, sb, &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: repository})
+	}
+	if err := s.withdrawCloneGitForward(ctx, sb.Name); err != nil {
+		return s.clearCloneEndpoint(ctx, sb, fmt.Errorf("%w: withdraw stale clone forward: %w", errCloneForwardUnavailable, err))
+	}
+	port, err = s.publishCloneForward(ctx, sb.Name, repository)
+	if err != nil {
+		return s.clearCloneEndpoint(ctx, sb, err)
+	}
+	endpoint := &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: repository}
+	return s.persistCloneEndpoint(ctx, sb, endpoint)
+}
+
+func cloneForwardRepository(info *sandbox.CloneInfo) (string, error) {
+	if !validCloneGuestPath(info.GuestWorkdir) || !validCloneRepositorySlug(posixpath.Base(info.GuestWorkdir)) {
+		return "", errors.New("stored clone metadata is invalid")
+	}
+	return posixpath.Base(info.GuestWorkdir), nil
+}
+
+// verifyCloneForward asks the gateway to verify its owned forward, then
+// confirms the guest daemon still serves it. A changed port means the gateway
+// replaced a stale forward while reasserting ownership.
+func (s *Service) verifyCloneForward(ctx context.Context, name, repository string) (uint16, error) {
+	forwarder, ok := s.backend.(runtime.GitDaemonForwarder)
+	if !ok {
+		return 0, errors.New("runtime does not support managed Git daemon forwarding")
+	}
+	port, err := forwarder.SetGitDaemon(ctx, name, true)
+	if err != nil {
+		return 0, err
+	}
+	if port == 0 {
+		return 0, errors.New("gateway returned an empty clone Git port")
+	}
+	if err := s.waitCloneGitDaemon(ctx, s.backend.Handle(name), repository); err != nil {
+		return 0, fmt.Errorf("guest clone Git daemon is unreachable: %w", err)
+	}
+	return port, nil
+}
+
+func (s *Service) publishCloneForward(ctx context.Context, name, repository string) (uint16, error) {
+	forwarder, ok := s.backend.(runtime.GitDaemonForwarder)
+	if !ok {
+		return 0, fmt.Errorf("%w: runtime does not support managed Git daemon forwarding", errCloneForwardUnavailable)
+	}
+	port, err := forwarder.SetGitDaemon(ctx, name, true)
+	if err != nil {
+		return 0, fmt.Errorf("%w: publish clone forward: %w", errCloneForwardUnavailable, err)
+	}
+	if port == 0 {
+		return 0, fmt.Errorf("%w: gateway returned an empty clone Git port", errCloneForwardUnavailable)
+	}
+	if err := s.waitCloneGitDaemon(ctx, s.backend.Handle(name), repository); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if withdrawErr := s.withdrawCloneGitForward(cleanupCtx, name); withdrawErr != nil {
+			return 0, fmt.Errorf("%w: verify republished clone forward: %w", errCloneForwardUnavailable, errors.Join(err, withdrawErr))
+		}
+		return 0, fmt.Errorf("%w: verify republished clone forward: %w", errCloneForwardUnavailable, err)
+	}
+	return port, nil
+}
+
+func (s *Service) persistCloneEndpoint(ctx context.Context, sb *sandbox.Sandbox, endpoint *sandbox.GitEndpoint) error {
+	sb.Meta.Clone.Info.GitEndpoint = endpoint
+	sb.UpdatedAt = s.now().UTC()
+	if err := s.store.Update(ctx, *sb); err != nil {
+		// Keep the in-memory record fail-closed so the caller does not persist
+		// an endpoint that failed to commit.
+		sb.Meta.Clone.Info.GitEndpoint = nil
+		return fmt.Errorf("%w: persist repaired clone endpoint: %w", errCloneForwardUnavailable, err)
+	}
+	return nil
+}
+
+func (s *Service) clearCloneEndpoint(ctx context.Context, sb *sandbox.Sandbox, cause error) error {
+	sb.Meta.Clone.Info.GitEndpoint = nil
+	sb.UpdatedAt = s.now().UTC()
+	if err := s.store.Update(ctx, *sb); err != nil {
+		return errors.Join(cause, fmt.Errorf("clear stale clone endpoint: %w", err))
+	}
+	return cause
 }
 
 func (s *Service) startStoredClone(ctx context.Context, sb *sandbox.Sandbox) error {

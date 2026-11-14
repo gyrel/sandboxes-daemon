@@ -2832,6 +2832,13 @@ func (s *Service) Start(ctx context.Context, id string) (operation.Operation, er
 		return operation.Operation{}, err
 	}
 	if sb.State == sandbox.Running {
+		// A Running clone can outlive its host-side Git forward when the
+		// gateway is replaced. Start is the existing write surface callers
+		// use to recover a sandbox, so repair the forward before returning
+		// the unchanged "already running" result.
+		if err := s.ensureCloneForward(ctx, &sb); err != nil {
+			return operation.Operation{}, s.markRuntimeUnknown(ctx, sb, err)
+		}
 		return operation.Operation{}, fmt.Errorf("%w: sandbox is already running", core.ErrConflict)
 	}
 	if sb.State == sandbox.Deleting || sb.State == sandbox.Deleted {

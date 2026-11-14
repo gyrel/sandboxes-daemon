@@ -265,6 +265,7 @@ type fakeCloneRuntime struct {
 	forwardCalls    []bool
 	forwardPorts    []uint16
 	forwardError    error
+	withdrawError   error
 	guestRealpaths  map[string]string
 	gitUnavailable  bool
 }
@@ -313,7 +314,7 @@ func (f *fakeCloneRuntime) SetGitDaemon(_ context.Context, _ string, enabled boo
 		return 0, f.forwardError
 	}
 	if !enabled {
-		return 0, nil
+		return 0, f.withdrawError
 	}
 	index := 0
 	for _, call := range f.forwardCalls[:len(f.forwardCalls)-1] {
@@ -1127,6 +1128,126 @@ func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
 	if !slices.Equal(backend.forwardCalls, []bool{true, false, true, false}) {
 		t.Fatalf("clone forward lifecycle = %v", backend.forwardCalls)
 	}
+}
+
+func TestStartRunningCloneKeepsReachableForward(t *testing.T) {
+	ctx := context.Background()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152, 49152}}
+	svc, id := newCloneRepairSandbox(t, backend)
+	execBefore := len(backend.execRequests)
+
+	if _, err := svc.Start(ctx, id); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("Start error = %v, want already-running conflict", err)
+	}
+	sb, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.State != sandbox.Running || sb.Meta.Clone == nil || sb.Meta.Clone.Info == nil || sb.Meta.Clone.Info.GitEndpoint == nil || sb.Meta.Clone.Info.GitEndpoint.Port != 49152 {
+		t.Fatalf("reachable clone was repaired unnecessarily: %+v", sb)
+	}
+	if !slices.Equal(backend.forwardCalls, []bool{true, true}) {
+		t.Fatalf("reachable clone forward was republished: %v", backend.forwardCalls)
+	}
+	if len(backend.execRequests) <= execBefore {
+		t.Fatal("reachable clone guest daemon was not verified")
+	}
+}
+
+func TestStartRunningCloneRepublishesLostForward(t *testing.T) {
+	ctx := context.Background()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152, 49153}}
+	svc, id := newCloneRepairSandbox(t, backend)
+
+	if _, err := svc.Start(ctx, id); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("Start error = %v, want already-running conflict", err)
+	}
+	sb, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.State != sandbox.Running || sb.Meta.Clone == nil || sb.Meta.Clone.Info == nil || sb.Meta.Clone.Info.GitEndpoint == nil || sb.Meta.Clone.Info.GitEndpoint.Port != 49153 {
+		t.Fatalf("repaired clone endpoint = %+v", sb.Meta)
+	}
+	if !slices.Equal(backend.forwardCalls, []bool{true, true}) {
+		t.Fatalf("clone forward repair calls = %v", backend.forwardCalls)
+	}
+}
+
+func TestStartRunningCloneFailsClosedWithoutGateway(t *testing.T) {
+	ctx := context.Background()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project", forwardPorts: []uint16{49152}}
+	svc, id := newCloneRepairSandbox(t, backend)
+	backend.forwardError = errors.New("gateway for clone-repair is not running")
+	backend.withdrawError = errors.New("gateway for clone-repair is not running")
+
+	_, err := svc.Start(ctx, id)
+	if !errors.Is(err, errCloneForwardUnavailable) {
+		t.Fatalf("Start error = %v, want errCloneForwardUnavailable", err)
+	}
+	sb, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.State != sandbox.Unknown || sb.Error == "" {
+		t.Fatalf("missing gateway left the clone running: %+v", sb)
+	}
+	if sb.Meta.Clone == nil || sb.Meta.Clone.Info == nil || sb.Meta.Clone.Info.GitEndpoint != nil {
+		t.Fatalf("missing gateway kept a clone endpoint: %+v", sb.Meta)
+	}
+	if !slices.Equal(backend.forwardCalls, []bool{true, true, false}) {
+		t.Fatalf("failed clone repair calls = %v", backend.forwardCalls)
+	}
+}
+
+func TestStartRunningNonCloneIsUnchanged(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "plain-running.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCloneRuntime{defaultGuestCWD: "/home/agent/project"}
+	svc := New(st, backend)
+	op, err := svc.Create(ctx, CreateRequest{Name: "plain-running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execBefore := len(backend.execRequests)
+
+	if _, err := svc.Start(ctx, op.SandboxID); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("Start error = %v, want already-running conflict", err)
+	}
+	sb, err := svc.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.State != sandbox.Running || sb.Meta.Clone != nil {
+		t.Fatalf("non-clone sandbox changed: %+v", sb)
+	}
+	if len(backend.forwardCalls) != 0 || len(backend.execRequests) != execBefore {
+		t.Fatalf("non-clone sandbox ran clone repair: forwards=%v exec=%d", backend.forwardCalls, len(backend.execRequests)-execBefore)
+	}
+}
+
+func newCloneRepairSandbox(t *testing.T, backend *fakeCloneRuntime) (*Service, string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-repair.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := New(st, backend)
+	source := makeCloneSourceRepository(t)
+	op, err := svc.Create(ctx, CreateRequest{
+		Name: "clone-repair", Workspaces: []sandbox.Workspace{{Path: source}},
+		Clone: &sandbox.CloneOptions{SourceWorkspacePath: source},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc, op.SandboxID
 }
 
 func TestReconcileClearsStaleCloneEndpoint(t *testing.T) {
