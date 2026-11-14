@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	posixpath "path"
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
@@ -936,7 +937,7 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 	svc := New(st, backend)
 	source := makeCloneSourceRepository(t)
 	repository := filepath.Base(source)
-	workdir := filepath.Join(backend.defaultGuestCWD, repository)
+	workdir := posixpath.Join(backend.defaultGuestCWD, repository)
 	op, err := svc.Create(ctx, CreateRequest{Name: "clone-demo", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
 	if err != nil {
 		t.Fatal(err)
