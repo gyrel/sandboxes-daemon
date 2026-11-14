@@ -99,8 +99,8 @@ github.com/rheic/sandboxes-core v0.0.12 h1:DzOTeodOcf971ZoCw0hd1auTexanMU367V2rV
 github.com/rheic/sandboxes-core v0.0.12/go.mod h1:ue8m6n4U0yiuQfJ2DVSIOgalrai/LX+CsapbHLIOT+k=
 github.com/rheic/sandboxes-gateway v0.0.18 h1:Bc/zj34e15OUhUPgbWLA7N2ePF5wDqO8LwQAUuYZbZM=
 github.com/rheic/sandboxes-gateway v0.0.18/go.mod h1:UiK34i7S82e9b6f3d6JoArIFksb3JhiHaOPnf8Rfi60=
-github.com/rheic/sandboxes-runtime v0.0.31 h1:1TpFxe73LRIOfZgaqqSBwLtNj+fmPKR5+hq9ilFRG6o=
-github.com/rheic/sandboxes-runtime v0.0.31/go.mod h1:hrxA+hCW3sfmNmbwugLRyeaODCkdGwB96po3/VQX+Vw=
+github.com/rheic/sandboxes-runtime v0.0.32 h1:3zcRKEurTC2ogi9eR0fAfCeKUsD/v5qlzlTbWBfSHyQ=
+github.com/rheic/sandboxes-runtime v0.0.32/go.mod h1:hrxA+hCW3sfmNmbwugLRyeaODCkdGwB96po3/VQX+Vw=
 github.com/segmentio/asm v1.2.1 h1:DTNbBqs57ioxAD4PrArqftgypG4/qNpXoJx8TVXxPR0=
 github.com/segmentio/asm v1.2.1/go.mod h1:BqMnlJP91P8d+4ibuonYZw9mfnzI9HfxselHZr5aAcs=
 github.com/segmentio/encoding v0.5.4 h1:OW1VRern8Nw6ITAtwSZ7Idrl3MXCFwXHPgqESYfvNt0=
