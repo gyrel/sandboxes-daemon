@@ -9,7 +9,8 @@
 //
 // Only network deny rules are enforced in this slice. Organization allow rules
 // are advisory and are ignored, as are filesystem, MCP and secret resources
-// that the local gateway cannot enforce.
+// that the local gateway cannot enforce. Apply is the single pure evaluator
+// that merges organization rules with local sandbox rules.
 package orgpolicy
 
 import (
@@ -72,6 +73,50 @@ type Snapshot struct {
 	// IgnoredRules counts allow, unsupported-resource and malformed allow rules
 	// that this slice deliberately does not apply.
 	IgnoredRules int
+}
+
+// Policy is one layer of network rules. Allow and Deny are independent sets:
+// the gateway still applies deny precedence to a target that appears in both.
+type Policy struct {
+	Allow []sandbox.NetworkRule
+	Deny  []sandbox.NetworkRule
+}
+
+// Apply returns the deterministic effective network policy for a sandbox.
+// It is pure: it does not mutate either argument, read the store or contact the
+// control plane.
+//
+// Organization deny rules are kept first in bundle order, so their signed rule
+// IDs stay stable and they win over duplicate local denies. Local deny rules
+// follow, and every local allow is preserved. Organization allow rules are
+// advisory and are never copied into the result, so an organization bundle can
+// only narrow access. Duplicate targets are removed by protocol, destination
+// and port, keeping the first occurrence seen.
+func Apply(local, organization Policy) (allow, deny []sandbox.NetworkRule) {
+	allow = mergeRules(local.Allow)
+	deny = mergeRules(organization.Deny, local.Deny)
+	return allow, deny
+}
+
+// mergeRules concatenates rule groups in order and removes duplicate targets.
+func mergeRules(groups ...[]sandbox.NetworkRule) []sandbox.NetworkRule {
+	total := 0
+	for _, group := range groups {
+		total += len(group)
+	}
+	out := make([]sandbox.NetworkRule, 0, total)
+	seen := make(map[string]struct{}, total)
+	for _, group := range groups {
+		for _, rule := range group {
+			key := ruleKey(rule)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, rule)
+		}
+	}
+	return out
 }
 
 // RuleView is one parsed network rule from a stored organization bundle.

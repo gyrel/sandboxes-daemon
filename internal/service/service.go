@@ -1961,11 +1961,17 @@ func (s *Service) effectiveRules(ctx context.Context, allow, deny []sandbox.Netw
 	if err != nil {
 		return nil, nil, err
 	}
-	effectiveDeny, err = s.mergeOrgDeny(organization, effectiveDeny)
+	orgDeny, err := s.normalizeOrgDeny(organization.Deny)
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(organization.Deny) > 0 {
+	// This is the only merge point between stored organization policy and the
+	// runtime rules. Organization allows stay advisory inside Apply.
+	effectiveAllow, effectiveDeny = orgpolicy.Apply(
+		orgpolicy.Policy{Allow: effectiveAllow, Deny: effectiveDeny},
+		orgpolicy.Policy{Deny: orgDeny},
+	)
+	if len(orgDeny) > 0 {
 		if err := validateOrgPolicyEnforcement(effectiveAllow, effectiveDeny, s.QUICEnabled); err != nil {
 			return nil, nil, err
 		}
@@ -1998,43 +2004,30 @@ func (s *Service) globalPolicyForMutation(ctx context.Context) ([]sandbox.Networ
 	return s.GlobalPolicy(ctx)
 }
 
-// mergeOrgDeny preserves the signed organization rule IDs while validating the
-// mapped rules through the same normalizer used for local rules. Organization
-// denies come first and win over local allows at the gateway.
-func (s *Service) mergeOrgDeny(organization *orgpolicy.Snapshot, deny []sandbox.NetworkRule) ([]sandbox.NetworkRule, error) {
-	if organization == nil || len(organization.Deny) == 0 {
-		return deny, nil
+// normalizeOrgDeny validates organization rules through the same IPv6 and
+// domain normalizer used for local rules, then restores their signed rule IDs.
+// The merge itself is done by orgpolicy.Apply so there is one evaluator.
+func (s *Service) normalizeOrgDeny(deny []sandbox.NetworkRule) ([]sandbox.NetworkRule, error) {
+	if len(deny) == 0 {
+		return nil, nil
 	}
-	ids := make(map[string]string, len(organization.Deny))
-	for _, rule := range organization.Deny {
-		ids[policyRuleKey(rule)] = rule.RuleID
+	ids := make(map[string]string, len(deny))
+	for _, rule := range deny {
+		key := policyRuleKey(rule)
+		if _, exists := ids[key]; !exists {
+			ids[key] = rule.RuleID
+		}
 	}
-	normalized, err := normalizeRules(organization.Deny, s.IPv6Enabled)
+	normalized, err := normalizeRules(deny, s.IPv6Enabled)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w: %w", core.ErrConflict, orgpolicy.ErrBundleInvalid, err)
 	}
-	out := make([]sandbox.NetworkRule, 0, len(normalized)+len(deny))
-	seen := make(map[string]struct{}, len(normalized)+len(deny))
-	for _, rule := range normalized {
-		key := policyRuleKey(rule)
-		if id, ok := ids[key]; ok {
-			rule.RuleID = id
+	for i := range normalized {
+		if id, ok := ids[policyRuleKey(normalized[i])]; ok {
+			normalized[i].RuleID = id
 		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, rule)
 	}
-	for _, rule := range deny {
-		key := policyRuleKey(rule)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, rule)
-	}
-	return out, nil
+	return normalized, nil
 }
 
 func validateOrgPolicyEnforcement(allow, deny []sandbox.NetworkRule, quicEnabled bool) error {

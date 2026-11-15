@@ -250,6 +250,73 @@ func TestOrgPolicyDenyBlocksMatchingAllow(t *testing.T) {
 	}
 }
 
+func TestOrgPolicyUnrelatedDenyKeepsLocalAllow(t *testing.T) {
+	ctx := context.Background()
+	backend := &fakeRuntime{}
+	svc, st := openOrgPolicyService(t, backend)
+	orgRule := controlplane.PolicyRule{Resource: "network:203.0.113.9:8443", Action: "deny", RuleID: "rule-org"}
+	saveBundle(t, st, signedBundle(t, testPolicyPayload("acme", orgRule)))
+	enableOrgPolicy(svc, "acme")
+
+	op, err := svc.Create(ctx, CreateRequest{Name: "positive-control",
+		Allow: []sandbox.NetworkRule{{Protocol: "tcp", CIDR: "198.51.100.0/24", Port: 443}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.lastConfig.Allow) != 1 || backend.lastConfig.Allow[0].CIDR != "198.51.100.0/24" || backend.lastConfig.Allow[0].Port != 443 {
+		t.Fatalf("runtime allow = %+v; want the local allow rule", backend.lastConfig.Allow)
+	}
+	if len(backend.lastConfig.Deny) != 2 {
+		t.Fatalf("runtime deny = %+v; want the tcp/udp organization deny", backend.lastConfig.Deny)
+	}
+	decision := gatewaypolicy.Check(
+		toGatewayTestRules(backend.lastConfig.Allow, gatewaypolicy.Allow),
+		toGatewayTestRules(backend.lastConfig.Deny, gatewaypolicy.Deny),
+		gatewaypolicy.Request{Protocol: "tcp", Address: "198.51.100.42", Port: 443},
+	)
+	if !decision.Allow {
+		t.Fatalf("unrelated organization deny blocked a local allow: %+v", decision)
+	}
+
+	// The same single evaluation path must feed start.
+	if _, err := svc.Stop(ctx, op.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Start(ctx, op.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.lastHandle.Allow) != 1 || backend.lastHandle.Allow[0].CIDR != "198.51.100.0/24" {
+		t.Fatalf("start allow = %+v; want the local allow rule", backend.lastHandle.Allow)
+	}
+}
+
+func TestOrgPolicyUnparsableBundleBlocksStart(t *testing.T) {
+	ctx := context.Background()
+	backend := &fakeRuntime{}
+	svc, st := openOrgPolicyService(t, backend)
+
+	op, err := svc.Create(ctx, CreateRequest{Name: "corrupt-start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Stop(ctx, op.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	saveBundle(t, st, store.StoredPolicyBundle{
+		OrgID: "acme", Revision: 1, Payload: []byte("not json"), Signature: "synthetic",
+		IssuedAt: orgPolicyTestNow.Add(-time.Hour), ExpiresAt: orgPolicyTestNow.Add(time.Hour), SyncedAt: orgPolicyTestNow,
+	})
+	enableOrgPolicy(svc, "acme")
+
+	if _, err := svc.Start(ctx, op.SandboxID); !errors.Is(err, orgpolicy.ErrBundleInvalid) || !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("start error = %v; want typed invalid-bundle conflict", err)
+	}
+	if backend.started != 0 {
+		t.Fatalf("start reached the runtime with an unparsable bundle: %d", backend.started)
+	}
+}
+
 func TestOrgPolicyExpandsEveryDenyToTCPAndUDP(t *testing.T) {
 	ctx := context.Background()
 	backend := &fakeRuntime{}
