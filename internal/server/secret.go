@@ -43,7 +43,7 @@ func (s *SecretServer) Set(ctx context.Context, req *localv1.SecretServiceSetReq
 		summary, err = s.svc.SetServiceSecret(ctx, req.GetService(), scope, req.GetSandboxName(), value)
 	}
 	if err != nil {
-		return nil, err
+		return nil, mapSecretSourceApprovalError(err)
 	}
 	return &localv1.SecretServiceSetResponse{Secret: &localv1.SecretSummary{
 		Service: summary.Service, Scope: string(summary.Scope), SandboxName: summary.SandboxName,
@@ -75,7 +75,7 @@ func (s *SecretServer) Create(ctx context.Context, req *localv1.SecretServiceCre
 		return nil, status.Error(codes.AlreadyExists, "service secret already exists; pass --force to replace it")
 	}
 	if err != nil {
-		return nil, err
+		return nil, mapSecretSourceApprovalError(err)
 	}
 	return &localv1.SecretServiceCreateResponse{Secret: &localv1.SecretSummary{
 		Service: summary.Service, Scope: string(summary.Scope), SandboxName: summary.SandboxName,
@@ -106,6 +106,21 @@ func (s *SecretServer) Remove(ctx context.Context, req *localv1.SecretServiceRem
 		return nil, err
 	}
 	return &localv1.SecretServiceRemoveResponse{Removed: removed}, nil
+}
+
+func mapSecretSourceApprovalError(err error) error {
+	for _, approvalErr := range []error{
+		servicesecrets.ErrApprovalRequired,
+		servicesecrets.ErrApprovalDenied,
+		servicesecrets.ErrApprovalExpired,
+		servicesecrets.ErrApprovalUsed,
+		servicesecrets.ErrApprovalMismatch,
+	} {
+		if errors.Is(err, approvalErr) {
+			return status.Error(codes.FailedPrecondition, "host command secret source requires trusted single-use host approval bound to the exact command")
+		}
+	}
+	return err
 }
 
 func parseSecretScope(value string) (servicesecrets.Scope, error) {

@@ -4,18 +4,26 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	keyring "github.com/zalando/go-keyring"
 )
 
-type fakeBackend struct{ items map[string]string }
+type fakeBackend struct {
+	mu    sync.Mutex
+	items map[string]string
+}
 
 func (f *fakeBackend) Set(service, account, secret string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.items[service+"/"+account] = secret
 	return nil
 }
 func (f *fakeBackend) Get(service, account string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	value, ok := f.items[service+"/"+account]
 	if !ok {
 		return "", keyring.ErrNotFound
@@ -23,6 +31,8 @@ func (f *fakeBackend) Get(service, account string) (string, error) {
 	return value, nil
 }
 func (f *fakeBackend) Delete(service, account string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	key := service + "/" + account
 	if _, ok := f.items[key]; !ok {
 		return keyring.ErrNotFound

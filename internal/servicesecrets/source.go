@@ -3,7 +3,9 @@ package servicesecrets
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,8 +30,42 @@ const (
 	maxResolverStderr    = 4096
 	maxCachedSources     = 256
 	maxResolverLocks     = 4096
+	maxUsedApprovals     = 4096
+	approvalTokenBytes   = 32
+	defaultApprovalTTL   = 10 * time.Minute
 	secretSourcePrefix   = "\x00rheic-secret-source:v1:"
 )
+
+// ApprovalProvider obtains consent for a host shell command through a
+// daemon-trusted host UI or OS authorization service. An RPC field, CLI flag,
+// challenge identifier, or caller identity must never implement this
+// interface by itself.
+type ApprovalProvider interface {
+	Approve(context.Context, ApprovalRequest) error
+}
+
+// ApprovalRequest describes the exact host execution that needs approval. It
+// never contains a resolved secret value. Cwd, Argv, and EnvKeys are bound into
+// the approval token so a later execution cannot substitute a different
+// command, working directory, or environment.
+type ApprovalRequest struct {
+	Action      string
+	Service     string
+	Scope       Scope
+	SandboxName string
+	Command     string
+	Argv        []string
+	Cwd         string
+	EnvKeys     []string
+	Binding     string
+}
+
+type sourceApproval struct {
+	Token     string    `json:"token"`
+	Binding   string    `json:"binding"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Used      bool      `json:"used,omitempty"`
+}
 
 var awsSecretARN = regexp.MustCompile(`^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$`)
 
@@ -41,14 +78,21 @@ type Source struct {
 	ShowError  bool
 	OPAccount  string
 	AWSProfile string
+	// WorkDir is an absolute, per-source resolver directory created fresh for
+	// each execution. Command sources receive it during approval so execution
+	// cannot silently change the approved working directory.
+	WorkDir  string
+	approval *sourceApproval
 }
 
 type sourceEnvelope struct {
-	Reference  string `json:"reference"`
-	Command    string `json:"command,omitempty"`
-	Refresh    string `json:"refresh"`
-	OPAccount  string `json:"op_account,omitempty"`
-	AWSProfile string `json:"aws_profile,omitempty"`
+	Reference  string          `json:"reference"`
+	Command    string          `json:"command,omitempty"`
+	Refresh    string          `json:"refresh"`
+	OPAccount  string          `json:"op_account,omitempty"`
+	AWSProfile string          `json:"aws_profile,omitempty"`
+	WorkDir    string          `json:"work_dir,omitempty"`
+	Approval   *sourceApproval `json:"approval,omitempty"`
 }
 
 type sourceCacheEntry struct {
@@ -61,10 +105,32 @@ type sourceResolver struct {
 	locks        map[string]*sync.Mutex
 	entries      map[string]sourceCacheEntry
 	overflowLock sync.Mutex
+
+	approvalMu    sync.Mutex
+	approver      ApprovalProvider
+	approvalTTL   time.Duration
+	now           func() time.Time
+	usedApprovals map[string]time.Time
+	persistUsed   func(context.Context, string, Source) error
 }
 
 func newSourceResolver() *sourceResolver {
-	return &sourceResolver{locks: make(map[string]*sync.Mutex), entries: make(map[string]sourceCacheEntry)}
+	return &sourceResolver{
+		locks:         make(map[string]*sync.Mutex),
+		entries:       make(map[string]sourceCacheEntry),
+		approvalTTL:   defaultApprovalTTL,
+		now:           time.Now,
+		usedApprovals: make(map[string]time.Time),
+	}
+}
+
+// SetApprovalProvider installs the trusted host-side consent mechanism used
+// for command sources. A nil provider fails closed.
+func (s *Store) SetApprovalProvider(provider ApprovalProvider) {
+	r := s.resolver()
+	r.approvalMu.Lock()
+	r.approver = provider
+	r.approvalMu.Unlock()
 }
 
 func validateSource(source Source) (Source, error) {
@@ -77,6 +143,18 @@ func validateSource(source Source) (Source, error) {
 	if err := validateSourceProfile(source); err != nil {
 		return Source{}, err
 	}
+	if source.WorkDir != "" {
+		if source.Command == "" || !filepath.IsAbs(source.WorkDir) || len(source.WorkDir) > 4096 ||
+			strings.ContainsRune(source.WorkDir, '\x00') ||
+			!strings.HasPrefix(filepath.Base(source.WorkDir), "rheic-secret-ref-") {
+			return Source{}, fmt.Errorf("%w: invalid secret resolver working directory", ErrInvalid)
+		}
+	}
+	if source.approval != nil {
+		if err := validateApprovalRecord(source.approval); err != nil {
+			return Source{}, err
+		}
+	}
 	refresh, err := normalizeRefresh(source.Refresh)
 	if err != nil {
 		return Source{}, err
@@ -86,6 +164,22 @@ func validateSource(source Source) (Source, error) {
 		return Source{}, fmt.Errorf("%w: --show-error cannot be combined with --no-verify", ErrInvalid)
 	}
 	return source, nil
+}
+
+func validateApprovalRecord(approval *sourceApproval) error {
+	if approval == nil {
+		return nil
+	}
+	if len(approval.Token) != hex.EncodedLen(approvalTokenBytes) || len(approval.Binding) != sha256.Size*2 || approval.ExpiresAt.IsZero() {
+		return fmt.Errorf("%w: invalid secret source approval", ErrInvalid)
+	}
+	if _, err := hex.DecodeString(approval.Token); err != nil {
+		return fmt.Errorf("%w: invalid secret source approval", ErrInvalid)
+	}
+	if _, err := hex.DecodeString(approval.Binding); err != nil {
+		return fmt.Errorf("%w: invalid secret source approval", ErrInvalid)
+	}
+	return nil
 }
 
 func validateSourceForm(source *Source) error {
@@ -158,6 +252,7 @@ func encodeSource(source Source) ([]byte, error) {
 	encoded, err := json.Marshal(sourceEnvelope{
 		Reference: source.Reference, Command: source.Command, Refresh: source.Refresh,
 		OPAccount: source.OPAccount, AWSProfile: source.AWSProfile,
+		WorkDir: source.WorkDir, Approval: source.approval,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode secret source: %w", err)
@@ -176,6 +271,7 @@ func decodeSource(value []byte) (Source, bool, error) {
 	source, err := validateSource(Source{
 		Reference: envelope.Reference, Command: envelope.Command, Refresh: envelope.Refresh,
 		OPAccount: envelope.OPAccount, AWSProfile: envelope.AWSProfile,
+		WorkDir: envelope.WorkDir, approval: envelope.Approval,
 	})
 	if err != nil {
 		return Source{}, true, err
@@ -192,10 +288,13 @@ func (s *Store) SaveSource(ctx context.Context, service string, scope Scope, san
 	if err != nil {
 		return Summary{}, err
 	}
+	if source.Command != "" {
+		if err := s.approveCommandSource(ctx, summary, &source); err != nil {
+			return Summary{}, err
+		}
+	}
 	if !source.NoVerify {
-		resolved, err := resolveSource(ctx, source)
-		clear(resolved)
-		if err != nil {
+		if err := s.verifySource(ctx, source); err != nil {
 			return Summary{}, err
 		}
 	}
@@ -212,6 +311,129 @@ func (s *Store) SaveSource(ctx context.Context, service string, scope Scope, san
 	}
 	s.resolver().invalidate(account(summary))
 	return summary, nil
+}
+
+func (s *Store) verifySource(ctx context.Context, source Source) error {
+	var resolved []byte
+	var err error
+	if source.Command != "" {
+		env := resolverEnvironment(source)
+		if err := validateSourceApproval(source, s.resolver().now(), env); err != nil {
+			return err
+		}
+		resolved, err = executeSource(ctx, source, source.WorkDir, env)
+	} else {
+		resolved, err = resolveSource(ctx, source)
+	}
+	clear(resolved)
+	return err
+}
+
+func (s *Store) approveCommandSource(ctx context.Context, summary Summary, source *Source) error {
+	r := s.resolver()
+	r.approvalMu.Lock()
+	approver := r.approver
+	ttl := r.approvalTTL
+	now := r.now
+	r.approvalMu.Unlock()
+	if approver == nil {
+		return ErrApprovalRequired
+	}
+	if ttl <= 0 || ttl > defaultApprovalTTL*2 {
+		return ErrApprovalRequired
+	}
+	workDir, err := newResolverWorkDir()
+	if err != nil {
+		return err
+	}
+	source.WorkDir = workDir
+	env := resolverEnvironment(*source)
+	argv := resolverArgv(*source)
+	binding := sourceApprovalBinding(argv, workDir, env)
+	if err := approver.Approve(ctx, ApprovalRequest{
+		Action: "store", Service: summary.Service, Scope: summary.Scope,
+		SandboxName: summary.SandboxName, Command: source.Command,
+		Argv: append([]string(nil), argv...), Cwd: workDir,
+		EnvKeys: approvalEnvironmentKeys(env), Binding: binding,
+	}); err != nil {
+		return ErrApprovalDenied
+	}
+	tokenBytes := make([]byte, approvalTokenBytes)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return errors.New("create secret source approval token")
+	}
+	source.approval = &sourceApproval{
+		Token:     hex.EncodeToString(tokenBytes),
+		Binding:   binding,
+		ExpiresAt: now().Add(ttl).UTC(),
+	}
+	return nil
+}
+
+func newResolverWorkDir() (string, error) {
+	dir, err := os.MkdirTemp("", "rheic-secret-ref-")
+	if err != nil {
+		return "", errors.New("prepare isolated secret resolver directory")
+	}
+	if !filepath.IsAbs(dir) {
+		_ = os.RemoveAll(dir)
+		return "", errors.New("secret resolver temporary directory must be absolute")
+	}
+	if err := os.Remove(dir); err != nil {
+		return "", errors.New("prepare isolated secret resolver directory")
+	}
+	return dir, nil
+}
+
+func approvalEnvironmentKeys(env []string) []string {
+	keys := make([]string, 0, len(env))
+	for _, entry := range env {
+		if key, _, ok := strings.Cut(entry, "="); ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sourceApprovalBinding(argv []string, cwd string, env []string) string {
+	canonical := struct {
+		Argv []string `json:"argv"`
+		Cwd  string   `json:"cwd"`
+		Env  []string `json:"env"`
+	}{Argv: append([]string(nil), argv...), Cwd: cwd, Env: append([]string(nil), env...)}
+	sort.Strings(canonical.Env)
+	encoded, _ := json.Marshal(canonical)
+	digest := sha256.Sum256(encoded)
+	clear(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func validateSourceApproval(source Source, now time.Time, env []string) error {
+	if source.Command == "" {
+		return nil
+	}
+	approval := source.approval
+	if approval == nil {
+		return ErrApprovalRequired
+	}
+	if err := validateApprovalRecord(approval); err != nil {
+		return err
+	}
+	if approval.Used {
+		return ErrApprovalUsed
+	}
+	if !now.Before(approval.ExpiresAt) {
+		return ErrApprovalExpired
+	}
+	if source.WorkDir == "" {
+		return ErrApprovalMismatch
+	}
+	expected := sourceApprovalBinding(resolverArgv(source), source.WorkDir, env)
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(approval.Binding)) != 1 {
+		return ErrApprovalMismatch
+	}
+	return nil
 }
 
 // Resolve loads a secret value or resolves its saved host-side source. Callers
@@ -260,9 +482,13 @@ func (r *sourceResolver) resolve(ctx context.Context, key string, source Source)
 	if err != nil {
 		return nil, err
 	}
+	if source.Command != "" {
+		if err := validateSourceApproval(source, r.now(), resolverEnvironment(source)); err != nil {
+			return nil, err
+		}
+	}
 	if source.Refresh == "on-demand" {
-		value, err := resolveSource(ctx, source)
-		return value, err
+		return r.resolveApproved(ctx, key, source)
 	}
 	cacheKey, err := sourceCacheKey(key, source)
 	if err != nil {
@@ -272,22 +498,95 @@ func (r *sourceResolver) resolve(ctx context.Context, key string, source Source)
 	lock := r.keyLock(key)
 	lock.Lock()
 	defer lock.Unlock()
+	// Recheck under the per-account lock so concurrent callers holding the same
+	// pre-consumption envelope cannot both observe it as unused.
+	if source.Command != "" && r.approvalUsed(source.approval) {
+		return nil, ErrApprovalUsed
+	}
 	r.mu.Lock()
-	if entry, ok := r.entries[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
+	if entry, ok := r.entries[cacheKey]; ok && r.now().Before(entry.expiresAt) {
 		r.mu.Unlock()
 		return append([]byte(nil), entry.value...), nil
 	}
 	r.mu.Unlock()
-	value, err := resolveSource(ctx, source)
+	value, err := r.resolveApproved(ctx, key, source)
 	if err != nil {
 		return nil, err
 	}
-	r.cache(cacheKey, value, time.Now().Add(duration))
+	r.cache(cacheKey, value, r.now().Add(duration))
 	return value, nil
 }
 
+func (r *sourceResolver) resolveApproved(ctx context.Context, key string, source Source) ([]byte, error) {
+	if source.Command == "" {
+		return resolveSource(ctx, source)
+	}
+	env := resolverEnvironment(source)
+	if err := validateSourceApproval(source, r.now(), env); err != nil {
+		return nil, err
+	}
+	if err := r.consumeApproval(ctx, key, source); err != nil {
+		return nil, err
+	}
+	return executeSource(ctx, source, source.WorkDir, env)
+}
+
+func (r *sourceResolver) consumeApproval(ctx context.Context, key string, source Source) error {
+	approval := source.approval
+	if approval == nil {
+		return ErrApprovalRequired
+	}
+	r.approvalMu.Lock()
+	now := r.now()
+	r.pruneUsedApprovalsLocked(now)
+	if _, used := r.usedApprovals[approval.Token]; used {
+		r.approvalMu.Unlock()
+		return ErrApprovalUsed
+	}
+	if len(r.usedApprovals) >= maxUsedApprovals {
+		r.approvalMu.Unlock()
+		return errors.New("secret source approval capacity is exhausted")
+	}
+	r.usedApprovals[approval.Token] = approval.ExpiresAt
+	persist := r.persistUsed
+	r.approvalMu.Unlock()
+
+	// Mark the approval used in the host vault before starting the process. A
+	// failed write must not run the command, and a successful write makes the
+	// single-use property survive a daemon restart.
+	consumed := source
+	consumed.approval = &sourceApproval{
+		Token: approval.Token, Binding: approval.Binding,
+		ExpiresAt: approval.ExpiresAt, Used: true,
+	}
+	if persist == nil {
+		return ErrApprovalRequired
+	}
+	return persist(ctx, key, consumed)
+}
+
+func (r *sourceResolver) approvalUsed(approval *sourceApproval) bool {
+	if approval == nil {
+		return true
+	}
+	r.approvalMu.Lock()
+	defer r.approvalMu.Unlock()
+	_, used := r.usedApprovals[approval.Token]
+	return used
+}
+
+func (r *sourceResolver) pruneUsedApprovalsLocked(now time.Time) {
+	for token, expires := range r.usedApprovals {
+		if !now.Before(expires) {
+			delete(r.usedApprovals, token)
+		}
+	}
+}
+
 func sourceCacheKey(account string, source Source) (string, error) {
-	encoded, err := encodeSource(source)
+	fingerprint := source
+	fingerprint.approval = nil
+	encoded, err := encodeSource(fingerprint)
 	if err != nil {
 		return "", err
 	}
@@ -352,29 +651,58 @@ func (r *sourceResolver) invalidate(key string) {
 	}
 }
 
-func resolveSource(ctx context.Context, source Source) (resolved []byte, retErr error) {
+func resolveSource(ctx context.Context, source Source) ([]byte, error) {
+	source, err := validateSource(source)
+	if err != nil {
+		return nil, err
+	}
+	if source.Command != "" {
+		if err := validateSourceApproval(source, time.Now(), resolverEnvironment(source)); err != nil {
+			return nil, err
+		}
+	}
+	return executeSource(ctx, source, source.WorkDir, resolverEnvironment(source))
+}
+
+func prepareResolverWorkDir(workDir string) (string, error) {
+	if workDir == "" {
+		dir, err := os.MkdirTemp("", "rheic-secret-ref-")
+		if err != nil {
+			return "", errors.New("prepare isolated secret resolver directory")
+		}
+		return dir, nil
+	}
+	if !filepath.IsAbs(workDir) {
+		return "", errors.New("secret resolver working directory must be absolute")
+	}
+	if err := os.Mkdir(workDir, 0o700); err != nil {
+		return "", errors.New("prepare approved secret resolver directory")
+	}
+	return workDir, nil
+}
+
+// executeSource starts an already approved resolver command. Callers must
+// validate the approval binding before invoking it.
+func executeSource(ctx context.Context, source Source, workDir string, env []string) (resolved []byte, retErr error) {
 	if _, err := validateSource(source); err != nil {
 		return nil, err
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, resolverTimeout)
 	defer cancel()
-	tmp, err := os.MkdirTemp("", "rheic-secret-ref-")
+	workDir, err := prepareResolverWorkDir(workDir)
 	if err != nil {
-		return nil, errors.New("prepare isolated secret resolver directory")
+		return nil, err
 	}
 	defer func() {
-		if cleanupErr := os.RemoveAll(tmp); cleanupErr != nil {
+		if cleanupErr := os.RemoveAll(workDir); cleanupErr != nil {
 			clear(resolved)
 			resolved = nil
 			retErr = errors.New("clean up secret resolver directory")
 		}
 	}()
-	if !filepath.IsAbs(tmp) {
-		return nil, errors.New("secret resolver temporary directory must be absolute")
-	}
 	command := resolverCommand(commandCtx, source)
-	command.Dir = tmp
-	command.Env = resolverEnvironment(source)
+	command.Dir = workDir
+	command.Env = env
 	stdout, stderr, runErr := boundedCommandOutput(commandCtx, command)
 	if runErr != nil {
 		return nil, sourceResolutionError(source, stdout, stderr, runErr)
@@ -406,18 +734,23 @@ func sourceResolutionError(source Source, stdout, stderr []byte, runErr error) e
 	return errors.New("resolve secret reference with the configured host provider")
 }
 
+func resolverArgv(source Source) []string {
+	if source.Command != "" {
+		return hostShellArgv(source.Command)
+	}
+	if strings.HasPrefix(source.Reference, "op://") {
+		return []string{"op", "read", source.Reference}
+	}
+	return []string{"aws", "secretsmanager", "get-secret-value", "--secret-id", source.Reference, "--query", "SecretString", "--output", "text"}
+}
+
 func resolverCommand(ctx context.Context, source Source) *exec.Cmd {
 	if source.Command != "" {
 		return hostShellCommand(ctx, source.Command)
 	}
-	if strings.HasPrefix(source.Reference, "op://") {
-		//nolint:gosec // Fixed executable; validated op:// reference is one argv token and no shell is involved.
-		command := exec.CommandContext(ctx, "op", "read", source.Reference)
-		return command
-	}
-	//nolint:gosec // Fixed executable; validated AWS ARN is one argv token and no shell is involved.
-	command := exec.CommandContext(ctx, "aws", "secretsmanager", "get-secret-value", "--secret-id", source.Reference, "--query", "SecretString", "--output", "text")
-	return command
+	argv := resolverArgv(source)
+	//nolint:gosec // Fixed executable; the validated reference is one argv token and no shell is involved.
+	return exec.CommandContext(ctx, argv[0], argv[1:]...)
 }
 
 func resolverEnvironment(source Source) []string {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -73,5 +74,36 @@ func TestSecretCreateReturnsAlreadyExistsWithoutReplacingValue(t *testing.T) {
 	}
 	if status.Convert(err).Message() != "service secret already exists; pass --force to replace it" {
 		t.Fatalf("unexpected duplicate-create error: %v", err)
+	}
+}
+
+func TestSecretSourceCommandFailsClosedWithoutTrustedApproval(t *testing.T) {
+	ctx := context.Background()
+	state, err := store.Open(ctx, filepath.Join(t.TempDir(), "source-approval.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = state.Close() }()
+	svc := service.New(state, nil)
+	vault := &secretTestVault{values: make(map[string]string)}
+	secretStore, err := servicesecrets.NewStore(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetServiceSecretStore(secretStore)
+	server := NewSecret(svc)
+
+	_, err = server.Create(ctx, &localv1.SecretServiceCreateRequest{
+		Service: "github", Scope: "global",
+		Source: &localv1.SecretSource{Command: "printf synthetic-value", NoVerify: true},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("unapproved source status=%s err=%v", status.Code(err), err)
+	}
+	if len(vault.values) != 0 {
+		t.Fatalf("unapproved source was persisted: %d vault entries", len(vault.values))
+	}
+	if _, err := secretStore.IsDynamic(ctx, "github", servicesecrets.ScopeGlobal, ""); !errors.Is(err, servicesecrets.ErrNotFound) {
+		t.Fatalf("unapproved source index state err=%v", err)
 	}
 }

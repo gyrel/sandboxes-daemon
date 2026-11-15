@@ -2485,6 +2485,7 @@ func TestDynamicServiceSecretProxyResolvesOnHostAndDoesNotUseSourceAsCredential(
 		t.Fatal(err)
 	}
 	svc.SetServiceSecretStore(vault)
+	vault.SetApprovalProvider(serviceSecretApprovalProvider{})
 	command := "printf synthetic-proxy-key"
 	if goruntime.GOOS == "windows" {
 		command = "echo synthetic-proxy-key"
@@ -2692,6 +2693,12 @@ func (f *fakeServiceSecretVault) Delete(_ context.Context, service, account stri
 		return servicesecrets.ErrNotFound
 	}
 	delete(f.items, key)
+	return nil
+}
+
+type serviceSecretApprovalProvider struct{}
+
+func (serviceSecretApprovalProvider) Approve(context.Context, servicesecrets.ApprovalRequest) error {
 	return nil
 }
 

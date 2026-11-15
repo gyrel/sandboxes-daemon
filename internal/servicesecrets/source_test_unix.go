@@ -23,16 +23,18 @@ func testWaitCommand() string {
 }
 
 func TestCommandSourceRejectsOutputOverLimit(t *testing.T) {
-	_, err := resolveSource(context.Background(), Source{Command: "printf '%8193s' x"})
+	source := Source{Command: "printf '%8193s' x"}
+	_, err := executeSource(context.Background(), source, "", resolverEnvironment(source))
 	if err == nil || !strings.Contains(err.Error(), "output exceeded its limit") {
-		t.Fatalf("resolveSource error = %v, want bounded-output rejection", err)
+		t.Fatalf("executeSource error = %v, want bounded-output rejection", err)
 	}
 }
 
 func TestCommandSourceUsesFreshWorkingDirectoryAndFilteredEnvironment(t *testing.T) {
 	const privateEnv = "RHEIC_SECRET_RESOLVER_TEST_PRIVATE"
 	t.Setenv(privateEnv, "must-not-be-inherited")
-	value, err := resolveSource(context.Background(), Source{Command: "printf '%s|%s' \"${" + privateEnv + "-unset}\" \"$PWD\""})
+	source := Source{Command: "printf '%s|%s' \"${" + privateEnv + "-unset}\" \"$PWD\""}
+	value, err := executeSource(context.Background(), source, "", resolverEnvironment(source))
 	if err != nil {
 		t.Fatal(err)
 	}

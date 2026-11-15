@@ -14,9 +14,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func hostShellArgv(command string) []string {
+	return []string{"cmd.exe", "/d", "/s", "/c", command}
+}
+
 func hostShellCommand(ctx context.Context, command string) *exec.Cmd {
-	//nolint:gosec // Explicit --command source is user-approved host shell text; process execution stays bounded and on the host.
-	return exec.CommandContext(ctx, "cmd.exe", "/d", "/s", "/c", command)
+	argv := hostShellArgv(command)
+	//nolint:gosec // Explicit --command source requires a trusted host approval bound to this exact argv.
+	return exec.CommandContext(ctx, argv[0], argv[1:]...)
 }
 
 type resolverJobAccountingInfo struct {

@@ -54,20 +54,21 @@ const (
 
 // Service coordinates durable sandbox state and operations.
 type Service struct {
-	store               *store.Store
-	journal             *operation.Journal
-	backend             runtime.Backend
-	registryCredentials *registrycredentials.Store
-	registryPullLimiter *registrycredentials.PullLimiter
-	serviceSecrets      *servicesecrets.Store
-	secretProxies       *secretproxy.Manager
-	proxyHelperPath     string
-	proxyTempDir        string
-	oauthProviders      map[string]OAuthProvider
-	oauthVaultStore     oauthsession.Vault
-	oauthRefresh        *oauthsession.RefreshCoordinator
-	dockerHubAuth       http.RoundTripper
-	DefaultImage        string
+	store                 *store.Store
+	journal               *operation.Journal
+	backend               runtime.Backend
+	registryCredentials   *registrycredentials.Store
+	registryPullLimiter   *registrycredentials.PullLimiter
+	serviceSecrets        *servicesecrets.Store
+	serviceSecretApprover servicesecrets.ApprovalProvider
+	secretProxies         *secretproxy.Manager
+	proxyHelperPath       string
+	proxyTempDir          string
+	oauthProviders        map[string]OAuthProvider
+	oauthVaultStore       oauthsession.Vault
+	oauthRefresh          *oauthsession.RefreshCoordinator
+	dockerHubAuth         http.RoundTripper
+	DefaultImage          string
 	// IPv6Enabled accepts IPv6 CIDR rules only when every datapath layer has
 	// the experimental capability enabled. It defaults to false.
 	IPv6Enabled          bool
@@ -550,6 +551,20 @@ func (s *Service) SetRegistryCredentialStore(credentialStore *registrycredential
 // SetServiceSecretStore configures host-keychain storage for service secrets.
 func (s *Service) SetServiceSecretStore(secretStore *servicesecrets.Store) {
 	s.serviceSecrets = secretStore
+	if secretStore != nil {
+		secretStore.SetApprovalProvider(s.serviceSecretApprover)
+	}
+}
+
+// SetServiceSecretApprovalProvider installs the trusted host-side consent
+// mechanism for host command secret sources. Without one, command sources fail
+// closed; secret references and static values remain available. There is
+// deliberately no RPC or CLI boolean fallback.
+func (s *Service) SetServiceSecretApprovalProvider(provider servicesecrets.ApprovalProvider) {
+	s.serviceSecretApprover = provider
+	if s.serviceSecrets != nil {
+		s.serviceSecrets.SetApprovalProvider(provider)
+	}
 }
 
 // SetSecretProxyManager configures host-side service proxies.

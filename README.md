@@ -150,14 +150,25 @@ parent directory owned by the daemon user. The value is not written to SQLite
 or sandbox metadata.
 
 Service records can also hold a fixed `op://` or AWS Secrets Manager reference,
-or an explicitly supplied host-shell command. The daemon resolves these sources
-only when the proxy needs a credential, caches successful values according to
-the source refresh policy, and keeps source text and resolved values out of
-SQLite and guest state. Host commands run as the daemon user and are not
-confined from host files; use only trusted commands and keep their helpers and
-the temporary directory outside writable sandbox mounts. The implementation
-is on an unpublished feature branch and has not received provider/runtime or
-independent security review.
+or an explicitly supplied host-shell command. Fixed references are resolved
+without shell execution. A command source is accepted only after a
+daemon-trusted host approval flow approves that exact command. The approval is
+a single-use token bound to a SHA-256 digest of the argv, the fresh resolver
+working directory, and the filtered environment; it has a bounded lifetime,
+is consumed before the process starts, and its use is recorded in the host
+vault. Registration, execution, and every refresh fail closed when the
+approval is missing, denied, expired, already used, or bound to different
+argv. Re-register the source to obtain a new approval after the token is used
+or expires. Without a host-configured approval provider all command sources
+are refused; there is no RPC or CLI boolean fallback.
+
+The daemon resolves approved sources only when the proxy needs a credential,
+caches successful values according to the source refresh policy, and keeps
+source text and resolved values out of SQLite and guest state. Host commands
+run as the daemon user and are not confined from host files; use only trusted
+commands and keep their helpers and the temporary directory outside writable
+sandbox mounts. The implementation is on an unpublished feature branch and
+has not received provider/runtime or independent security review.
 
 Global network rules are stored as daemon settings, merged with each sandbox's
 explicit rules at gateway start/update, and re-applied to running sandboxes on

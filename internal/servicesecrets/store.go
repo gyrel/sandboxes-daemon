@@ -18,6 +18,14 @@ var (
 	ErrInvalid  = errors.New("invalid service secret")
 	ErrNotFound = errors.New("service secret not found")
 	ErrExists   = errors.New("service secret already exists")
+
+	// Command sources fail closed unless a trusted host approval flow issued a
+	// single-use token for the exact argv, working directory, and environment.
+	ErrApprovalRequired = errors.New("secret source command requires trusted host approval")
+	ErrApprovalDenied   = errors.New("secret source command approval was denied")
+	ErrApprovalExpired  = errors.New("secret source command approval expired")
+	ErrApprovalUsed     = errors.New("secret source command approval was already used")
+	ErrApprovalMismatch = errors.New("secret source command approval does not match the command")
 )
 
 // Scope controls where a secret may be used.
@@ -115,7 +123,22 @@ func NewStore(vault Vault) (*Store, error) {
 	if vault == nil {
 		return nil, errors.New("host credential vault is required")
 	}
-	return &Store{vault: vault, sourceResolver: newSourceResolver()}, nil
+	store := &Store{vault: vault, sourceResolver: newSourceResolver()}
+	store.sourceResolver.persistUsed = func(ctx context.Context, key string, source Source) error {
+		encoded, err := encodeSource(source)
+		if err != nil {
+			return err
+		}
+		defer clear(encoded)
+		if err := vault.Set(ctx, vaultService, key, string(encoded)); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			return errors.New("record service secret source approval use in host keychain")
+		}
+		return nil
+	}
+	return store, nil
 }
 
 // Save validates and stores one service secret.

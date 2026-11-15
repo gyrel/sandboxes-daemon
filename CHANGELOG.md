@@ -8,6 +8,14 @@
 - Build alias service proxy routes such as `github-web` and `cursor-api3` by resolving the shared credential service instead of validating the alias name against the service secret store. Rotating or removing a shared credential now updates or removes every live alias route without a sandbox restart, and a route that cannot apply a credential update is stopped rather than continuing to serve the previous credential.
 ### Security
 
+- Require trusted host approval before a command-backed service secret source
+  can be stored or executed. A single-use, bounded-lifetime approval token is
+  bound to a SHA-256 digest of the resolver argv, working directory, and
+  filtered environment. The raw command is persisted only after approval, the
+  token is consumed in the host vault before the process starts, and missing,
+  denied, expired, reused, or mismatched approvals fail closed. Command
+  sources without a host-configured approval provider are refused; fixed
+  `op://` and AWS Secrets Manager references are unchanged.
 - Require a random per-sandbox token on the managed clone Git endpoint. The
   guest `git daemon` now runs with an `--access-hook` that rejects every request
   whose path is not `/<token>/<repository>`, compares the token in constant time,

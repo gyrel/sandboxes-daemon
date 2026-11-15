@@ -9,9 +9,14 @@ import (
 	"syscall"
 )
 
+func hostShellArgv(command string) []string {
+	return []string{"/bin/sh", "-c", command}
+}
+
 func hostShellCommand(ctx context.Context, command string) *exec.Cmd {
-	//nolint:gosec // Explicit --command source is user-approved host shell text; process execution stays bounded and on the host.
-	return exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	argv := hostShellArgv(command)
+	//nolint:gosec // Explicit --command source requires a trusted host approval bound to this exact argv.
+	return exec.CommandContext(ctx, argv[0], argv[1:]...)
 }
 
 func startResolverProcess(command *exec.Cmd) (func() error, func() error, error) {

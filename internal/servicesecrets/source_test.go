@@ -3,10 +3,41 @@ package servicesecrets
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type testApprovalProvider struct {
+	requests []ApprovalRequest
+	err      error
+}
+
+func (p *testApprovalProvider) Approve(_ context.Context, request ApprovalRequest) error {
+	p.requests = append(p.requests, request)
+	return p.err
+}
+
+func testApprovedSource(t *testing.T, resolver *sourceResolver, source Source) Source {
+	t.Helper()
+	if source.WorkDir == "" {
+		source.WorkDir = filepath.Join(t.TempDir(), "rheic-secret-ref-test")
+	}
+	source.approval = &sourceApproval{
+		Token:     strings.Repeat("a", approvalTokenBytes*2),
+		Binding:   sourceApprovalBinding(resolverArgv(source), source.WorkDir, resolverEnvironment(source)),
+		ExpiresAt: resolver.now().Add(time.Hour),
+	}
+	return source
+}
+
+func testResolverWithoutPersistence() *sourceResolver {
+	resolver := newSourceResolver()
+	resolver.persistUsed = func(context.Context, string, Source) error { return nil }
+	return resolver
+}
 
 func TestValidateSourceRequiresExactlyOneSource(t *testing.T) {
 	for name, source := range map[string]Source{
@@ -51,16 +82,26 @@ func TestCommandSourceIsStoredAndResolvedOnHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	provider := &testApprovalProvider{}
+	store.SetApprovalProvider(provider)
 	source := Source{Command: testPrintCommand(), NoVerify: true, Refresh: "on-demand"}
 	if _, err := store.SaveSource(context.Background(), "github", ScopeGlobal, "", source); err != nil {
 		t.Fatal(err)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("approval requests = %d, want 1", len(provider.requests))
+	}
+	request := provider.requests[0]
+	if request.Command != source.Command || len(request.Argv) != 3 || request.Argv[2] != source.Command ||
+		request.Cwd == "" || request.Binding == "" || len(request.EnvKeys) == 0 {
+		t.Fatalf("approval request did not bind the exact command: %+v", request)
 	}
 	stored, err := store.Load(context.Background(), "github", ScopeGlobal, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	decoded, dynamic, err := decodeSource(stored)
-	if err != nil || !dynamic || decoded.Command != source.Command {
+	if err != nil || !dynamic || decoded.Command != source.Command || decoded.approval == nil || decoded.WorkDir == "" {
 		t.Fatalf("stored source = %+v dynamic=%v err=%v", decoded, dynamic, err)
 	}
 	clear(stored)
@@ -72,15 +113,20 @@ func TestCommandSourceIsStoredAndResolvedOnHost(t *testing.T) {
 	if string(value) != "synthetic-value" {
 		t.Fatalf("resolved value = %q", value)
 	}
+	if _, err := store.Resolve(context.Background(), "github", ScopeGlobal, ""); !errors.Is(err, ErrApprovalUsed) {
+		t.Fatalf("replayed approval error = %v, want approval used", err)
+	}
 }
 
 func TestCommandSourceHidesProviderErrorsUnlessRequested(t *testing.T) {
 	for i := range 20 {
-		_, err := resolveSource(context.Background(), Source{Command: testFailCommand()})
+		source := Source{Command: testFailCommand()}
+		_, err := executeSource(context.Background(), source, "", resolverEnvironment(source))
 		if err == nil || strings.Contains(err.Error(), "synthetic-provider-error") {
 			t.Fatalf("iteration %d default error = %v, want generic error without provider output", i, err)
 		}
-		_, err = resolveSource(context.Background(), Source{Command: testFailCommand(), ShowError: true})
+		source.ShowError = true
+		_, err = executeSource(context.Background(), source, "", resolverEnvironment(source))
 		if err == nil || !strings.Contains(err.Error(), "synthetic-provider-error") {
 			t.Fatalf("iteration %d show-error result = %v, want explicit provider stderr", i, err)
 		}
@@ -130,7 +176,8 @@ func TestCommandSourceCancellationCleansUpProcess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	_, err := resolveSource(ctx, Source{Command: testWaitCommand()})
+	source := Source{Command: testWaitCommand()}
+	_, err := executeSource(ctx, source, "", resolverEnvironment(source))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("resolveSource error = %v, want deadline exceeded", err)
 	}
@@ -140,9 +187,9 @@ func TestCommandSourceCancellationCleansUpProcess(t *testing.T) {
 }
 
 func TestSourceResolverCacheModesAndInvalidation(t *testing.T) {
-	resolver := newSourceResolver()
+	resolver := testResolverWithoutPersistence()
 	key := "github/global"
-	source := Source{Command: testFailCommand()}
+	source := testApprovedSource(t, resolver, Source{Command: testFailCommand()})
 	cacheKey, err := sourceCacheKey(key, source)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +202,8 @@ func TestSourceResolverCacheModesAndInvalidation(t *testing.T) {
 	clear(value)
 
 	onDemandKey := "github/on-demand"
-	value, err = resolver.resolve(context.Background(), onDemandKey, Source{Command: testPrintCommand(), Refresh: "on-demand"})
+	onDemand := testApprovedSource(t, resolver, Source{Command: testPrintCommand(), Refresh: "on-demand"})
+	value, err = resolver.resolve(context.Background(), onDemandKey, onDemand)
 	if err != nil || string(value) != "synthetic-value" {
 		t.Fatalf("on-demand value=%q err=%v", value, err)
 	}
@@ -177,7 +225,7 @@ func TestSourceResolverCacheModesAndInvalidation(t *testing.T) {
 }
 
 func TestSourceCacheDoesNotReuseCredentialAfterSourceChanges(t *testing.T) {
-	resolver := newSourceResolver()
+	resolver := testResolverWithoutPersistence()
 	account := "github/global"
 	oldSource := Source{Command: "old-source", Refresh: "55m"}
 	oldKey, err := sourceCacheKey(account, oldSource)
@@ -186,7 +234,7 @@ func TestSourceCacheDoesNotReuseCredentialAfterSourceChanges(t *testing.T) {
 	}
 	resolver.cache(oldKey, []byte("old-synthetic-token"), time.Now().Add(time.Hour))
 
-	newSource := Source{Command: testPrintCommand(), Refresh: "55m"}
+	newSource := testApprovedSource(t, resolver, Source{Command: testPrintCommand(), Refresh: "55m"})
 	value, err := resolver.resolve(context.Background(), account, newSource)
 	if err != nil {
 		t.Fatal(err)
@@ -201,6 +249,129 @@ func TestSourceCacheDoesNotReuseCredentialAfterSourceChanges(t *testing.T) {
 	defer resolver.mu.Unlock()
 	if len(resolver.entries) != 0 {
 		t.Fatalf("source rotation invalidation left %d cached credentials", len(resolver.entries))
+	}
+}
+
+func TestUnapprovedCommandSourceIsNeverPersistedOrExecuted(t *testing.T) {
+	backend := &fakeBackend{items: make(map[string]string)}
+	store, err := NewStore(NativeVault{Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.SaveSource(context.Background(), "github", ScopeGlobal, "", Source{
+		Command: testPrintCommand(), NoVerify: true,
+	})
+	if !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("unapproved save error = %v, want approval required", err)
+	}
+	if len(backend.items) != 0 {
+		t.Fatalf("unapproved command was persisted: %d vault entries", len(backend.items))
+	}
+
+	legacy, err := encodeSource(Source{Command: testPrintCommand(), Refresh: "on-demand"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Set(vaultService, "github/global", string(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	clear(legacy)
+	_, err = store.Resolve(context.Background(), "github", ScopeGlobal, "")
+	if !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("legacy command execution error = %v, want approval required", err)
+	}
+}
+
+func TestCommandSourceApprovalIsSingleUse(t *testing.T) {
+	backend := &fakeBackend{items: make(map[string]string)}
+	store, err := NewStore(NativeVault{Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetApprovalProvider(&testApprovalProvider{})
+	if _, err := store.SaveSource(context.Background(), "github", ScopeGlobal, "", Source{
+		Command: testPrintCommand(), NoVerify: true, Refresh: "on-demand",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	value, err := store.Resolve(context.Background(), "github", ScopeGlobal, "")
+	if err != nil || string(value) != "synthetic-value" {
+		t.Fatalf("approved execution value=%q err=%v", value, err)
+	}
+	clear(value)
+	if _, err := store.Resolve(context.Background(), "github", ScopeGlobal, ""); !errors.Is(err, ErrApprovalUsed) {
+		t.Fatalf("replayed execution error = %v, want approval used", err)
+	}
+}
+
+func TestCommandSourceApprovalIsBoundToExactArgv(t *testing.T) {
+	resolver := testResolverWithoutPersistence()
+	source := testApprovedSource(t, resolver, Source{Command: testPrintCommand(), Refresh: "on-demand"})
+	different := source
+	different.Command = testFailCommand()
+	if _, err := resolver.resolve(context.Background(), "github/global", different); !errors.Is(err, ErrApprovalMismatch) {
+		t.Fatalf("different argv error = %v, want approval mismatch", err)
+	}
+}
+
+func TestExpiredCommandSourceApprovalIsRefused(t *testing.T) {
+	backend := &fakeBackend{items: make(map[string]string)}
+	store, err := NewStore(NativeVault{Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetApprovalProvider(&testApprovalProvider{})
+	now := time.Now()
+	store.resolver().now = func() time.Time { return now }
+	if _, err := store.SaveSource(context.Background(), "github", ScopeGlobal, "", Source{
+		Command: testPrintCommand(), NoVerify: true, Refresh: "on-demand",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.resolver().now = func() time.Time { return now.Add(defaultApprovalTTL + time.Second) }
+	if _, err := store.Resolve(context.Background(), "github", ScopeGlobal, ""); !errors.Is(err, ErrApprovalExpired) {
+		t.Fatalf("expired approval error = %v, want approval expired", err)
+	}
+}
+
+func TestConcurrentCommandSourceApprovalAllowsExactlyOneExecution(t *testing.T) {
+	backend := &fakeBackend{items: make(map[string]string)}
+	store, err := NewStore(NativeVault{Backend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetApprovalProvider(&testApprovalProvider{})
+	if _, err := store.SaveSource(context.Background(), "github", ScopeGlobal, "", Source{
+		Command: testPrintCommand(), NoVerify: true, Refresh: "on-demand",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const callers = 16
+	var wg sync.WaitGroup
+	results := make(chan error, callers)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			value, err := store.Resolve(context.Background(), "github", ScopeGlobal, "")
+			clear(value)
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+			continue
+		}
+		if !errors.Is(err, ErrApprovalUsed) {
+			t.Fatalf("concurrent execution error = %v, want approval used", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent executions = %d, want exactly 1", successes)
 	}
 }
 
