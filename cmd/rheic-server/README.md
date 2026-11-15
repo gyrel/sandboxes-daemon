@@ -117,6 +117,12 @@ while the cache is stale, validation fails closed. JWKS and JWT payloads are
 size bounded, duplicate JSON members are rejected, RSA keys below 2048 bits
 and non-Ed25519 OKP keys are ignored.
 
+The JWKS URL must use the issuer's exact host and port. If the identity provider
+uses a separate key host, opt in explicitly with
+`--oidc-trusted-jwks-authority keys.example.test:8443`; this authority must
+match the configured JWKS URL exactly. HTTPS redirects are limited to that
+same JWKS host and port, including when a custom HTTP client is supplied.
+
 This is bearer-token validation, not a full OIDC client: there is no browser
 login, authorization-code flow, token issuance/refresh, discovery endpoint, or
 token introspection/revocation. Treat it as a documented gap rather than an

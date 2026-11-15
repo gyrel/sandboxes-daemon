@@ -37,15 +37,18 @@ var jwtAlgorithms = map[string]struct{}{jwtAlgorithmRS256: {}, jwtAlgorithmEdDSA
 // Audience and JWKSURL must all be set; the server keeps static credentials
 // enabled alongside OIDC.
 type OIDCConfig struct {
-	Issuer             string
-	Audience           string
-	JWKSURL            string
-	HTTPClient         *http.Client
-	Clock              func() time.Time
-	RefreshInterval    time.Duration
-	MaxCacheAge        time.Duration
-	MinRefreshInterval time.Duration
-	Leeway             time.Duration
+	Issuer   string
+	Audience string
+	JWKSURL  string
+	// TrustedJWKSAuthority explicitly permits a JWKS host:port different from
+	// the issuer authority. Empty requires the two authorities to match.
+	TrustedJWKSAuthority string
+	HTTPClient           *http.Client
+	Clock                func() time.Time
+	RefreshInterval      time.Duration
+	MaxCacheAge          time.Duration
+	MinRefreshInterval   time.Duration
+	Leeway               time.Duration
 }
 
 type jwtHeader struct {
@@ -129,10 +132,7 @@ func NewOIDCValidator(config OIDCConfig) (*OIDCValidator, error) {
 	if leeway < 0 {
 		return nil, errors.New("OIDC clock leeway must not be negative")
 	}
-	client := config.HTTPClient
-	if client == nil {
-		client = newOIDCClient()
-	}
+	client := newOIDCClient(config.HTTPClient)
 	return &OIDCValidator{
 		issuer:   config.Issuer,
 		audience: config.Audience,
@@ -151,26 +151,53 @@ func validateOIDCConfig(config OIDCConfig) error {
 	}
 	for name, raw := range map[string]string{"issuer": config.Issuer, "JWKS URL": config.JWKSURL} {
 		parsed, err := url.Parse(raw)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
 			return fmt.Errorf("OIDC %s must be an absolute HTTPS URL", name)
 		}
+	}
+	issuer, _ := url.Parse(config.Issuer)
+	jwks, _ := url.Parse(config.JWKSURL)
+	return validateJWKSAuthority(issuer, jwks, config.TrustedJWKSAuthority)
+}
+
+func validateJWKSAuthority(issuer, jwks *url.URL, authority string) error {
+	if authority != "" {
+		trusted, err := url.Parse("https://" + authority)
+		if err != nil || trusted.Host != authority || trusted.User != nil || trusted.Hostname() == "" || trusted.Path != "" || trusted.RawQuery != "" || trusted.Fragment != "" {
+			return errors.New("OIDC trusted JWKS authority must be a hostname with optional port")
+		}
+		if !strings.EqualFold(jwks.Host, trusted.Host) {
+			return errors.New("OIDC JWKS authority does not match the explicitly trusted authority")
+		}
+	} else if !strings.EqualFold(issuer.Host, jwks.Host) {
+		return errors.New("OIDC JWKS authority differs from issuer; configure an explicit trusted authority")
 	}
 	return nil
 }
 
-func newOIDCClient() *http.Client {
-	return &http.Client{
-		Timeout: 5 * time.Second,
-		CheckRedirect: func(request *http.Request, via []*http.Request) error {
-			if request.URL.Scheme != "https" {
-				return errors.New("refusing non-HTTPS JWKS redirect")
-			}
-			if len(via) >= 3 {
-				return errors.New("too many JWKS redirects")
-			}
-			return nil
-		},
+func newOIDCClient(configured *http.Client) *http.Client {
+	client := &http.Client{Timeout: 5 * time.Second}
+	if configured != nil {
+		copyOfClient := *configured
+		client = &copyOfClient
 	}
+	previous := client.CheckRedirect
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if request.URL.Scheme != "https" {
+			return errors.New("refusing non-HTTPS JWKS redirect")
+		}
+		if len(via) >= 3 {
+			return errors.New("too many JWKS redirects")
+		}
+		if len(via) == 0 || request.URL.User != nil || !strings.EqualFold(request.URL.Host, via[0].URL.Host) {
+			return errors.New("refusing cross-authority JWKS redirect")
+		}
+		if previous != nil {
+			return previous(request, via)
+		}
+		return nil
+	}
+	return client
 }
 
 // Authenticate validates a JWT and returns the org/role principal. Errors are
