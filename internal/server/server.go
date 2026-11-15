@@ -16,12 +16,17 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
 	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
 	"github.com/rheic/sandboxes-daemon/internal/service"
 	"github.com/rheic/sandboxes-daemon/internal/version"
 )
 
-const defaultAccountProvider = "docker"
+const (
+	defaultAccountProvider = "docker"
+	localGateway           = "local"
+	localRuleOrigin        = "local"
+)
 
 // SandboxServer implements the sandbox gRPC service.
 type SandboxServer struct {
@@ -65,7 +70,7 @@ func (s *SandboxServer) ListMCPServers(ctx context.Context, req *localv1.ListMCP
 	}
 	response := &localv1.ListMCPServersResponse{Servers: make([]*localv1.MCPServerSummary, 0, len(servers))}
 	for _, server := range servers {
-		response.Servers = append(response.Servers, &localv1.MCPServerSummary{Name: server.Name, Gateway: "local", Transport: summaryTransport(server.Transport), Loaded: server.Loaded, Usable: server.Usable})
+		response.Servers = append(response.Servers, &localv1.MCPServerSummary{Name: server.Name, Gateway: localGateway, Transport: summaryTransport(server.Transport), Loaded: server.Loaded, Usable: server.Usable})
 	}
 	return response, nil
 }
@@ -101,7 +106,7 @@ func (s *SandboxServer) MCPApproveRegistration(ctx context.Context, req *localv1
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, "trusted MCP approval was unavailable, denied, or expired")
 	}
-	return &localv1.MCPApproveRegistrationResponse{Server: &localv1.MCPServerSummary{Name: server.Name, Gateway: "local", Transport: summaryTransport(server.Transport), Loaded: false, Usable: true}}, nil
+	return &localv1.MCPApproveRegistrationResponse{Server: &localv1.MCPServerSummary{Name: server.Name, Gateway: localGateway, Transport: summaryTransport(server.Transport), Loaded: false, Usable: true}}, nil
 }
 
 func (s *SandboxServer) MCPRemoveServer(ctx context.Context, req *localv1.MCPRemoveServerRequest) (*localv1.MCPRemoveServerResponse, error) {
@@ -802,7 +807,7 @@ func fromProtoPorts(ports []*localv1.Port) []sandbox.Port {
 func toProtoRules(rules []sandbox.NetworkRule) []*localv1.NetworkRule {
 	out := make([]*localv1.NetworkRule, 0, len(rules))
 	for i := range rules {
-		out = append(out, &localv1.NetworkRule{Protocol: rules[i].Protocol, Cidr: rules[i].CIDR, Port: uint32(rules[i].Port), Domain: rules[i].Domain, RuleId: rules[i].RuleID})
+		out = append(out, &localv1.NetworkRule{Protocol: rules[i].Protocol, Cidr: rules[i].CIDR, Port: uint32(rules[i].Port), Domain: rules[i].Domain, RuleId: rules[i].RuleID, Origin: localRuleOrigin})
 	}
 	return out
 }
@@ -892,6 +897,71 @@ func (s *SandboxServer) CheckPolicy(ctx context.Context, req *localv1.CheckPolic
 		return nil, err
 	}
 	return &localv1.CheckPolicyResponse{Allowed: decision.Allowed, RuleId: decision.RuleID, Reason: decision.Reason}, nil
+}
+
+// GetOrgPolicy returns a read-only view of the effective organization policy.
+// The read never mutates the store and never returns secret material.
+func (s *SandboxServer) GetOrgPolicy(ctx context.Context, _ *localv1.GetOrgPolicyRequest) (*localv1.GetOrgPolicyResponse, error) {
+	view, err := s.svc.GetOrgPolicy(ctx)
+	if err != nil {
+		return nil, mapOrgPolicyError(err)
+	}
+	rules := make([]*localv1.OrgPolicyRule, 0, len(view.Rules))
+	for i := range view.Rules {
+		rule := &view.Rules[i]
+		rules = append(rules, &localv1.OrgPolicyRule{
+			RuleId:         rule.RuleID,
+			Action:         rule.Action,
+			Source:         rule.Source,
+			ResourceType:   rule.ResourceType,
+			Protocol:       rule.Protocol,
+			Cidr:           rule.CIDR,
+			Domain:         rule.Domain,
+			Port:           uint32(rule.Port),
+			Enforced:       rule.Enforced,
+			AdvisoryReason: rule.AdvisoryReason,
+		})
+	}
+	schemaVersion := uint32(0)
+	if view.SchemaVersion > 0 {
+		schemaVersion = uint32(view.SchemaVersion) //nolint:gosec // policy schema versions are positive and bounded by validation.
+	}
+	return &localv1.GetOrgPolicyResponse{
+		Org:                view.OrgID,
+		SchemaVersion:      schemaVersion,
+		Revision:           view.Revision,
+		BundleId:           view.BundleID,
+		EnforcementEnabled: view.EnforcementEnabled,
+		LoadedAtUnix:       unix(view.LoadedAt),
+		IssuedAtUnix:       unix(view.IssuedAt),
+		ExpiresAtUnix:      unix(view.ExpiresAt),
+		Rules:              rules,
+		IgnoredRules:       int32(view.IgnoredRules), //nolint:gosec // ignored rule counts are bounded by the bundle rule limit.
+	}, nil
+}
+
+// mapOrgPolicyError keeps organization-policy failures typed at the RPC
+// boundary. Messages are fixed so store errors and bundle payloads cannot leak
+// through status details.
+func mapOrgPolicyError(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return mapError(err)
+	case errors.Is(err, orgpolicy.ErrBundleMissing):
+		return status.Error(codes.NotFound, "organization policy bundle is not stored")
+	case errors.Is(err, orgpolicy.ErrNotConfigured):
+		return status.Error(codes.FailedPrecondition, "organization policy is not configured")
+	case errors.Is(err, orgpolicy.ErrBundleExpired):
+		return status.Error(codes.FailedPrecondition, "organization policy bundle is expired")
+	case errors.Is(err, orgpolicy.ErrBundleOrgMismatch):
+		return status.Error(codes.FailedPrecondition, "organization policy bundle belongs to another organization")
+	case errors.Is(err, orgpolicy.ErrMalformedDeny):
+		return status.Error(codes.FailedPrecondition, "organization policy bundle contains an invalid network deny rule")
+	case errors.Is(err, orgpolicy.ErrBundleInvalid):
+		return status.Error(codes.FailedPrecondition, "organization policy bundle is invalid")
+	default:
+		return mapError(err)
+	}
 }
 
 func summaryTransport(transport string) string {

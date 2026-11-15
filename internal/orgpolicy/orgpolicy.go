@@ -14,6 +14,8 @@ package orgpolicy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -51,6 +53,8 @@ const (
 	networkResourcePrefix = "network:"
 	tcpProtocol           = "tcp"
 	udpProtocol           = "udp"
+	allowAction           = "allow"
+	denyAction            = "deny"
 )
 
 // Reader is the local persistence seam used to load a stored bundle.
@@ -70,40 +74,45 @@ type Snapshot struct {
 	IgnoredRules int
 }
 
+// RuleView is one parsed network rule from a stored organization bundle.
+// Enforceable reports whether this daemon knows how to enforce the rule when
+// org_policy.enforce is on. It is not a statement about the current setting.
+type RuleView struct {
+	RuleID       string
+	Action       string
+	Source       string
+	ResourceType string
+	Protocol     string
+	CIDR         string
+	Domain       string
+	Port         uint16
+	Enforceable  bool
+	// AdvisoryReason explains why the rule is advisory. It is empty for a rule
+	// that this daemon can enforce.
+	AdvisoryReason string
+}
+
+// View is the read-only, non-secret view of one stored organization policy
+// bundle. It includes policy metadata and parsed network rules only. The
+// stored signature, tokens and any other credentials are never included.
+type View struct {
+	OrgID         string
+	SchemaVersion int
+	Revision      uint64
+	BundleID      string
+	IssuedAt      time.Time
+	ExpiresAt     time.Time
+	LoadedAt      time.Time
+	Rules         []RuleView
+	IgnoredRules  int
+}
+
 // Load reads the locally stored bundle for org and maps its enforceable deny
 // rules. It never fetches policy from the network.
 func Load(ctx context.Context, reader Reader, org string, now time.Time) (Snapshot, error) {
-	if reader == nil {
-		return Snapshot{}, ErrNotConfigured
-	}
-	if !controlplane.ValidOrgID(org) {
-		return Snapshot{}, fmt.Errorf("%w: %q is not a valid organization ID", ErrNotConfigured, org)
-	}
-	bundle, found, err := reader.GetPolicyBundle(ctx, org)
+	_, payload, err := loadValidated(ctx, reader, org, now)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("%w: %w", ErrBundleInvalid, err)
-	}
-	if !found {
-		return Snapshot{}, ErrBundleMissing
-	}
-	payload, err := controlplane.DecodePolicyPayloadJSON(bundle.Payload)
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("%w: %w", ErrBundleInvalid, err)
-	}
-	if payload.OrgID != org {
-		return Snapshot{}, fmt.Errorf("%w: stored payload is for %q, enforcement is %q", ErrBundleOrgMismatch, payload.OrgID, org)
-	}
-	if payload.Revision != bundle.Revision {
-		return Snapshot{}, fmt.Errorf("%w: payload revision %d does not match stored revision %d", ErrBundleInvalid, payload.Revision, bundle.Revision)
-	}
-	if !payload.IssuedAt.Equal(bundle.IssuedAt) || !payload.ExpiresAt.Equal(bundle.ExpiresAt) {
-		return Snapshot{}, fmt.Errorf("%w: payload lifetime does not match stored metadata", ErrBundleInvalid)
-	}
-	if !payload.ExpiresAt.After(now) {
-		return Snapshot{}, fmt.Errorf("%w: expiry %s is not in the future", ErrBundleExpired, payload.ExpiresAt.UTC().Format(time.RFC3339))
-	}
-	if err := controlplane.ValidatePolicyPayload(payload, org, now); err != nil {
-		return Snapshot{}, fmt.Errorf("%w: %w", ErrBundleInvalid, err)
+		return Snapshot{}, err
 	}
 	deny, ignored, err := mapDenyRules(payload.Rules)
 	if err != nil {
@@ -118,6 +127,75 @@ func Load(ctx context.Context, reader Reader, org string, now time.Time) (Snapsh
 	}, nil
 }
 
+// Inspect reads the locally stored bundle for org and returns a read-only view
+// of its parsed network rules. Like Load it never fetches policy from the
+// network and fails closed on missing, expired or malformed bundles. Inspect
+// never mutates the store.
+func Inspect(ctx context.Context, reader Reader, org string, now time.Time) (View, error) {
+	bundle, payload, err := loadValidated(ctx, reader, org, now)
+	if err != nil {
+		return View{}, err
+	}
+	rules, ignored, err := mapRulesForView(payload.Rules)
+	if err != nil {
+		return View{}, err
+	}
+	return View{
+		OrgID:         org,
+		SchemaVersion: payload.SchemaVersion,
+		Revision:      payload.Revision,
+		BundleID:      bundleID(bundle.Payload),
+		IssuedAt:      payload.IssuedAt.UTC(),
+		ExpiresAt:     payload.ExpiresAt.UTC(),
+		LoadedAt:      bundle.SyncedAt.UTC(),
+		Rules:         rules,
+		IgnoredRules:  ignored,
+	}, nil
+}
+
+// loadValidated applies the same fail-closed checks to enforcement and
+// visibility reads, so the two surfaces cannot disagree about a bundle.
+func loadValidated(ctx context.Context, reader Reader, org string, now time.Time) (store.StoredPolicyBundle, controlplane.PolicyPayload, error) {
+	if reader == nil {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, ErrNotConfigured
+	}
+	if !controlplane.ValidOrgID(org) {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, fmt.Errorf("%w: %q is not a valid organization ID", ErrNotConfigured, org)
+	}
+	bundle, found, err := reader.GetPolicyBundle(ctx, org)
+	if err != nil {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, fmt.Errorf("%w: %w", ErrBundleInvalid, err)
+	}
+	if !found {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, ErrBundleMissing
+	}
+	payload, err := controlplane.DecodePolicyPayloadJSON(bundle.Payload)
+	if err != nil {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, fmt.Errorf("%w: %w", ErrBundleInvalid, err)
+	}
+	if payload.OrgID != org {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, fmt.Errorf("%w: stored payload is for %q, enforcement is %q", ErrBundleOrgMismatch, payload.OrgID, org)
+	}
+	if payload.Revision != bundle.Revision {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, fmt.Errorf("%w: payload revision %d does not match stored revision %d", ErrBundleInvalid, payload.Revision, bundle.Revision)
+	}
+	if !payload.IssuedAt.Equal(bundle.IssuedAt) || !payload.ExpiresAt.Equal(bundle.ExpiresAt) {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, fmt.Errorf("%w: payload lifetime does not match stored metadata", ErrBundleInvalid)
+	}
+	if !payload.ExpiresAt.After(now) {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, fmt.Errorf("%w: expiry %s is not in the future", ErrBundleExpired, payload.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	if err := controlplane.ValidatePolicyPayload(payload, org, now); err != nil {
+		return store.StoredPolicyBundle{}, controlplane.PolicyPayload{}, fmt.Errorf("%w: %w", ErrBundleInvalid, err)
+	}
+	return bundle, payload, nil
+}
+
+func bundleID(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 // mapDenyRules maps only enforceable network deny resources. Malformed network
 // denies fail closed: silently dropping one would weaken the organization
 // restriction the rule was meant to express. Malformed allow rules are ignored
@@ -127,7 +205,7 @@ func mapDenyRules(rules []controlplane.PolicyRule) ([]sandbox.NetworkRule, int, 
 	seen := make(map[string]struct{}, len(rules))
 	ignored := 0
 	for _, rule := range rules {
-		if rule.Action != "deny" {
+		if rule.Action != denyAction {
 			ignored++
 			continue
 		}
@@ -157,6 +235,75 @@ func mapDenyRules(rules []controlplane.PolicyRule) ([]sandbox.NetworkRule, int, 
 		}
 	}
 	return deny, ignored, nil
+}
+
+// mapRulesForView expands enforceable network denies exactly as enforcement
+// does and keeps network allows as advisory rows. Non-network rules and
+// malformed advisory allows are counted but not displayed because this
+// contract version only describes the network scope it can evaluate.
+func mapRulesForView(rules []controlplane.PolicyRule) ([]RuleView, int, error) {
+	out := make([]RuleView, 0, len(rules))
+	seen := make(map[string]struct{}, len(rules))
+	ignored := 0
+	for _, rule := range rules {
+		base, ok, err := networkRuleForView(rule)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !ok {
+			ignored++
+			continue
+		}
+		switch rule.Action {
+		case denyAction:
+			for _, protocol := range []string{tcpProtocol, udpProtocol} {
+				mapped := base
+				mapped.Protocol = protocol
+				key := ruleKey(mapped)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				out = append(out, RuleView{
+					RuleID: rule.RuleID, Action: rule.Action, Source: "org",
+					ResourceType: "network", Protocol: protocol,
+					CIDR: mapped.CIDR, Domain: mapped.Domain, Port: mapped.Port,
+					Enforceable: true,
+				})
+			}
+		case allowAction:
+			out = append(out, RuleView{
+				RuleID: rule.RuleID, Action: rule.Action, Source: "org",
+				ResourceType: "network", CIDR: base.CIDR, Domain: base.Domain, Port: base.Port,
+				AdvisoryReason: "organization allow rules are advisory",
+			})
+		}
+	}
+	return out, ignored, nil
+}
+
+// networkRuleForView parses one network resource. Unsupported resources and
+// malformed allows are reported as not displayable. A malformed deny fails
+// closed because hiding it would misrepresent the effective policy.
+func networkRuleForView(rule controlplane.PolicyRule) (sandbox.NetworkRule, bool, error) {
+	if !strings.HasPrefix(rule.Resource, networkResourcePrefix) {
+		return sandbox.NetworkRule{}, false, nil
+	}
+	destination, port, err := parseNetworkResource(rule.Resource)
+	if err != nil {
+		if rule.Action == denyAction {
+			return sandbox.NetworkRule{}, false, fmt.Errorf("%w: %q: %w", ErrMalformedDeny, rule.Resource, err)
+		}
+		return sandbox.NetworkRule{}, false, nil
+	}
+	base, err := networkRule(destination, port)
+	if err != nil {
+		if rule.Action == denyAction {
+			return sandbox.NetworkRule{}, false, fmt.Errorf("%w: %q: %w", ErrMalformedDeny, rule.Resource, err)
+		}
+		return sandbox.NetworkRule{}, false, nil
+	}
+	return base, true, nil
 }
 
 // parseNetworkResource parses network:<domain-or-cidr>:<port>. The port is
