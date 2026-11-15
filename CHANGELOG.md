@@ -5,6 +5,16 @@
 ### Fixed
 
 - Make sandbox deletion durable and retryable. `Delete` now marks the sandbox as deleting, removes secrets, registry credentials, proxy state, settings and the Docker volume before atomically deleting the row, and records a failed delete operation when cleanup fails instead of dropping the row. `Reconcile` finishes pending deletes left by an interrupted cleanup, and every cleanup step is idempotent so retries remove each host resource exactly once.
+### Security
+
+- Require a random per-sandbox token on the managed clone Git endpoint. The
+  guest `git daemon` now runs with an `--access-hook` that rejects every request
+  whose path is not `/<token>/<repository>`, compares the token in constant time,
+  and fails closed when the token material is missing. The token is generated
+  from the operating system CSPRNG for every create and start, remains only in
+  daemon state for the sandbox lifetime, is removed from the guest and the
+  stored endpoint on stop/delete, and is redacted from clone errors. A
+  loopback process can no longer fetch a private clone without the token.
 
 ## v0.0.56 — 2026-11-15
 
