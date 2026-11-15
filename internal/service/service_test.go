@@ -240,6 +240,116 @@ func TestReconcileInterruptedState(t *testing.T) {
 	}
 }
 
+func TestReconcileRemovesInterruptedCreateRuntime(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "interrupted-create.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Unix(200, 0).UTC()
+	sb := sandbox.Sandbox{
+		ID: "sb-interrupted", Name: "interrupted", State: sandbox.Creating, Generation: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.Create(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	settings := []string{
+		proxyServiceSettingKey(sb.ID),
+		registryProxySettingKey(sb.ID),
+		privateRegistrySettingKey(sb.ID),
+		dockerSettingKey(sb.ID),
+	}
+	for _, key := range settings {
+		if err := st.SetSetting(ctx, key, "fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend := &fakeRuntime{}
+	svc := New(st, backend)
+
+	changed, err := svc.Reconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("reconcile changed = %d, want 1", changed)
+	}
+	if _, err := st.Get(ctx, sb.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("interrupted create row survived reconcile: %v", err)
+	}
+	if backend.deleted != 1 {
+		t.Fatalf("runtime deletes = %d, want 1", backend.deleted)
+	}
+	for _, key := range settings {
+		if _, err := st.GetSetting(ctx, key); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("setting %q survived reconcile: %v", key, err)
+		}
+	}
+}
+
+func TestReconcileCleansTrackedButUnstartedCreate(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "unstarted-create.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Unix(300, 0).UTC()
+	sb := sandbox.Sandbox{
+		ID: "sb-unstarted", Name: "unstarted", State: sandbox.Creating, Generation: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.Create(ctx, sb); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(ctx, proxyServiceSettingKey(sb.ID), "openai"); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeRuntime{}
+	svc := New(st, backend)
+
+	if _, err := svc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Get(ctx, sb.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("tracked-but-unstarted create survived reconcile: %v", err)
+	}
+	if _, err := st.GetSetting(ctx, proxyServiceSettingKey(sb.ID)); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("unstarted create setting survived reconcile: %v", err)
+	}
+}
+
+func TestCreatePersistsIntentBeforeRuntime(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "create-intent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeRuntime{}
+	observed := false
+	backend.afterCreate = func() {
+		got, err := st.GetByName(ctx, "persist-intent")
+		if err != nil {
+			t.Errorf("intent row is missing during runtime create: %v", err)
+			return
+		}
+		if got.State != sandbox.Creating {
+			t.Errorf("intent state during runtime create = %s, want creating", got.State)
+		}
+		observed = true
+	}
+	svc := New(st, backend)
+	if _, err := svc.Create(ctx, CreateRequest{Name: "persist-intent"}); err != nil {
+		t.Fatal(err)
+	}
+	if !observed {
+		t.Fatal("runtime create hook was not called")
+	}
+}
+
 type fakeRuntime struct {
 	created          int
 	lastConfig       runtime.Config
@@ -2024,6 +2134,8 @@ type fakePolicyRuntime struct {
 	deny     []runtime.Rule
 	err      error
 	before   func()
+	handles  []string
+	failName string
 }
 
 func TestConcurrentPolicyMutationsPreserveRevocation(t *testing.T) {
@@ -2067,13 +2179,17 @@ func TestConcurrentPolicyMutationsPreserveRevocation(t *testing.T) {
 	}
 }
 
-func (f *fakePolicyRuntime) UpdatePolicy(_ context.Context, _ runtime.Handle, allow, deny []runtime.Rule, revision int) error {
+func (f *fakePolicyRuntime) UpdatePolicy(_ context.Context, h runtime.Handle, allow, deny []runtime.Rule, revision int) error {
 	if f.before != nil {
 		f.before()
+	}
+	if f.failName != "" && h.ID == "rheic-"+f.failName {
+		return errors.New("injected policy update failure")
 	}
 	if f.err != nil {
 		return f.err
 	}
+	f.handles = append(f.handles, h.ID)
 	f.revision = revision
 	f.allow = allow
 	f.deny = deny
@@ -3324,6 +3440,78 @@ func TestRefreshPoliciesAppliesToRunningOnly(t *testing.T) {
 	}
 	if backend.revision <= revisionBefore {
 		t.Fatalf("revision did not advance: %d -> %d", revisionBefore, backend.revision)
+	}
+}
+
+func TestRefreshPoliciesPaginatesAllSandboxes(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "policy-pages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakePolicyRuntime{}
+	svc := New(st, backend)
+	const total = 250
+	base := time.Unix(1000, 0).UTC()
+	for i := 0; i < total; i++ {
+		sb := sandbox.Sandbox{
+			ID: fmt.Sprintf("sb-policy-page-%03d", i), Name: fmt.Sprintf("policy-page-%03d", i),
+			State: sandbox.Running, Generation: 1,
+			CreatedAt: base.Add(time.Duration(i) * time.Second), UpdatedAt: base,
+		}
+		if err := st.Create(ctx, sb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied, err := svc.RefreshPolicies(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != total {
+		t.Fatalf("applied = %d, want %d", applied, total)
+	}
+	if len(backend.handles) != total {
+		t.Fatalf("runtime updates = %d, want %d", len(backend.handles), total)
+	}
+	last := fmt.Sprintf("rheic-policy-page-%03d", total-1)
+	if !slices.Contains(backend.handles, last) {
+		t.Fatalf("sandbox on the last page was not refreshed: %v", backend.handles)
+	}
+}
+
+func TestRefreshPoliciesReportsPartialFailure(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "policy-partial.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	const total = 205
+	failing := fmt.Sprintf("policy-fail-%03d", total-1)
+	backend := &fakePolicyRuntime{failName: failing}
+	svc := New(st, backend)
+	base := time.Unix(2000, 0).UTC()
+	for i := 0; i < total; i++ {
+		name := fmt.Sprintf("policy-fail-%03d", i)
+		sb := sandbox.Sandbox{
+			ID: fmt.Sprintf("sb-policy-fail-%03d", i), Name: name,
+			State: sandbox.Running, Generation: 1,
+			CreatedAt: base.Add(time.Duration(i) * time.Second), UpdatedAt: base,
+		}
+		if err := st.Create(ctx, sb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied, err := svc.RefreshPolicies(ctx)
+	if err == nil {
+		t.Fatal("partial refresh failure was reported as success")
+	}
+	if !strings.Contains(err.Error(), failing) || !strings.Contains(err.Error(), "injected policy update failure") {
+		t.Fatalf("partial refresh error does not identify the sandbox: %v", err)
+	}
+	if applied != total-1 {
+		t.Fatalf("applied = %d, want %d", applied, total-1)
 	}
 }
 
