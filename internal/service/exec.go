@@ -130,13 +130,10 @@ func (s *Service) readyForExec(ctx context.Context, sb sandbox.Sandbox) (sandbox
 }
 
 func (s *Service) startForExec(ctx context.Context, sb sandbox.Sandbox) error {
-	if err := s.prepareStoredProxy(ctx, sb); err != nil {
+	handle, err := s.sandboxStartHandle(ctx, sb)
+	if err != nil {
 		return err
 	}
-	handle := s.backend.Handle(sb.Name)
-	handle.Ports = runtimePorts(sb.Ports)
-	handle.Allow = runtimeRules(policyAllow(sb.Policy))
-	handle.Deny = runtimeRules(policyDeny(sb.Policy))
 	if err := s.backend.Start(ctx, handle); err != nil {
 		return s.markRuntimeUnknown(ctx, sb, err)
 	}

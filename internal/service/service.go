@@ -2320,18 +2320,29 @@ func (s *Service) setDockerProfile(ctx context.Context, id string, enabled bool)
 	return s.store.SetSetting(ctx, dockerSettingKey(id), "true")
 }
 
-func (s *Service) startRuntimeSandbox(ctx context.Context, sb sandbox.Sandbox) error {
+// sandboxStartHandle resolves the effective global, organization and sandbox
+// policy and builds the runtime handle used for every sandbox start. Callers
+// must share this path so no start surface can silently omit the global policy.
+func (s *Service) sandboxStartHandle(ctx context.Context, sb sandbox.Sandbox) (runtime.Handle, error) {
 	allow, deny, err := s.effectivePolicy(ctx, sb)
 	if err != nil {
-		return err
+		return runtime.Handle{}, err
 	}
 	if err := s.prepareStoredProxy(ctx, sb); err != nil {
-		return err
+		return runtime.Handle{}, err
 	}
 	handle := s.backend.Handle(sb.Name)
 	handle.Ports = runtimePorts(sb.Ports)
 	handle.Allow = runtimeRules(allow)
 	handle.Deny = runtimeRules(deny)
+	return handle, nil
+}
+
+func (s *Service) startRuntimeSandbox(ctx context.Context, sb sandbox.Sandbox) error {
+	handle, err := s.sandboxStartHandle(ctx, sb)
+	if err != nil {
+		return err
+	}
 	if err := s.backend.Start(ctx, handle); err != nil {
 		return err
 	}
