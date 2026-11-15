@@ -1191,43 +1191,52 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	if err != nil {
 		return operation.Operation{}, err
 	}
-	cleanupProxy := func() error {
-		if len(proxyServiceNames) == 0 {
-			return nil
-		}
-		return s.stopProxyChannel(name, sbID, true)
-	}
 	opID, err := newID("op")
 	if err != nil {
 		return operation.Operation{}, err
+	}
+	// Persist the create intent before allocating any host resource. The row is
+	// the durable handle Reconcile uses to find and remove a runtime left behind
+	// by an interrupted create; without it a crash between runtime and database
+	// writes would leave an untracked VM.
+	sb := newSandboxRecord(sbID, name, sandbox.Creating, image, workspace, workspaces, ports, allow, deny, req.Agent, req.Detached, profile, cpus, memoryMiB, now)
+	if cloneOptions != nil {
+		sb.Meta.Clone = &sandbox.CloneState{Options: *cloneOptions}
+	}
+	if err := s.store.Create(ctx, sb); err != nil {
+		return operation.Operation{}, err
+	}
+	var handle runtime.Handle
+	runtimeCreated := false
+	abort := func(cause error) error {
+		return s.abortCreate(ctx, &sb, handle, runtimeCreated, cause)
 	}
 	var blockVolumes []runtime.BlockVolume
 	if req.Privileged {
 		volume, err := s.ensureDockerVolume(ctx, sbID)
 		if err != nil {
-			return operation.Operation{}, err
+			return operation.Operation{}, abort(err)
 		}
 		blockVolumes = append(blockVolumes, runtime.BlockVolume{Source: volume, Destination: "/var/lib/docker"})
 	}
 	state := sandbox.Stopped
-	var handle runtime.Handle
 	var proxyConfig proxyRuntimeConfig
 	if privateRegistryScope != "" {
 		// The route builder resolves the private registry scope from settings.
 		if err := s.store.SetSetting(ctx, privateRegistrySettingKey(sbID), string(privateRegistryScope)); err != nil {
-			return operation.Operation{}, err
+			return operation.Operation{}, abort(err)
 		}
 	}
 	if len(proxyServiceNames) != 0 {
 		proxyConfig, err = s.proxyChannelConfig(ctx, sandbox.Sandbox{ID: sbID, Name: name}, proxyServiceNames, registryScope)
 		if err != nil {
-			return operation.Operation{}, err
+			return operation.Operation{}, abort(err)
 		}
 	}
 	if s.backend != nil {
 		effectiveAllow, effectiveDeny, policyErr := s.effectiveRules(ctx, allow, deny)
 		if policyErr != nil {
-			return operation.Operation{}, errors.Join(policyErr, cleanupProxy())
+			return operation.Operation{}, abort(policyErr)
 		}
 		runtimeConfig := runtime.Config{
 			Name:         name,
@@ -1247,39 +1256,42 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 		}
 		handle, err = s.createRuntimeSandbox(ctx, &runtimeConfig, proxyServiceNames, proxyConfig)
 		if err != nil {
-			return operation.Operation{}, errors.Join(err, cleanupProxy())
+			return operation.Operation{}, abort(err)
 		}
+		runtimeCreated = true
 		if err := s.ensureDockerProfile(ctx, req.Privileged, registryScope != "", privateRegistryScope != "", handle); err != nil {
-			return operation.Operation{}, errors.Join(err, s.cleanupCreateFailure(ctx, handle, errors.New("docker profile startup failed")), cleanupProxy())
+			return operation.Operation{}, abort(errors.Join(err, errors.New("docker profile startup failed")))
 		}
 		state = sandbox.Running
 	}
-	sb := newSandboxRecord(sbID, name, state, image, workspace, workspaces, ports, allow, deny, req.Agent, req.Detached, profile, cpus, memoryMiB, now)
-	if cloneOptions != nil {
-		sb.Meta.Clone = &sandbox.CloneState{Options: *cloneOptions}
-	}
 	if cloneOptions != nil {
 		if err := s.bootstrapClone(ctx, handle, name, cloneOptions, &sb); err != nil {
-			return operation.Operation{}, errors.Join(err, s.cleanupCreateFailure(ctx, handle, errors.New("clone bootstrap failed")), cleanupProxy())
+			return operation.Operation{}, abort(errors.Join(err, errors.New("clone bootstrap failed")))
 		}
 	}
 	if err := s.setDockerProfile(ctx, sbID, req.Privileged); err != nil {
-		return operation.Operation{}, errors.Join(s.cleanupCreateFailure(ctx, handle, err), cleanupProxy())
+		return operation.Operation{}, abort(err)
 	}
 	if len(proxyServiceNames) != 0 {
 		if err := s.store.SetSetting(ctx, proxyServiceSettingKey(sbID), encodeProxyServices(proxyServiceNames)); err != nil {
-			return operation.Operation{}, errors.Join(s.cleanupCreateFailure(ctx, handle, err), s.stopProxyChannel(name, sbID, true))
+			return operation.Operation{}, abort(err)
 		}
 	}
 	if privateRegistryScope != "" {
 		if err := s.store.SetSetting(ctx, privateRegistrySettingKey(sbID), string(privateRegistryScope)); err != nil {
-			return operation.Operation{}, errors.Join(s.cleanupCreateFailure(ctx, handle, err), s.stopProxyChannel(name, sbID, true))
+			return operation.Operation{}, abort(err)
 		}
 	}
 	if registryScope != "" {
 		if err := s.store.SetSetting(ctx, registryProxySettingKey(sbID), string(registryScope)); err != nil {
-			return operation.Operation{}, errors.Join(s.cleanupCreateFailure(ctx, handle, err), s.stopProxyChannel(name, sbID, true))
+			return operation.Operation{}, abort(err)
 		}
+	}
+	sb.State = state
+	sb.Error = ""
+	sb.UpdatedAt = now
+	if state == sandbox.Stopped {
+		sb.StoppedAt = now
 	}
 	op := operation.Operation{
 		ID:             opID,
@@ -1291,17 +1303,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	if err := s.store.CreateSandboxWithOperation(ctx, sb, op); err != nil {
-		if len(proxyServiceNames) != 0 {
-			_ = s.store.DeleteSetting(ctx, proxyServiceSettingKey(sbID))
-		}
-		if registryScope != "" {
-			_ = s.store.DeleteSetting(ctx, registryProxySettingKey(sbID))
-		}
-		if privateRegistryScope != "" {
-			_ = s.store.DeleteSetting(ctx, privateRegistrySettingKey(sbID))
-		}
-		return operation.Operation{}, errors.Join(s.cleanupCreateFailure(ctx, handle, err), cleanupProxy())
+	if err := s.store.ApplySandboxOperation(ctx, sb, op); err != nil {
+		return operation.Operation{}, abort(err)
 	}
 	return op, nil
 }
@@ -1789,16 +1792,49 @@ func validSandboxName(name string) bool {
 	return true
 }
 
-func (s *Service) cleanupCreateFailure(ctx context.Context, handle runtime.Handle, createErr error) error {
-	if s.backend == nil {
-		return createErr
-	}
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+func (s *Service) abortCreate(ctx context.Context, sb *sandbox.Sandbox, handle runtime.Handle, runtimeCreated bool, createErr error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
-	if err := s.backend.Delete(cleanupCtx, handle); err != nil {
+	if s.backend != nil && runtimeCreated {
+		if err := s.backend.Delete(cleanupCtx, handle); err != nil {
+			// Keep the Creating row so Reconcile can retry; deleting it now
+			// would leave a potentially running VM with no record.
+			return errors.Join(createErr, fmt.Errorf("cleanup failed after sandbox create: %w", err))
+		}
+	}
+	if err := s.cleanupCreateIntent(cleanupCtx, *sb); err != nil {
 		return errors.Join(createErr, fmt.Errorf("cleanup failed after sandbox create: %w", err))
 	}
+	if err := s.store.Delete(cleanupCtx, sb.ID); err != nil && !errors.Is(err, core.ErrNotFound) {
+		return errors.Join(createErr, fmt.Errorf("remove sandbox create intent: %w", err))
+	}
 	return createErr
+}
+
+// cleanupCreateIntent removes host resources and bookkeeping written before a
+// create completed. It is idempotent so both the Create error path and
+// Reconcile can retry it after a partial cleanup.
+func (s *Service) cleanupCreateIntent(ctx context.Context, sb sandbox.Sandbox) error {
+	var failures []error
+	if err := s.stopProxyChannel(sb.Name, sb.ID, true); err != nil {
+		failures = append(failures, err)
+	}
+	if err := s.removeDockerVolume(sb.ID); err != nil {
+		failures = append(failures, err)
+	}
+	if len(failures) == 0 {
+		for _, key := range []string{
+			proxyServiceSettingKey(sb.ID),
+			registryProxySettingKey(sb.ID),
+			privateRegistrySettingKey(sb.ID),
+			dockerSettingKey(sb.ID),
+		} {
+			if err := s.store.DeleteSetting(ctx, key); err != nil {
+				failures = append(failures, err)
+			}
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func (s *Service) ensureNameAvailable(ctx context.Context, name string) error {
@@ -2142,7 +2178,7 @@ func (s *Service) RefreshPolicies(ctx context.Context) (int, error) {
 	if err := s.requireOrgPolicy(ctx); err != nil {
 		return 0, err
 	}
-	sandboxes, _, err := s.store.List(ctx, sandbox.ListOptions{PageSize: 1000})
+	sandboxes, err := s.listAll(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -2154,7 +2190,7 @@ func (s *Service) RefreshPolicies(ctx context.Context) (int, error) {
 			continue
 		}
 		if _, err := s.UpdatePolicy(ctx, sb.ID, policyAllow(sb.Policy), policyDeny(sb.Policy)); err != nil {
-			failures = append(failures, err)
+			failures = append(failures, fmt.Errorf("refresh policy for sandbox %s: %w", sb.Name, err))
 			continue
 		}
 		applied++
@@ -2198,7 +2234,7 @@ func (s *Service) ResetGlobalPolicy(ctx context.Context) ([]sandbox.NetworkRule,
 // refreshRunningPolicies applies a changed global policy to running sandboxes.
 // A failed reload stops that sandbox rather than leaving old rules active.
 func (s *Service) refreshRunningPolicies(ctx context.Context) error {
-	sandboxes, _, err := s.store.List(ctx, sandbox.ListOptions{PageSize: 1000})
+	sandboxes, err := s.listAll(ctx)
 	if err != nil {
 		return err
 	}
@@ -2209,7 +2245,7 @@ func (s *Service) refreshRunningPolicies(ctx context.Context) error {
 			continue
 		}
 		if _, err := s.UpdatePolicy(ctx, sb.ID, policyAllow(sb.Policy), policyDeny(sb.Policy)); err != nil {
-			failures = append(failures, err)
+			failures = append(failures, fmt.Errorf("refresh policy for sandbox %s: %w", sb.Name, err))
 		}
 	}
 	return errors.Join(failures...)
@@ -2806,9 +2842,11 @@ func (s *Service) reconcileSandbox(ctx context.Context, sb *sandbox.Sandbox, now
 		}
 		return 1, nil
 	}
+	if sb.State == sandbox.Creating {
+		return s.reconcileCreatingSandbox(ctx, *sb)
+	}
 	changed := 0
-	switch sb.State {
-	case sandbox.Running, sandbox.Creating:
+	if sb.State == sandbox.Running {
 		sb.State = sandbox.Unknown
 		sb.Error = "daemon restarted; runtime state is unknown"
 		sb.UpdatedAt = now
@@ -2828,6 +2866,55 @@ func (s *Service) reconcileSandbox(ctx context.Context, sb *sandbox.Sandbox, now
 		changed++
 	}
 	return changed, nil
+}
+
+// reconcileCreatingSandbox removes a create that never committed. The runtime
+// name is derived from the persisted sandbox name, so the intent row is enough
+// to find the VM even when Create died before it could write the final row.
+func (s *Service) reconcileCreatingSandbox(ctx context.Context, sb sandbox.Sandbox) (int, error) {
+	// Serialize with an in-flight Create using the same name gate. Once it is
+	// released, re-read the row: a successful create is no longer Creating.
+	releaseCreate, err := s.acquireCreateGates(ctx, sb.Name, "")
+	if err != nil {
+		return 0, err
+	}
+	defer releaseCreate()
+	releaseLifecycle, err := s.acquireLifecycle(ctx, sb.ID)
+	if err != nil {
+		return 0, err
+	}
+	defer releaseLifecycle()
+	current, err := s.store.Get(ctx, sb.ID)
+	if errors.Is(err, core.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if current.State != sandbox.Creating {
+		return 0, nil
+	}
+	if err := s.removeInterruptedCreate(ctx, current); err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+func (s *Service) removeInterruptedCreate(ctx context.Context, sb sandbox.Sandbox) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if s.backend != nil {
+		if err := s.backend.Delete(cleanupCtx, s.backend.Handle(sb.Name)); err != nil {
+			return fmt.Errorf("remove interrupted create %q: delete runtime: %w", sb.Name, err)
+		}
+	}
+	if err := s.cleanupCreateIntent(cleanupCtx, sb); err != nil {
+		return fmt.Errorf("remove interrupted create %q: cleanup: %w", sb.Name, err)
+	}
+	if err := s.store.Delete(cleanupCtx, sb.ID); err != nil && !errors.Is(err, core.ErrNotFound) {
+		return fmt.Errorf("remove interrupted create %q: delete record: %w", sb.Name, err)
+	}
+	return nil
 }
 
 func (s *Service) reconcileDeletedSandbox(ctx context.Context, sb *sandbox.Sandbox) error {
