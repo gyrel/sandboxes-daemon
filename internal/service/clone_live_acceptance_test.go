@@ -232,8 +232,9 @@ func TestCloneLiveAcceptanceAgainstOwnedVM(t *testing.T) {
 	if firstEndpoint.HostIP != "127.0.0.1" || firstEndpoint.Port == 0 {
 		t.Fatalf("unsafe clone Git endpoint: %+v", firstEndpoint)
 	}
-	if want := posixpath.Base(workdir); firstEndpoint.Repository != want {
-		t.Fatalf("endpoint repository = %q, want %q", firstEndpoint.Repository, want)
+	firstToken, firstRepository, ok := splitCloneEndpointPath(firstEndpoint.Repository)
+	if !ok || firstRepository != posixpath.Base(workdir) {
+		t.Fatalf("endpoint path = %q, want a token followed by %q", firstEndpoint.Repository, posixpath.Base(workdir))
 	}
 
 	// 1. The guest clone must hold the exact host HEAD.
@@ -366,8 +367,12 @@ func TestCloneLiveAcceptanceAgainstOwnedVM(t *testing.T) {
 	if secondEndpoint.HostIP != "127.0.0.1" || secondEndpoint.Port == 0 {
 		t.Fatalf("unsafe restarted clone Git endpoint: %+v", *secondEndpoint)
 	}
-	if secondEndpoint.Repository != firstEndpoint.Repository {
-		t.Fatalf("restart changed repository %q -> %q", firstEndpoint.Repository, secondEndpoint.Repository)
+	secondToken, secondRepository, ok := splitCloneEndpointPath(secondEndpoint.Repository)
+	if !ok || secondRepository != firstRepository {
+		t.Fatalf("restart changed repository %q -> %q", firstRepository, secondEndpoint.Repository)
+	}
+	if secondToken == firstToken {
+		t.Fatal("restart reused the previous endpoint token")
 	}
 	secondURL := cloneLiveEndpointURL(t, *secondEndpoint)
 	lsRemote = waitCloneLiveLSRemote(ctx, secondURL, guestCommit)
@@ -525,11 +530,12 @@ func cloneLiveEndpointURL(t *testing.T, endpoint sandbox.GitEndpoint) string {
 	if endpoint.HostIP != "127.0.0.1" || endpoint.Port == 0 {
 		t.Fatalf("unsafe clone Git endpoint: %+v", endpoint)
 	}
-	if endpoint.Repository == "" || endpoint.Repository == "." || endpoint.Repository == ".." || strings.ContainsAny(endpoint.Repository, "/\\\x00\r\n") {
-		t.Fatalf("unsafe clone repository name: %q", endpoint.Repository)
+	if _, _, ok := splitCloneEndpointPath(endpoint.Repository); !ok {
+		t.Fatalf("unsafe clone endpoint path: %q", endpoint.Repository)
 	}
-	// The managed forward exports the clone's Git directory, so the CLI
-	// client addresses it as /<repository> over the Git protocol.
+	// The managed forward exports the clone's Git directory behind a random
+	// per-sandbox token, so the CLI client addresses it as
+	// /<token>/<repository> over the Git protocol.
 	return "git://" + net.JoinHostPort(endpoint.HostIP, strconv.FormatUint(uint64(endpoint.Port), 10)) + "/" + endpoint.Repository
 }
 

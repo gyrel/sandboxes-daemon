@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -22,6 +24,8 @@ import (
 const (
 	cloneSourceGuestPath = "/run/sandbox/source"
 	cloneExportGuestDir  = "/run/sandbox/export"
+	cloneAuthGuestDir    = "/run/sandbox/clone-auth"
+	cloneAuthHookPath    = cloneAuthGuestDir + "/access-hook"
 	cloneGitGuestIP      = "192.168.127.3"
 	cloneGitGuestPort    = 9418
 	cloneGitHostIP       = "127.0.0.1"
@@ -33,9 +37,15 @@ const (
 	cloneGitLocalFlag    = "--local"
 	cloneGitTrustConfig  = "/tmp/.rheic-clone-gitconfig"
 	cloneShellCommand    = "/bin/sh"
+	cloneTokenBytes      = 32
+	cloneTokenHexLength  = cloneTokenBytes * 2
+	cloneTokenRedaction  = "[redacted]"
 )
 
-var cloneRepositorySlug = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+var (
+	cloneRepositorySlug = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	cloneTokenPattern   = regexp.MustCompile(fmt.Sprintf(`^[0-9a-f]{%d}$`, cloneTokenHexLength))
+)
 
 // errCloneForwardUnavailable reports that a persisted clone Git endpoint could
 // not be verified or republished. Callers must treat the clone as unusable
@@ -133,6 +143,46 @@ func validCloneRepositorySlug(value string) bool {
 	return value != "." && value != ".." && cloneRepositorySlug.MatchString(value)
 }
 
+// newCloneToken returns the bearer token that guards one sandbox's managed
+// clone endpoint. Tokens are generated from the operating system CSPRNG for
+// every create and start, and they never leave daemon-owned state.
+func newCloneToken() (string, error) {
+	buffer := make([]byte, cloneTokenBytes)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", fmt.Errorf("generate clone endpoint token: %w", err)
+	}
+	return hex.EncodeToString(buffer), nil
+}
+
+func cloneEndpointPath(token, repository string) string {
+	return token + "/" + repository
+}
+
+// splitCloneEndpointPath accepts exactly one token segment followed by one
+// repository slug. Anything else is rejected so a malformed persisted endpoint
+// fails closed instead of exposing the guest daemon.
+func splitCloneEndpointPath(value string) (token, repository string, ok bool) {
+	token, repository, found := strings.Cut(value, "/")
+	if !found || !cloneTokenPattern.MatchString(token) || !validCloneRepositorySlug(repository) {
+		return "", "", false
+	}
+	return token, repository, true
+}
+
+func validCloneEndpointPath(value string) bool {
+	_, _, ok := splitCloneEndpointPath(value)
+	return ok
+}
+
+// redactCloneToken removes the endpoint token from an error before it can be
+// surfaced to a caller or written to a log.
+func redactCloneToken(err error, token string) error {
+	if err == nil || token == "" {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), token, cloneTokenRedaction))
+}
+
 func posixPathsOverlap(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
@@ -198,11 +248,11 @@ func (s *Service) bootstrapClone(ctx context.Context, handle runtime.Handle, nam
 	}
 	state := &sandbox.CloneState{Options: *clone, Info: &sandbox.CloneInfo{GuestWorkdir: workdir, RemoteName: "sandbox-" + name}}
 	sb.Meta.Clone = state
-	port, err := s.startCloneGitDaemon(ctx, handle, name, state.Info)
+	endpoint, err := s.startCloneGitDaemon(ctx, handle, name, state.Info)
 	if err != nil {
 		return err
 	}
-	state.Info.GitEndpoint = &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: posixpath.Base(workdir)}
+	state.Info.GitEndpoint = endpoint
 	return nil
 }
 
@@ -325,44 +375,117 @@ func validateCloneWorkdirAgainstWorkspaces(workdir string, workspaces []sandbox.
 	return nil
 }
 
-func (s *Service) startCloneGitDaemon(ctx context.Context, handle runtime.Handle, name string, info *sandbox.CloneInfo) (uint16, error) {
+func (s *Service) startCloneGitDaemon(ctx context.Context, handle runtime.Handle, name string, info *sandbox.CloneInfo) (*sandbox.GitEndpoint, error) {
 	workdir := info.GuestWorkdir
 	repository := posixpath.Base(workdir)
+	token, err := newCloneToken()
+	if err != nil {
+		return nil, err
+	}
+	endpointPath := cloneEndpointPath(token, repository)
+	if !validCloneEndpointPath(endpointPath) {
+		return nil, errors.New("generated clone endpoint token is invalid")
+	}
 	// A Git working tree is not itself a Git directory, so export exactly one
 	// entry whose .git file carries the gitdir indirection. The daemon serves
-	// it at /<repository>, matching sbx instead of exposing /<repository>/.git.
-	entry, err := s.prepareCloneExport(ctx, handle, workdir, repository)
+	// it at /<token>/<repository>, keeping the sbx-style repository path while
+	// never exposing /<repository>/.git without the token.
+	entry, err := s.prepareCloneExport(ctx, handle, workdir, token, repository)
 	if err != nil {
-		return 0, err
+		return nil, redactCloneToken(err, token)
+	}
+	if err := s.writeCloneAuth(ctx, handle, token, repository); err != nil {
+		return nil, redactCloneToken(err, token)
 	}
 	args := []string{cloneGitCommand, "daemon", "--detach", "--reuseaddr", "--listen=" + cloneGitGuestIP,
 		"--port=" + strconv.Itoa(cloneGitGuestPort), "--base-path=" + cloneExportGuestDir, "--export-all",
-		"--enable=upload-pack", "--disable=receive-pack", entry}
+		"--enable=upload-pack", "--disable=receive-pack", "--access-hook=" + cloneAuthHookPath, entry}
 	if _, err := s.runCloneCommand(ctx, handle, args, daemonGitEnvironment()); err != nil {
-		return 0, fmt.Errorf("start guest Git daemon: %w", err)
+		return nil, redactCloneToken(fmt.Errorf("start guest Git daemon: %w", err), token)
 	}
-	if err := s.waitCloneGitDaemon(ctx, handle, repository); err != nil {
-		return 0, err
+	if err := s.waitCloneGitDaemon(ctx, handle, endpointPath); err != nil {
+		return nil, redactCloneToken(err, token)
 	}
 	forwarder := s.backend.(runtime.GitDaemonForwarder)
 	port, err := forwarder.SetGitDaemon(ctx, name, true)
 	if err != nil {
-		return 0, errors.Join(fmt.Errorf("publish guest Git daemon: %w", err), s.withdrawCloneGitForward(ctx, name))
+		return nil, redactCloneToken(errors.Join(fmt.Errorf("publish guest Git daemon: %w", err), s.withdrawCloneGitForward(ctx, name)), token)
 	}
 	if port == 0 {
-		return 0, errors.Join(errors.New("gateway returned an empty Git daemon port"), s.withdrawCloneGitForward(ctx, name))
+		return nil, redactCloneToken(errors.Join(errors.New("gateway returned an empty Git daemon port"), s.withdrawCloneGitForward(ctx, name)), token)
 	}
-	return port, nil
+	return &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: endpointPath}, nil
 }
 
 // prepareCloneExport recreates the single-entry export directory that makes
-// the clone's Git directory reachable as /<repository> through git daemon.
-func (s *Service) prepareCloneExport(ctx context.Context, handle runtime.Handle, workdir, repository string) (string, error) {
-	script := `set -eu; umask 077; rm -rf -- "$1"; mkdir -p -- "$1/$2"; printf 'gitdir: %s/.git\n' "$3" > "$1/$2/.git"`
-	if _, err := s.runCloneCommand(ctx, handle, []string{cloneShellCommand, "-c", script, "clone-export", cloneExportGuestDir, repository, workdir}, nil); err != nil {
+// the clone's Git directory reachable as /<token>/<repository> through git
+// daemon. The token is a real path component so git daemon itself can only
+// reach the exported repository through it.
+func (s *Service) prepareCloneExport(ctx context.Context, handle runtime.Handle, workdir, token, repository string) (string, error) {
+	script := `set -eu; umask 077; rm -rf -- "$1"; mkdir -p -- "$1/$2/$3"; printf 'gitdir: %s/.git\n' "$4" > "$1/$2/$3/.git"`
+	if _, err := s.runCloneCommand(ctx, handle, []string{cloneShellCommand, "-c", script, "clone-export", cloneExportGuestDir, token, repository, workdir}, nil); err != nil {
 		return "", fmt.Errorf("prepare guest Git export: %w", err)
 	}
-	return posixpath.Join(cloneExportGuestDir, repository), nil
+	return posixpath.Join(cloneExportGuestDir, token, repository), nil
+}
+
+// writeCloneAuth installs the expected token, repository name and access hook
+// in guest-owned state with owner-only permissions. Every failure is fatal:
+// clone mode must not publish a Git daemon without its token check.
+func (s *Service) writeCloneAuth(ctx context.Context, handle runtime.Handle, token, repository string) error {
+	if !validCloneEndpointPath(cloneEndpointPath(token, repository)) {
+		return errors.New("clone authentication material is invalid")
+	}
+	script := `set -eu; umask 077; rm -rf -- "$1"; mkdir -p -- "$1"; printf '%s' "$2" > "$1/token"; printf '%s' "$3" > "$1/repository"; cat > "$1/access-hook" <<'CLONE_ACCESS_HOOK'
+` + cloneAccessHookScript(cloneAuthGuestDir) + `
+CLONE_ACCESS_HOOK
+chmod 700 -- "$1/access-hook"; chmod 600 -- "$1/token" "$1/repository"`
+	if _, err := s.runCloneCommand(ctx, handle, []string{cloneShellCommand, "-c", script, "clone-auth", cloneAuthGuestDir, token, repository}, nil); err != nil {
+		return fmt.Errorf("prepare clone endpoint authentication: %w", err)
+	}
+	return nil
+}
+
+// cloneAccessHookScript rejects every Git daemon request except the one that
+// carries the current sandbox token and repository. Git daemon passes the
+// canonical repository path, so the hook reads the token and repository from
+// the last two path components instead of depending on the export root's
+// spelling. The token check turns both values into fixed-length byte lists and
+// XORs every byte into a single difference accumulator. It never exits early
+// and never branches on token contents, so the comparison time does not depend
+// on how many bytes match.
+func cloneAccessHookScript(authDir string) string {
+	return fmt.Sprintf(`#!/bin/sh
+set -u
+[ "$#" -ge 2 ] || exit 1
+rel=$2
+case $rel in
+  */.git) rel=${rel%%/.git} ;;
+esac
+repo=${rel##*/}
+parent=${rel%%/*}
+[ "$parent" != "$rel" ] || exit 1
+token=${parent##*/}
+expected=$(cat %s/token) || exit 1
+[ ${#token} -eq %d ] || exit 1
+[ ${#expected} -eq %d ] || exit 1
+expected_bytes=$(printf '%%s' "$expected" | od -An -tu1 -v) || exit 1
+token_bytes=$(printf '%%s' "$token" | od -An -tu1 -v) || exit 1
+set -- $expected_bytes
+[ "$#" -eq %d ] || exit 1
+diff=0
+for byte in $token_bytes; do
+  [ "$#" -gt 0 ] || exit 1
+  expected_byte=$1
+  shift
+  diff=$((diff | (byte ^ expected_byte)))
+done
+[ "$#" -eq 0 ] || exit 1
+[ "$diff" -eq 0 ] || exit 1
+expected_repo=$(cat %s/repository) || exit 1
+[ "$repo" = "$expected_repo" ] || exit 1
+exit 0
+`, authDir, cloneTokenHexLength, cloneTokenHexLength, cloneTokenHexLength, authDir)
 }
 
 func (s *Service) removeCloneExport(ctx context.Context, handle runtime.Handle) error {
@@ -374,10 +497,25 @@ func (s *Service) removeCloneExport(ctx context.Context, handle runtime.Handle) 
 	return nil
 }
 
+// removeCloneAuth deletes the guest token and access hook when the sandbox
+// stops or is deleted. Leaving them behind would keep the old token valid.
+func (s *Service) removeCloneAuth(ctx context.Context, handle runtime.Handle) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if _, err := s.runCloneCommand(cleanupCtx, handle, []string{"rm", "-rf", "--", cloneAuthGuestDir}, nil); err != nil {
+		return fmt.Errorf("remove clone endpoint authentication: %w", err)
+	}
+	return nil
+}
+
 // waitCloneGitDaemon confirms the guest Git daemon really serves the clone
 // before its forward is published: --detach hides bind and startup failures.
-func (s *Service) waitCloneGitDaemon(ctx context.Context, handle runtime.Handle, repository string) error {
-	url := "git://" + net.JoinHostPort(cloneGitGuestIP, strconv.Itoa(cloneGitGuestPort)) + "/" + repository
+func (s *Service) waitCloneGitDaemon(ctx context.Context, handle runtime.Handle, endpointPath string) error {
+	token, _, ok := splitCloneEndpointPath(endpointPath)
+	if !ok {
+		return errors.New("clone endpoint path is invalid")
+	}
+	url := "git://" + net.JoinHostPort(cloneGitGuestIP, strconv.Itoa(cloneGitGuestPort)) + "/" + endpointPath
 	deadline := time.Now().Add(cloneGitReadyTimeout)
 	var lastErr error
 	for {
@@ -386,7 +524,7 @@ func (s *Service) waitCloneGitDaemon(ctx context.Context, handle runtime.Handle,
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("guest Git daemon did not serve %q: %w", repository, lastErr)
+			return redactCloneToken(fmt.Errorf("guest Git daemon did not serve the clone endpoint: %w", lastErr), token)
 		}
 		select {
 		case <-ctx.Done():
@@ -420,41 +558,59 @@ func (s *Service) ensureCloneForward(ctx context.Context, sb *sandbox.Sandbox) e
 		return s.clearCloneEndpoint(ctx, sb, fmt.Errorf("%w: clone runtime is unavailable", errCloneForwardUnavailable))
 	}
 	info := sb.Meta.Clone.Info
-	repository, err := cloneForwardRepository(info)
+	endpointPath, err := cloneForwardEndpointPath(info)
 	if err != nil {
 		return s.clearCloneEndpoint(ctx, sb, fmt.Errorf("%w: %w", errCloneForwardUnavailable, err))
 	}
-	port, err := s.verifyCloneForward(ctx, sb.Name, repository)
+	port, err := s.verifyCloneForward(ctx, sb.Name, endpointPath)
 	if err == nil {
-		if port == info.GitEndpoint.Port && info.GitEndpoint.HostIP == cloneGitHostIP && info.GitEndpoint.Repository == repository {
+		if port == info.GitEndpoint.Port && info.GitEndpoint.HostIP == cloneGitHostIP {
 			return nil
 		}
 		// The gateway verified ownership by replacing the stale forward with a
 		// new one. Persist that verified endpoint instead of publishing again.
-		return s.persistCloneEndpoint(ctx, sb, &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: repository})
+		return s.persistCloneEndpoint(ctx, sb, &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: endpointPath})
 	}
 	if err := s.withdrawCloneGitForward(ctx, sb.Name); err != nil {
 		return s.clearCloneEndpoint(ctx, sb, fmt.Errorf("%w: withdraw stale clone forward: %w", errCloneForwardUnavailable, err))
 	}
-	port, err = s.publishCloneForward(ctx, sb.Name, repository)
+	port, err = s.publishCloneForward(ctx, sb.Name, endpointPath)
 	if err != nil {
 		return s.clearCloneEndpoint(ctx, sb, err)
 	}
-	endpoint := &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: repository}
+	endpoint := &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: endpointPath}
 	return s.persistCloneEndpoint(ctx, sb, endpoint)
 }
 
 func cloneForwardRepository(info *sandbox.CloneInfo) (string, error) {
-	if !validCloneGuestPath(info.GuestWorkdir) || !validCloneRepositorySlug(posixpath.Base(info.GuestWorkdir)) {
+	if info == nil || !validCloneGuestPath(info.GuestWorkdir) || !validCloneRepositorySlug(posixpath.Base(info.GuestWorkdir)) {
 		return "", errors.New("stored clone metadata is invalid")
 	}
 	return posixpath.Base(info.GuestWorkdir), nil
 }
 
+// cloneForwardEndpointPath validates the persisted token/repository endpoint
+// and returns it only when it still names the clone's current repository. A
+// legacy or malformed endpoint fails closed.
+func cloneForwardEndpointPath(info *sandbox.CloneInfo) (string, error) {
+	repository, err := cloneForwardRepository(info)
+	if err != nil {
+		return "", err
+	}
+	if info.GitEndpoint == nil {
+		return "", errors.New("stored clone metadata has no endpoint")
+	}
+	_, endpointRepository, ok := splitCloneEndpointPath(info.GitEndpoint.Repository)
+	if !ok || endpointRepository != repository {
+		return "", errors.New("stored clone endpoint path is invalid")
+	}
+	return info.GitEndpoint.Repository, nil
+}
+
 // verifyCloneForward asks the gateway to verify its owned forward, then
 // confirms the guest daemon still serves it. A changed port means the gateway
 // replaced a stale forward while reasserting ownership.
-func (s *Service) verifyCloneForward(ctx context.Context, name, repository string) (uint16, error) {
+func (s *Service) verifyCloneForward(ctx context.Context, name, endpointPath string) (uint16, error) {
 	forwarder, ok := s.backend.(runtime.GitDaemonForwarder)
 	if !ok {
 		return 0, errors.New("runtime does not support managed Git daemon forwarding")
@@ -466,13 +622,13 @@ func (s *Service) verifyCloneForward(ctx context.Context, name, repository strin
 	if port == 0 {
 		return 0, errors.New("gateway returned an empty clone Git port")
 	}
-	if err := s.waitCloneGitDaemon(ctx, s.backend.Handle(name), repository); err != nil {
+	if err := s.waitCloneGitDaemon(ctx, s.backend.Handle(name), endpointPath); err != nil {
 		return 0, fmt.Errorf("guest clone Git daemon is unreachable: %w", err)
 	}
 	return port, nil
 }
 
-func (s *Service) publishCloneForward(ctx context.Context, name, repository string) (uint16, error) {
+func (s *Service) publishCloneForward(ctx context.Context, name, endpointPath string) (uint16, error) {
 	forwarder, ok := s.backend.(runtime.GitDaemonForwarder)
 	if !ok {
 		return 0, fmt.Errorf("%w: runtime does not support managed Git daemon forwarding", errCloneForwardUnavailable)
@@ -484,7 +640,7 @@ func (s *Service) publishCloneForward(ctx context.Context, name, repository stri
 	if port == 0 {
 		return 0, fmt.Errorf("%w: gateway returned an empty clone Git port", errCloneForwardUnavailable)
 	}
-	if err := s.waitCloneGitDaemon(ctx, s.backend.Handle(name), repository); err != nil {
+	if err := s.waitCloneGitDaemon(ctx, s.backend.Handle(name), endpointPath); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if withdrawErr := s.withdrawCloneGitForward(cleanupCtx, name); withdrawErr != nil {
@@ -526,11 +682,11 @@ func (s *Service) startStoredClone(ctx context.Context, sb *sandbox.Sandbox) err
 	if _, err := s.runCloneCommand(ctx, s.backend.Handle(sb.Name), []string{cloneGitCommand, "-C", sb.Meta.Clone.Info.GuestWorkdir, cloneGitConfig, cloneGitLocalFlag, "core.hooksPath", "/dev/null"}, cloneGitEnvironment()); err != nil {
 		return fmt.Errorf("restore clone hook policy: %w", err)
 	}
-	port, err := s.startCloneGitDaemon(ctx, s.backend.Handle(sb.Name), sb.Name, sb.Meta.Clone.Info)
+	endpoint, err := s.startCloneGitDaemon(ctx, s.backend.Handle(sb.Name), sb.Name, sb.Meta.Clone.Info)
 	if err != nil {
 		return err
 	}
-	sb.Meta.Clone.Info.GitEndpoint = &sandbox.GitEndpoint{HostIP: cloneGitHostIP, Port: port, Repository: posixpath.Base(sb.Meta.Clone.Info.GuestWorkdir)}
+	sb.Meta.Clone.Info.GitEndpoint = endpoint
 	return nil
 }
 
@@ -545,6 +701,9 @@ func (s *Service) stopStoredClone(ctx context.Context, sb *sandbox.Sandbox) erro
 		return err
 	}
 	if err := s.removeCloneExport(ctx, s.backend.Handle(sb.Name)); err != nil {
+		return err
+	}
+	if err := s.removeCloneAuth(ctx, s.backend.Handle(sb.Name)); err != nil {
 		return err
 	}
 	if sb.Meta.Clone.Info != nil {

@@ -9,10 +9,12 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	posixpath "path"
 	"path/filepath"
 	goruntime "runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -261,6 +263,7 @@ type fakeCloneRuntime struct {
 	execRequests   []runtime.ExecRequest
 	execFailMatch  string
 	execFailure    error
+	execFailEcho   bool
 	forwardCalls   []bool
 	forwardPorts   []uint16
 	forwardError   error
@@ -280,6 +283,9 @@ func (f *fakeCloneRuntime) ExecNative(_ context.Context, _ runtime.Handle, req r
 	f.execRequests = append(f.execRequests, copyReq)
 	command := cloneGuestCommand(req.Argv)
 	if f.execFailMatch != "" && strings.Contains(strings.Join(command, " "), f.execFailMatch) {
+		if f.execFailEcho && req.Stderr != nil {
+			_, _ = io.WriteString(req.Stderr, strings.Join(req.Argv, " "))
+		}
 		return 1, f.execFailure
 	}
 	if f.gitUnavailable && len(command) > 0 && command[0] == "git" {
@@ -335,7 +341,36 @@ func cloneGuestCommand(argv []string) []string {
 // export entry that git daemon serves.
 func cloneExportPrepared(request runtime.ExecRequest) bool {
 	command := cloneGuestCommand(request.Argv)
-	return len(command) == 7 && command[0] == cloneShellCommand && command[3] == "clone-export"
+	return len(command) == 8 && command[0] == cloneShellCommand && command[3] == "clone-export" &&
+		command[4] == cloneExportGuestDir && validCloneEndpointPath(cloneEndpointPath(command[5], command[6])) && command[7] != ""
+}
+
+// cloneAuthPrepared reports whether the guest command installed the token,
+// repository name and access hook used by every Git daemon connection.
+func cloneAuthPrepared(request runtime.ExecRequest) bool {
+	command := cloneGuestCommand(request.Argv)
+	return len(command) == 7 && command[0] == cloneShellCommand && command[3] == "clone-auth" &&
+		command[4] == cloneAuthGuestDir && validCloneEndpointPath(cloneEndpointPath(command[5], command[6]))
+}
+
+// cloneAuthRemoved reports whether the guest command deleted the token and
+// access hook on clone teardown.
+func cloneAuthRemoved(request runtime.ExecRequest) bool {
+	command := cloneGuestCommand(request.Argv)
+	return len(command) == 4 && command[0] == "rm" && command[1] == "-rf" && command[2] == "--" && command[3] == cloneAuthGuestDir
+}
+
+// cloneEndpointToken returns the per-sandbox token from a published endpoint.
+func cloneEndpointToken(t *testing.T, endpoint *sandbox.GitEndpoint) string {
+	t.Helper()
+	if endpoint == nil {
+		t.Fatal("clone has no Git endpoint")
+	}
+	token, _, ok := splitCloneEndpointPath(endpoint.Repository)
+	if !ok {
+		t.Fatalf("clone endpoint path %q is not token/repository", endpoint.Repository)
+	}
+	return token
 }
 
 // cloneExportRemoved reports whether the guest command removed the export
@@ -1079,8 +1114,6 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 	source := makeCloneSourceRepository(t)
 	repository := filepath.Base(source)
 	workdir := filepath.ToSlash(source)
-	exportEntry := posixpath.Join(cloneExportGuestDir, repository)
-	probeURL := fmt.Sprintf("git://%s:%d/%s", cloneGitGuestIP, cloneGitGuestPort, repository)
 	op, err := svc.Create(ctx, CreateRequest{Name: "clone-demo", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
 	if err != nil {
 		t.Fatal(err)
@@ -1089,17 +1122,24 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	token := cloneEndpointToken(t, sb.Meta.Clone.Info.GitEndpoint)
+	exportEntry := posixpath.Join(cloneExportGuestDir, token, repository)
+	probeURL := fmt.Sprintf("git://%s:%d/%s/%s", cloneGitGuestIP, cloneGitGuestPort, token, repository)
+	if len(token) != cloneTokenHexLength || !cloneTokenPattern.MatchString(token) {
+		t.Fatalf("clone token = %q, want %d lowercase hex characters", token, cloneTokenHexLength)
+	}
 	if len(backend.lastConfig.Workspaces) != 1 || backend.lastConfig.Workspaces[0].Path != source ||
 		!backend.lastConfig.Workspaces[0].ReadOnly || backend.lastConfig.Workspaces[0].GuestPath != cloneSourceGuestPath {
 		t.Fatalf("runtime clone source mount = %+v", backend.lastConfig.Workspaces)
 	}
 	if sb.Meta.Clone == nil || sb.Meta.Clone.Options.SourceWorkspacePath != source || sb.Meta.Clone.Options.GuestWorkdir != nil || sb.Meta.Clone.Info == nil ||
 		sb.Meta.Clone.Info.GuestWorkdir != workdir || sb.Meta.Clone.Info.RemoteName != "sandbox-clone-demo" || sb.Meta.Clone.Info.GitEndpoint == nil ||
-		sb.Meta.Clone.Info.GitEndpoint.HostIP != cloneGitHostIP || sb.Meta.Clone.Info.GitEndpoint.Port != 49152 || sb.Meta.Clone.Info.GitEndpoint.Repository != repository {
+		sb.Meta.Clone.Info.GitEndpoint.HostIP != cloneGitHostIP || sb.Meta.Clone.Info.GitEndpoint.Port != 49152 ||
+		sb.Meta.Clone.Info.GitEndpoint.Repository != token+"/"+repository {
 		t.Fatalf("clone state = %+v", sb.Meta.Clone)
 	}
 
-	var sawClone, sawOriginRetained, sawHooksDisabled, sawCredentialsDisabled, sawExportPrep, sawUploadDaemon, sawProbe, sawTrustConfig bool
+	var sawClone, sawOriginRetained, sawHooksDisabled, sawCredentialsDisabled, sawExportPrep, sawAuthPrep, sawUploadDaemon, sawProbe, sawTrustConfig bool
 	for _, request := range backend.execRequests {
 		command := cloneGuestCommand(request.Argv)
 		joined := strings.Join(command, " ")
@@ -1116,13 +1156,17 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 			sawCredentialsDisabled = true
 		case strings.Contains(joined, "git daemon"):
 			sawUploadDaemon = strings.Contains(joined, "--base-path="+cloneExportGuestDir) && !strings.Contains(joined, "--strict-paths") &&
+				strings.Contains(joined, "--access-hook="+cloneAuthHookPath) &&
 				strings.Contains(joined, "--enable=upload-pack") && strings.Contains(joined, "--disable=receive-pack") &&
 				strings.HasSuffix(joined, " "+exportEntry) && !strings.Contains(joined, "sh -c")
 		case len(command) > 1 && command[0] == "git" && command[1] == "ls-remote":
 			sawProbe = strings.Contains(joined, " "+probeURL+" HEAD") && !strings.Contains(joined, "/.git")
-		case len(command) == 7 && command[0] == cloneShellCommand && command[3] == "clone-export":
+		case cloneExportPrepared(request):
 			sawExportPrep = strings.Contains(command[2], "rm -rf") && strings.Contains(command[2], `printf 'gitdir: %s/.git\n'`) &&
-				command[4] == cloneExportGuestDir && command[5] == repository && command[6] == workdir
+				command[4] == cloneExportGuestDir && command[5] == token && command[6] == repository && command[7] == workdir
+		case cloneAuthPrepared(request):
+			sawAuthPrep = strings.Contains(command[2], "CLONE_ACCESS_HOOK") && command[4] == cloneAuthGuestDir &&
+				command[5] == token && command[6] == repository
 		}
 		if strings.Contains(joined, "clone-trust-config") {
 			sawTrustConfig = true
@@ -1131,10 +1175,10 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 			t.Fatalf("clone command did not clear inherited guest environment: %v", request.Argv)
 		}
 	}
-	if !sawClone || !sawOriginRetained || !sawHooksDisabled || !sawCredentialsDisabled || !sawExportPrep ||
+	if !sawClone || !sawOriginRetained || !sawHooksDisabled || !sawCredentialsDisabled || !sawExportPrep || !sawAuthPrep ||
 		!sawUploadDaemon || !sawProbe || !sawTrustConfig {
-		t.Fatalf("clone commands missing: clone=%v trust=%v origin=%v hooks=%v credentials=%v export=%v daemon=%v probe=%v",
-			sawClone, sawTrustConfig, sawOriginRetained, sawHooksDisabled, sawCredentialsDisabled, sawExportPrep, sawUploadDaemon, sawProbe)
+		t.Fatalf("clone commands missing: clone=%v trust=%v origin=%v hooks=%v credentials=%v export=%v auth=%v daemon=%v probe=%v",
+			sawClone, sawTrustConfig, sawOriginRetained, sawHooksDisabled, sawCredentialsDisabled, sawExportPrep, sawAuthPrep, sawUploadDaemon, sawProbe)
 	}
 }
 
@@ -1262,12 +1306,23 @@ func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
 	if !slices.ContainsFunc(backend.execRequests, cloneExportPrepared) {
 		t.Fatal("clone create did not prepare the Git export entry")
 	}
+	if !slices.ContainsFunc(backend.execRequests, cloneAuthPrepared) {
+		t.Fatal("clone create did not install endpoint authentication")
+	}
+	created, err := svc.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstToken := cloneEndpointToken(t, created.Meta.Clone.Info.GitEndpoint)
 	stopFrom := len(backend.execRequests)
 	if _, err := svc.Stop(ctx, op.SandboxID); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(backend.execRequests[stopFrom:], cloneExportRemoved) {
 		t.Fatal("clone stop did not remove the Git export directory")
+	}
+	if !slices.ContainsFunc(backend.execRequests[stopFrom:], cloneAuthRemoved) {
+		t.Fatal("clone stop did not remove endpoint authentication")
 	}
 	stopped, err := svc.Get(ctx, op.SandboxID)
 	if err != nil || stopped.State != sandbox.Stopped || stopped.Meta.Clone == nil || stopped.Meta.Clone.Info == nil || stopped.Meta.Clone.Info.GitEndpoint != nil {
@@ -1280,9 +1335,15 @@ func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
 	if !slices.ContainsFunc(backend.execRequests[startFrom:], cloneExportPrepared) {
 		t.Fatal("clone start did not recreate the Git export entry")
 	}
+	if !slices.ContainsFunc(backend.execRequests[startFrom:], cloneAuthPrepared) {
+		t.Fatal("clone start did not install a fresh endpoint token")
+	}
 	running, err := svc.Get(ctx, op.SandboxID)
 	if err != nil || running.State != sandbox.Running || running.Meta.Clone == nil || running.Meta.Clone.Info == nil || running.Meta.Clone.Info.GitEndpoint == nil || running.Meta.Clone.Info.GitEndpoint.Port != 49153 {
 		t.Fatalf("restarted clone = %+v, err=%v", running, err)
+	}
+	if secondToken := cloneEndpointToken(t, running.Meta.Clone.Info.GitEndpoint); secondToken == firstToken {
+		t.Fatal("clone start reused the previous endpoint token")
 	}
 	deleteFrom := len(backend.execRequests)
 	if _, err := svc.Delete(ctx, op.SandboxID, true); err != nil {
@@ -1290,6 +1351,9 @@ func TestCloneStartStopDeleteLifecyclePersistsEndpoint(t *testing.T) {
 	}
 	if !slices.ContainsFunc(backend.execRequests[deleteFrom:], cloneExportRemoved) {
 		t.Fatal("clone delete did not remove the Git export directory")
+	}
+	if !slices.ContainsFunc(backend.execRequests[deleteFrom:], cloneAuthRemoved) {
+		t.Fatal("clone delete did not remove endpoint authentication")
 	}
 	if _, err := svc.Get(ctx, op.SandboxID); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("deleted clone still exists: %v", err)
@@ -1456,6 +1520,222 @@ func TestReconcileClearsStaleCloneEndpoint(t *testing.T) {
 	}
 	if reconciled.Meta.Clone.Options.SourceWorkspacePath != source {
 		t.Fatalf("reconcile dropped the clone request: %+v", reconciled.Meta.Clone.Options)
+	}
+}
+
+func TestCloneAccessHookRequiresSecretTokenAndRepository(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("clone access hook runs under a POSIX shell")
+	}
+	exportDir := t.TempDir()
+	authDir := t.TempDir()
+	token := strings.Repeat("ab", cloneTokenBytes)
+	repository := "project"
+	if err := os.WriteFile(filepath.Join(authDir, "token"), []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "repository"), []byte(repository), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := cloneAccessHookScript(authDir)
+	if strings.Contains(script, token) {
+		t.Fatal("access hook script contains the endpoint token")
+	}
+	hookPath := filepath.Join(authDir, "access-hook")
+	if err := os.WriteFile(hookPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runHook := func(path string) int {
+		t.Helper()
+		command := exec.Command("/bin/sh", hookPath, "upload-pack", path)
+		err := command.Run()
+		if err == nil {
+			return 0
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("run clone access hook: %v", err)
+		}
+		return exitErr.ExitCode()
+	}
+	good := filepath.Join(exportDir, token, repository, ".git")
+	wrongFirst := "bb" + token[2:]
+	wrongLast := token[:cloneTokenHexLength-2] + "bb"
+	tests := []struct {
+		name string
+		path string
+		want int
+	}{
+		{name: "current token and repository", path: good, want: 0},
+		{name: "repository path without git suffix", path: filepath.Join(exportDir, token, repository), want: 0},
+		{name: "wrong first token byte", path: filepath.Join(exportDir, wrongFirst, repository, ".git"), want: 1},
+		{name: "wrong last token byte", path: filepath.Join(exportDir, wrongLast, repository, ".git"), want: 1},
+		{name: "uppercase token", path: filepath.Join(exportDir, strings.ToUpper(token), repository, ".git"), want: 1},
+		{name: "short token", path: filepath.Join(exportDir, token[:cloneTokenHexLength-1], repository, ".git"), want: 1},
+		{name: "wrong repository", path: filepath.Join(exportDir, token, "other", ".git"), want: 1},
+		{name: "extra path segment", path: filepath.Join(exportDir, token, repository, "extra", ".git"), want: 1},
+		{name: "traversal", path: filepath.Join(exportDir, token, "..", repository, ".git"), want: 1},
+		{name: "path without token segment", path: filepath.Join(t.TempDir(), repository, ".git"), want: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runHook(test.path); got != test.want {
+				t.Fatalf("access hook exit = %d, want %d for %q", got, test.want, test.path)
+			}
+		})
+	}
+}
+
+func TestCloneGitDaemonRejectsRequestsWithoutEndpointToken(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("clone access hook runs under a POSIX shell")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	token := strings.Repeat("ab", cloneTokenBytes)
+	work := filepath.Join(root, "work")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", work, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", work, "-c", "user.email=clone@example.com", "-c", "user.name=clone", "commit", "--allow-empty", "-qm", "init").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
+	}
+	exportDir := filepath.Join(root, "export")
+	authDir := filepath.Join(root, "auth")
+	if err := os.MkdirAll(filepath.Join(exportDir, token, "project"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(exportDir, token, "project", ".git"), []byte("gitdir: "+filepath.Join(work, ".git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "token"), []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "repository"), []byte("project"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(authDir, "access-hook")
+	if err := os.WriteFile(hookPath, []byte(cloneAccessHookScript(authDir)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	daemonLogPath := filepath.Join(root, "daemon.log")
+	daemonLog, err := os.Create(daemonLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := exec.Command("git", "daemon", "--reuseaddr", "--listen=127.0.0.1",
+		"--port="+strconv.Itoa(port), "--base-path="+exportDir, "--export-all",
+		"--enable=upload-pack", "--disable=receive-pack", "--access-hook="+hookPath,
+		filepath.Join(exportDir, token, "project"))
+	daemon.Env = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "HOME=" + root}
+	daemon.Stdout = daemonLog
+	daemon.Stderr = daemonLog
+	if err := daemon.Start(); err != nil {
+		_ = daemonLog.Close()
+		t.Fatalf("start git daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = daemon.Process.Kill()
+		_ = daemon.Wait()
+		_ = daemonLog.Close()
+		if t.Failed() {
+			if log, readErr := os.ReadFile(daemonLogPath); readErr == nil {
+				t.Logf("git daemon log:\n%s", log)
+			}
+		}
+	})
+	goodURL := fmt.Sprintf("git://127.0.0.1:%d/%s/project", port, token)
+	badURL := fmt.Sprintf("git://127.0.0.1:%d/project", port)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := exec.Command("git", "ls-remote", "--quiet", goodURL, "HEAD").CombinedOutput(); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			log, _ := os.ReadFile(daemonLogPath)
+			t.Fatalf("authenticated Git daemon did not become ready:\n%s", log)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if output, err := exec.Command("git", "ls-remote", "--quiet", badURL, "HEAD").CombinedOutput(); err == nil {
+		t.Fatalf("tokenless clone request succeeded: %s", output)
+	}
+}
+
+func TestCloneErrorsNeverContainTheEndpointToken(t *testing.T) {
+	requirePOSIXCloneHost(t)
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-redaction.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCloneRuntime{execFailMatch: "git daemon", execFailEcho: true, execFailure: errors.New("synthetic exec failure")}
+	svc := New(st, backend)
+	source := makeCloneSourceRepository(t)
+	_, err = svc.Create(ctx, CreateRequest{Name: "clone-redact", Workspaces: []sandbox.Workspace{{Path: source}}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
+	if err == nil {
+		t.Fatal("clone creation unexpectedly succeeded")
+	}
+	var token string
+	for _, request := range backend.execRequests {
+		command := cloneGuestCommand(request.Argv)
+		if len(command) == 8 && command[3] == "clone-export" {
+			token = command[5]
+		}
+	}
+	if token == "" {
+		t.Fatal("test did not observe the generated endpoint token")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("clone error leaked the endpoint token: %v", err)
+	}
+	if !strings.Contains(err.Error(), cloneTokenRedaction) {
+		t.Fatalf("clone error did not redact the token: %v", err)
+	}
+}
+
+func TestRunningCloneRejectsLegacyTokenlessEndpoint(t *testing.T) {
+	requirePOSIXCloneHost(t)
+	ctx := context.Background()
+	backend := &fakeCloneRuntime{forwardPorts: []uint16{49152}}
+	svc, id := newCloneRepairSandbox(t, backend)
+	legacy, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Meta.Clone.Info.GitEndpoint.Repository = filepath.Base(legacy.Meta.Clone.Info.GuestWorkdir)
+	if err := svc.store.Update(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Start(ctx, id); !errors.Is(err, errCloneForwardUnavailable) {
+		t.Fatalf("Start error = %v, want errCloneForwardUnavailable", err)
+	}
+	sb, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.Meta.Clone == nil || sb.Meta.Clone.Info == nil || sb.Meta.Clone.Info.GitEndpoint != nil {
+		t.Fatalf("legacy endpoint was not cleared: %+v", sb.Meta)
+	}
+	if !slices.Equal(backend.forwardCalls, []bool{true}) {
+		t.Fatalf("legacy endpoint reached the gateway: %v", backend.forwardCalls)
 	}
 }
 
