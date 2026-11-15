@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/rheic/sandboxes-core/sandbox"
 	runtime "github.com/rheic/sandboxes-runtime"
 
 	"github.com/rheic/sandboxes-daemon/internal/store"
@@ -51,6 +53,88 @@ func TestExecStartsStoppedVMAndDefaultsToWorkspace(t *testing.T) {
 	if backend.started != 1 || backend.workdir != workspace {
 		t.Fatalf("started=%d workdir=%q, want %q", backend.started, backend.workdir, workspace)
 	}
+}
+
+func TestExecAutoStartMergesGlobalPolicy(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeRuntime{}
+	svc := New(st, backend)
+	op, err := svc.Create(ctx, CreateRequest{Name: "exec-global-policy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Stop(ctx, op.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	globalAllow := sandbox.NetworkRule{Protocol: "tcp", Domain: "*.example.com", Port: 443}
+	globalDeny := sandbox.NetworkRule{Protocol: "tcp", CIDR: "203.0.113.0/24", Port: 443}
+	if _, _, err := svc.MutateGlobalPolicy(ctx, "allow", globalAllow); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.MutateGlobalPolicy(ctx, "deny", globalDeny); err != nil {
+		t.Fatal(err)
+	}
+	started := backend.started
+	code, err := svc.Exec(ctx, op.SandboxID, runtime.ExecRequest{Argv: []string{"true"}})
+	if err != nil || code != 0 {
+		t.Fatalf("exec: code=%d err=%v", code, err)
+	}
+	if backend.started != started+1 {
+		t.Fatalf("started=%d, want %d", backend.started, started+1)
+	}
+	if !hasRuntimeRule(backend.lastHandle.Allow, globalAllow) {
+		t.Fatalf("auto-start allow=%+v, want global allow %+v", backend.lastHandle.Allow, globalAllow)
+	}
+	if !hasRuntimeRule(backend.lastHandle.Deny, globalDeny) {
+		t.Fatalf("auto-start deny=%+v, want global deny %+v", backend.lastHandle.Deny, globalDeny)
+	}
+}
+
+func TestExecAutoStartFailsClosedWhenGlobalPolicyCannotLoad(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeRuntime{}
+	svc := New(st, backend)
+	op, err := svc.Create(ctx, CreateRequest{Name: "exec-corrupt-global-policy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Stop(ctx, op.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(ctx, globalDenySetting, "not-json"); err != nil {
+		t.Fatal(err)
+	}
+	started := backend.started
+	if _, err := svc.Exec(ctx, op.SandboxID, runtime.ExecRequest{Argv: []string{"true"}}); err == nil {
+		t.Fatal("exec auto-start succeeded without a loadable global policy")
+	}
+	if backend.started != started {
+		t.Fatalf("runtime started %d times, want %d", backend.started, started)
+	}
+	sb, err := svc.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.State != sandbox.Stopped {
+		t.Fatalf("sandbox state=%s, want stopped", sb.State)
+	}
+}
+
+func hasRuntimeRule(rules []runtime.Rule, want sandbox.NetworkRule) bool {
+	return slices.ContainsFunc(rules, func(rule runtime.Rule) bool {
+		return rule.Protocol == want.Protocol && rule.CIDR == want.CIDR &&
+			rule.Domain == want.Domain && rule.Port == want.Port
+	})
 }
 
 func (e *execTestRuntime) Exec(ctx context.Context, _ runtime.Handle, _ runtime.ExecRequest) (int, error) {
