@@ -562,6 +562,218 @@ func TestUnixProxyRevokeCancelsOnlyRevokedRoute(t *testing.T) {
 	}
 }
 
+func TestUnixProxyAliasRouteRefreshRotatesCredentialAndRevokeRemovesRoute(t *testing.T) {
+	type upstreamRequest struct {
+		route string
+		auth  string
+	}
+	var mu sync.Mutex
+	var requests []upstreamRequest
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, upstreamRequest{route: r.Header.Get("X-Rheic-Secret-Proxy"), auth: r.Header.Get("Authorization")})
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	dir, err := os.MkdirTemp("/tmp", "kqproxy-alias")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "proxy.sock")
+	manager := New()
+	defer func() { _ = manager.Close() }()
+
+	globalRoute := func(secret, token, credentialService string) RouteConfig {
+		return RouteConfig{
+			Service:           Service{Upstream: upstream.URL, Header: "Authorization", Prefix: "Bearer ", CredentialScope: "global"},
+			Secret:            []byte(secret),
+			Token:             token,
+			CredentialService: credentialService,
+		}
+	}
+	firstRoutes := map[string]RouteConfig{
+		"github":      globalRoute("old-github-secret", strings.Repeat("a", 64), "github"),
+		"github-web":  globalRoute("old-github-secret", strings.Repeat("b", 64), "github"),
+		"anthropic":   globalRoute("anthropic-secret", strings.Repeat("c", 64), "anthropic"),
+		"github-gist": globalRoute("old-github-secret", strings.Repeat("d", 64), "github"),
+	}
+	if _, err := manager.StartUnixRoutes(context.Background(), "alias-refresh", firstRoutes, socket); err != nil {
+		t.Fatalf("build alias routes: %v", err)
+	}
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "unix", socket)
+	}}}
+	request := func(route, token string) int {
+		t.Helper()
+		req, reqErr := http.NewRequest(http.MethodGet, "http://broker/v1/models", http.NoBody)
+		if reqErr != nil {
+			t.Fatal(reqErr)
+		}
+		req.Header.Set(ServiceHeader, route)
+		req.Header.Set(TokenHeader, token)
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			t.Fatal(doErr)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	lastRequest := func() upstreamRequest {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if len(requests) == 0 {
+			t.Fatal("upstream received no request")
+		}
+		return requests[len(requests)-1]
+	}
+
+	if status := request("github-web", strings.Repeat("b", 64)); status != http.StatusNoContent {
+		t.Fatalf("initial alias request status = %d", status)
+	}
+	if got := lastRequest(); got.route != "github-web" || got.auth != "Bearer old-github-secret" {
+		t.Fatalf("initial alias upstream request = %+v", got)
+	}
+
+	if err := manager.RefreshSecret("github", "", "global", []byte("rotated-github-secret")); err != nil {
+		t.Fatalf("rotate shared credential: %v", err)
+	}
+	for _, route := range []struct{ name, token string }{
+		{"github", strings.Repeat("a", 64)},
+		{"github-web", strings.Repeat("b", 64)},
+		{"github-gist", strings.Repeat("d", 64)},
+	} {
+		if status := request(route.name, route.token); status != http.StatusNoContent {
+			t.Fatalf("%s request after rotation status = %d", route.name, status)
+		}
+		if got := lastRequest(); got.route != route.name || got.auth != "Bearer rotated-github-secret" {
+			t.Fatalf("%s upstream request after rotation = %+v", route.name, got)
+		}
+	}
+
+	secondRoutes := map[string]RouteConfig{
+		"github":      globalRoute("rotated-github-secret", strings.Repeat("e", 64), "github"),
+		"github-web":  globalRoute("rotated-github-secret", strings.Repeat("f", 64), "github"),
+		"anthropic":   globalRoute("anthropic-secret", strings.Repeat("1", 64), "anthropic"),
+		"github-gist": globalRoute("rotated-github-secret", strings.Repeat("2", 64), "github"),
+	}
+	if _, err := manager.StartUnixRoutes(context.Background(), "alias-refresh", secondRoutes, socket); err != nil {
+		t.Fatalf("rotate alias route tokens: %v", err)
+	}
+	if status := request("github-web", strings.Repeat("b", 64)); status != http.StatusForbidden {
+		t.Fatalf("old alias token status = %d, want 403", status)
+	}
+	if status := request("github-web", strings.Repeat("f", 64)); status != http.StatusNoContent {
+		t.Fatalf("rotated alias token status = %d, want 204", status)
+	}
+
+	mu.Lock()
+	requestsBeforeRevoke := len(requests)
+	mu.Unlock()
+	if err := manager.RevokeSecret("github", "", "global"); err != nil {
+		t.Fatalf("revoke shared credential: %v", err)
+	}
+	for _, route := range []struct{ name, token string }{
+		{"github", strings.Repeat("e", 64)},
+		{"github-web", strings.Repeat("f", 64)},
+		{"github-gist", strings.Repeat("2", 64)},
+	} {
+		if manager.Has("alias-refresh", route.name) {
+			t.Fatalf("revoked alias route %q still reports active", route.name)
+		}
+		if status := request(route.name, route.token); status != http.StatusForbidden {
+			t.Fatalf("revoked alias route %q status = %d, want 403", route.name, status)
+		}
+	}
+	if status := request("anthropic", strings.Repeat("1", 64)); status != http.StatusNoContent {
+		t.Fatalf("unrelated route status after revoke = %d, want 204", status)
+	}
+	mu.Lock()
+	afterRevoke := requests
+	mu.Unlock()
+	if len(afterRevoke) != requestsBeforeRevoke+1 {
+		t.Fatalf("revoked alias routes reached upstream: before=%d after=%d", requestsBeforeRevoke, len(afterRevoke))
+	}
+	if last := afterRevoke[len(afterRevoke)-1]; last.route != "anthropic" {
+		t.Fatalf("last upstream request after revoke = %+v", last)
+	}
+}
+
+func TestUnixProxyApplyFailureStopsRoute(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	dir, err := os.MkdirTemp("/tmp", "kqproxy-alias-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "proxy.sock")
+	manager := New()
+	defer func() { _ = manager.Close() }()
+
+	route := func(secret, token, credentialService string) RouteConfig {
+		return RouteConfig{
+			Service:           Service{Upstream: upstream.URL, Header: "Authorization", Prefix: "Bearer ", CredentialScope: "global"},
+			Secret:            []byte(secret),
+			Token:             token,
+			CredentialService: credentialService,
+		}
+	}
+	routes := map[string]RouteConfig{
+		"github-web": route("old-github-secret", strings.Repeat("a", 64), "github"),
+		"anthropic":  route("anthropic-secret", strings.Repeat("b", 64), "anthropic"),
+	}
+	if _, err := manager.StartUnixRoutes(context.Background(), "alias-failure", routes, socket); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RefreshSecret("github", "", "global", nil); err == nil {
+		t.Fatal("empty rotated credential was accepted")
+	}
+	if manager.Has("alias-failure", "github-web") {
+		t.Fatal("alias route remained registered after a failed credential update")
+	}
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "unix", socket)
+	}}}
+	request := func(name, token string) int {
+		t.Helper()
+		req, reqErr := http.NewRequest(http.MethodGet, "http://broker/v1/models", http.NoBody)
+		if reqErr != nil {
+			t.Fatal(reqErr)
+		}
+		req.Header.Set(ServiceHeader, name)
+		req.Header.Set(TokenHeader, token)
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			t.Fatal(doErr)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := request("github-web", strings.Repeat("a", 64)); status != http.StatusForbidden {
+		t.Fatalf("failed route status = %d, want 403", status)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("failed route reached upstream %d times", calls.Load())
+	}
+	if status := request("anthropic", strings.Repeat("b", 64)); status != http.StatusNoContent {
+		t.Fatalf("unrelated route status = %d, want 204", status)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("unrelated route upstream calls = %d, want 1", calls.Load())
+	}
+}
+
 func TestUnixProxyCustomHandlerDoesNotRequireSecretBytes(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "kqproxy-custom-handler")
 	if err != nil {

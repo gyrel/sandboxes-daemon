@@ -153,16 +153,19 @@ func (l peerCheckingListener) Accept() (net.Conn, error) {
 }
 
 type proxyRoute struct {
-	upstream       string
-	service        Service
-	secret         []byte
-	token          []byte
-	caCert         []byte
-	maxRequestBody int64
-	reverse        *httputil.ReverseProxy
-	handler        http.Handler
-	ctx            context.Context
-	cancel         context.CancelFunc
+	upstream string
+	service  Service
+	// credentialService is the stored credential that backs this route when it
+	// differs from the route name (for example github-web is backed by github).
+	credentialService string
+	secret            []byte
+	token             []byte
+	caCert            []byte
+	maxRequestBody    int64
+	reverse           *httputil.ReverseProxy
+	handler           http.Handler
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 type proxySnapshot struct {
@@ -188,6 +191,10 @@ type RouteConfig struct {
 	// MaxRequestBody overrides the conservative service default for a trusted
 	// streaming handler. Zero selects maxRequestBody.
 	MaxRequestBody int64
+	// CredentialService names the stored credential that backs a route whose
+	// name is an alias for it (for example github-web uses github). Empty means
+	// the route is backed by a credential named after the route itself.
+	CredentialService string
 }
 
 // TokenHeader carries the per-VM bearer sent by the guest proxy helper. It is
@@ -254,7 +261,7 @@ func (m *Manager) StartUnixRoutes(ctx context.Context, sandbox string, routes ma
 			http.Error(w, "proxy upstream unavailable", http.StatusBadGateway)
 		}
 		routeCtx, cancel := context.WithCancel(context.Background())
-		preparedRoutes[name] = &proxyRoute{upstream: upstream.String(), service: route.Service,
+		preparedRoutes[name] = &proxyRoute{upstream: upstream.String(), service: route.Service, credentialService: route.CredentialService,
 			secret: append([]byte(nil), route.Secret...), token: []byte(route.Token), caCert: append([]byte(nil), route.CACert...), maxRequestBody: route.MaxRequestBody, reverse: reverse,
 			handler: route.Handler, ctx: routeCtx, cancel: cancel}
 	}
@@ -482,6 +489,7 @@ func (p *proxy) updateRoutes(socketPath string, routes map[string]*proxyRoute) (
 		clear(current.token)
 		clear(current.caCert)
 		current.service = next.service
+		current.credentialService = next.credentialService
 		current.handler = next.handler
 		current.maxRequestBody = next.maxRequestBody
 		current.secret = next.secret
@@ -492,38 +500,78 @@ func (p *proxy) updateRoutes(socketPath string, routes map[string]*proxyRoute) (
 	return p.url, nil
 }
 
-func (p *proxy) refreshSecret(service string, secret []byte) {
-	p.mu.Lock()
-	if route := p.routes[service]; route != nil {
-		clear(route.secret)
-		route.secret = append([]byte(nil), secret...)
-		route.service.Credential = nil
+var errEmptyProxySecret = errors.New("service proxy secret update is empty")
+
+// refreshSecret applies a rotated literal credential to one live route. An
+// unusable update stops the route instead of leaving the previous credential
+// serving traffic.
+func (p *proxy) refreshSecret(service string, secret []byte) error {
+	if len(secret) == 0 {
+		dropped, err := p.dropRoute(service)
+		if dropped {
+			return errors.Join(errEmptyProxySecret, err)
+		}
+		return nil
 	}
+	p.mu.Lock()
+	route := p.routes[service]
+	if route == nil {
+		p.mu.Unlock()
+		return nil
+	}
+	clear(route.secret)
+	route.secret = append([]byte(nil), secret...)
+	route.service.Credential = nil
 	p.mu.Unlock()
+	return nil
 }
 
-func (p *proxy) refreshCredential(service string, credential func(context.Context) ([]byte, error)) {
-	p.mu.Lock()
-	if route := p.routes[service]; route != nil {
-		clear(route.secret)
-		route.secret = nil
-		route.service.Credential = credential
+// refreshCredential applies a rotated dynamic credential source to one live
+// route. A nil resolver stops the route instead of leaving the previous
+// credential serving traffic.
+func (p *proxy) refreshCredential(service string, credential func(context.Context) ([]byte, error)) error {
+	if credential == nil {
+		dropped, err := p.dropRoute(service)
+		if dropped {
+			return errors.Join(errors.New("service proxy credential update is empty"), err)
+		}
+		return nil
 	}
+	p.mu.Lock()
+	route := p.routes[service]
+	if route == nil {
+		p.mu.Unlock()
+		return nil
+	}
+	clear(route.secret)
+	route.secret = nil
+	route.service.Credential = credential
 	p.mu.Unlock()
+	return nil
 }
 
-func (p *proxy) clearRoute(service string) {
+// dropRoute removes one route immediately so no stale credential can serve
+// another request. It closes the channel when the last route is removed.
+func (p *proxy) dropRoute(service string) (bool, error) {
 	p.mu.Lock()
-	if route := p.routes[service]; route != nil {
-		route.cancel()
-		clear(route.secret)
-		clear(route.token)
-		clear(route.caCert)
-		route.secret, route.token, route.caCert = nil, nil, nil
-		route.service.Authorize = nil
-		delete(p.routes, service)
+	route := p.routes[service]
+	if route == nil {
+		p.mu.Unlock()
+		return false, nil
 	}
+	route.cancel()
+	clear(route.secret)
+	clear(route.token)
+	clear(route.caCert)
+	route.secret, route.token, route.caCert = nil, nil, nil
+	route.service.Authorize = nil
+	delete(p.routes, service)
+	last := len(p.routes) == 0
 	p.mu.Unlock()
+	if !last {
+		return true, nil
+	}
+	return true, closeProxy(p)
 }
 
 func (p *proxy) clearCredentials() {
@@ -540,20 +588,28 @@ func (p *proxy) clearCredentials() {
 	p.mu.Unlock()
 }
 
-func (p *proxy) routeScope(service string) (string, bool) {
+// routeMatchesCredential reports whether the named route is backed by the
+// given stored credential and, when required, the given credential scope.
+func (p *proxy) routeMatchesCredential(name, service, scope string, requireScope bool) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	route := p.routes[service]
+	route := p.routes[name]
 	if route == nil {
-		return "", false
+		return false
 	}
-	return route.service.CredentialScope, true
+	if name != service && route.credentialService != service {
+		return false
+	}
+	if requireScope && route.service.CredentialScope != scope {
+		return false
+	}
+	return true
 }
 
-func (p *proxy) routeCount() int {
+func (p *proxy) hasRoute(name string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return len(p.routes)
+	return p.routes[name] != nil
 }
 
 func validateRouteConfigs(ctx context.Context, sandbox string, routes map[string]RouteConfig, socketPath string) error {
@@ -577,6 +633,9 @@ func validateRouteConfigs(ctx context.Context, sandbox string, routes map[string
 
 func validRouteConfig(name string, route RouteConfig) bool {
 	if !validRouteName(name) || (route.Secret == nil && route.Handler == nil && route.Service.Credential == nil) || len(route.CACert) > 16<<10 {
+		return false
+	}
+	if route.CredentialService != "" && !validRouteName(route.CredentialService) {
 		return false
 	}
 	if len(route.CACert) != 0 && route.Handler == nil {
@@ -620,86 +679,99 @@ func clearPreparedRoutes(routes map[string]*proxyRoute) {
 }
 
 // RefreshSecret replaces the in-memory secret for active channels whose
-// service/scope matches. It never persists the value.
-func (m *Manager) RefreshSecret(service, sandboxName, scope string, secret []byte) {
-	m.mu.Lock()
-	selected := make(map[*proxy]struct{})
-	for key, current := range m.proxies {
-		if sandboxName != "" && key != sandboxName+"/"+service {
-			continue
-		}
-		if sandboxName == "" && !strings.HasSuffix(key, "/"+service) {
-			continue
-		}
-		currentScope, exists := current.routeScope(service)
-		if exists && (sandboxName != "" || currentScope == scope) {
-			selected[current] = struct{}{}
+// service or alias is backed by the rotated credential. It never persists the
+// value, and a route that cannot be updated is stopped.
+func (m *Manager) RefreshSecret(service, sandboxName, scope string, secret []byte) error {
+	selected := m.matchingRoutes(service, sandboxName, scope, sandboxName == "")
+	var failures []error
+	for _, selectedRoute := range selected {
+		if err := selectedRoute.proxy.refreshSecret(selectedRoute.name, secret); err != nil {
+			m.forgetDroppedRoute(selectedRoute)
+			failures = append(failures, fmt.Errorf("apply rotated service secret to %s: %w", selectedRoute.name, err))
 		}
 	}
-	m.mu.Unlock()
-	for current := range selected {
-		current.refreshSecret(service, secret)
-	}
+	return errors.Join(failures...)
 }
 
-// RefreshCredential replaces the host-side credential callback for matching
-// active channels and clears any previously cached literal secret.
-func (m *Manager) RefreshCredential(service, sandboxName, scope string, credential func(context.Context) ([]byte, error)) {
-	m.mu.Lock()
-	selected := make(map[*proxy]struct{})
-	for key, current := range m.proxies {
-		if sandboxName != "" && key != sandboxName+"/"+service {
-			continue
-		}
-		if sandboxName == "" && !strings.HasSuffix(key, "/"+service) {
-			continue
-		}
-		currentScope, exists := current.routeScope(service)
-		if exists && (sandboxName != "" || currentScope == scope) {
-			selected[current] = struct{}{}
+// RefreshCredential replaces the host-side credential callback for active
+// channels whose service or alias is backed by the rotated credential and
+// clears any previously cached literal secret. A route that cannot be updated
+// is stopped.
+func (m *Manager) RefreshCredential(service, sandboxName, scope string, credential func(context.Context) ([]byte, error)) error {
+	selected := m.matchingRoutes(service, sandboxName, scope, sandboxName == "")
+	var failures []error
+	for _, selectedRoute := range selected {
+		if err := selectedRoute.proxy.refreshCredential(selectedRoute.name, credential); err != nil {
+			m.forgetDroppedRoute(selectedRoute)
+			failures = append(failures, fmt.Errorf("apply rotated service credential to %s: %w", selectedRoute.name, err))
 		}
 	}
-	m.mu.Unlock()
-	for current := range selected {
-		current.refreshCredential(service, credential)
-	}
+	return errors.Join(failures...)
 }
 
-// RevokeSecret closes active channels backed by the removed secret scope.
-func (m *Manager) RevokeSecret(service, sandboxName, scope string) error {
+type routeRef struct {
+	proxy *proxy
+	// sandbox is the sandbox portion of the manager key.
+	sandbox string
+	// name is the per-sandbox route name, which may be an alias for service.
+	name string
+}
+
+// matchingRoutes returns the live routes backed by the given stored credential.
+// Callers must not hold m.mu.
+func (m *Manager) matchingRoutes(service, sandboxName, scope string, requireScope bool) []routeRef {
 	m.mu.Lock()
-	type routeRef struct {
-		proxy   *proxy
-		service string
-	}
+	defer m.mu.Unlock()
+	return m.matchingRoutesLocked(service, sandboxName, scope, requireScope)
+}
+
+// matchingRoutesLocked is matchingRoutes for callers that already hold m.mu.
+func (m *Manager) matchingRoutesLocked(service, sandboxName, scope string, requireScope bool) []routeRef {
 	selected := make([]routeRef, 0)
 	for key, current := range m.proxies {
-		if sandboxName != "" && key != sandboxName+"/"+service {
+		sandbox, name, ok := strings.Cut(key, "/")
+		if !ok || sandbox == "" || name == "" {
 			continue
 		}
-		if sandboxName == "" && !strings.HasSuffix(key, "/"+service) {
+		if sandboxName != "" && sandbox != sandboxName {
 			continue
 		}
-		currentScope, exists := current.routeScope(service)
-		if exists && currentScope == scope {
-			selected = append(selected, routeRef{proxy: current, service: service})
+		if !current.routeMatchesCredential(name, service, scope, requireScope) {
+			continue
+		}
+		selected = append(selected, routeRef{proxy: current, sandbox: sandbox, name: name})
+	}
+	return selected
+}
+
+// forgetDroppedRoute removes the manager entry for a route that failed to
+// apply a credential update and is no longer served.
+func (m *Manager) forgetDroppedRoute(ref routeRef) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := ref.sandbox + "/" + ref.name
+	if m.proxies[key] != ref.proxy || ref.proxy.hasRoute(ref.name) {
+		return
+	}
+	delete(m.proxies, key)
+}
+
+// RevokeSecret closes active channels backed by the removed secret scope,
+// including alias routes that share the credential.
+func (m *Manager) RevokeSecret(service, sandboxName, scope string) error {
+	m.mu.Lock()
+	selected := m.matchingRoutesLocked(service, sandboxName, scope, true)
+	for _, selectedRoute := range selected {
+		key := selectedRoute.sandbox + "/" + selectedRoute.name
+		if m.proxies[key] == selectedRoute.proxy {
 			delete(m.proxies, key)
 		}
 	}
 	m.mu.Unlock()
 	var failures []error
-	closed := make(map[*proxy]struct{})
 	for _, selectedRoute := range selected {
-		current := selectedRoute.proxy
-		current.clearRoute(selectedRoute.service)
-		if current.routeCount() == 0 {
-			if _, alreadyClosed := closed[current]; alreadyClosed {
-				continue
-			}
-			closed[current] = struct{}{}
-			if err := closeProxy(current); err != nil {
-				failures = append(failures, err)
-			}
+		if _, err := selectedRoute.proxy.dropRoute(selectedRoute.name); err != nil {
+			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)
