@@ -577,6 +577,123 @@ func TestForceDeleteKeepsRecordOnRuntimeFailure(t *testing.T) {
 	}
 }
 
+func TestDeleteCleanupFailureKeepsRecordAndReconcileFinishes(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "delete-cleanup-retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	vault := &fakeServiceSecretVault{items: make(map[string]string)}
+	secretStore, err := servicesecrets.NewStore(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := New(st, nil)
+	svc.SetServiceSecretStore(secretStore)
+	op, err := svc.Create(ctx, CreateRequest{Name: "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetServiceSecret(ctx, "openai", servicesecrets.ScopeSandbox, "dev", []byte("synthetic-key")); err != nil {
+		t.Fatal(err)
+	}
+	settings := []string{
+		proxyServiceSettingKey(op.SandboxID),
+		registryProxySettingKey(op.SandboxID),
+		privateRegistrySettingKey(op.SandboxID),
+		dockerSettingKey(op.SandboxID),
+	}
+	for _, key := range settings {
+		if err := st.SetSetting(ctx, key, "fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleanupErr := errors.New("host keychain unavailable")
+	vault.deleteErr = cleanupErr
+	deleteOp, err := svc.Delete(ctx, op.SandboxID, false)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("cleanup failure was not returned: %v", err)
+	}
+	if deleteOp.State != operation.Failed || !strings.Contains(deleteOp.Error, cleanupErr.Error()) {
+		t.Fatalf("failed delete operation was not observable: %+v", deleteOp)
+	}
+	got, err := svc.Get(ctx, op.SandboxID)
+	if err != nil || got.State != sandbox.Deleting {
+		t.Fatalf("sandbox row was dropped or left in the wrong state: %+v, %v", got, err)
+	}
+	for _, key := range settings {
+		if value, err := st.GetSetting(ctx, key); err != nil || value != "fixture" {
+			t.Fatalf("sandbox setting %q was removed before cleanup succeeded: %q, %v", key, value, err)
+		}
+	}
+
+	vault.deleteErr = nil
+	changed, err := svc.Reconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("reconcile changed = %d, want 1", changed)
+	}
+	if _, err := svc.Get(ctx, op.SandboxID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("reconcile did not finish the delete: %v", err)
+	}
+	if _, err := secretStore.Load(ctx, "openai", servicesecrets.ScopeSandbox, "dev"); !errors.Is(err, servicesecrets.ErrNotFound) {
+		t.Fatalf("sandbox service secret survived reconcile: %v", err)
+	}
+	for _, key := range settings {
+		if _, err := st.GetSetting(ctx, key); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("sandbox setting %q survived reconcile: %v", key, err)
+		}
+	}
+}
+
+func TestDeleteCleanupRetryIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "delete-cleanup-idempotent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	vault := &fakeServiceSecretVault{items: make(map[string]string)}
+	secretStore, err := servicesecrets.NewStore(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := New(st, nil)
+	svc.SetServiceSecretStore(secretStore)
+	op, err := svc.Create(ctx, CreateRequest{Name: "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetServiceSecret(ctx, "openai", servicesecrets.ScopeSandbox, "dev", []byte("synthetic-key")); err != nil {
+		t.Fatal(err)
+	}
+	vault.deleteErr = errors.New("host keychain unavailable")
+	if _, err := svc.Delete(ctx, op.SandboxID, false); err == nil {
+		t.Fatal("delete unexpectedly succeeded while cleanup was failing")
+	}
+	vault.deleteErr = nil
+
+	if _, err := svc.Delete(ctx, op.SandboxID, false); err != nil {
+		t.Fatalf("retry after cleanup recovery failed: %v", err)
+	}
+	if _, err := svc.Get(ctx, op.SandboxID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("sandbox row remains after successful retry: %v", err)
+	}
+	if _, err := secretStore.Load(ctx, "openai", servicesecrets.ScopeSandbox, "dev"); !errors.Is(err, servicesecrets.ErrNotFound) {
+		t.Fatalf("sandbox service secret remains after successful retry: %v", err)
+	}
+	if _, err := svc.Delete(ctx, op.SandboxID, false); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("repeated delete = %v, want not found", err)
+	}
+	if changed, err := svc.Reconcile(ctx); err != nil || changed != 0 {
+		t.Fatalf("reconcile after successful delete = %d, %v", changed, err)
+	}
+}
+
 func TestCreateReportsRollbackFailure(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "test.db"))

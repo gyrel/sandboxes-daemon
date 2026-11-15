@@ -982,18 +982,20 @@ func (s *Service) cleanupSandboxServiceSecrets(ctx context.Context, sandboxName 
 	if err != nil {
 		return err
 	}
+	var failures []error
 	for _, entry := range entries {
 		if entry.Scope != string(servicesecrets.ScopeSandbox) || entry.SandboxName != sandboxName {
 			continue
 		}
 		if _, err := s.serviceSecrets.Delete(ctx, entry.Service, servicesecrets.ScopeSandbox, sandboxName); err != nil {
-			return err
+			failures = append(failures, fmt.Errorf("remove service secret %q: %w", entry.Service, err))
+			continue
 		}
 		if err := s.store.DeleteServiceSecretIndex(ctx, entry.Service, entry.Scope, entry.SandboxName); err != nil {
-			return err
+			failures = append(failures, err)
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func (s *Service) deleteSandboxRegistryCredentials(ctx context.Context, sandboxName string) error {
@@ -2773,27 +2775,11 @@ func (s *Service) Reconcile(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for i := range all {
-		sb := all[i]
-		switch sb.State {
-		case sandbox.Running, sandbox.Creating, sandbox.Deleting:
-			sb.State = sandbox.Unknown
-			sb.Error = "daemon restarted; runtime state is unknown"
-			sb.UpdatedAt = now
-			if err := s.store.Update(ctx, sb); err != nil {
-				return changed, err
-			}
-			changed++
+		sbChanged, err := s.reconcileSandbox(ctx, &all[i], now)
+		if err != nil {
+			return changed, err
 		}
-		// The host-side forward dies with the daemon, so a persisted Git
-		// endpoint is never usable after a restart; clear it instead of
-		// reporting a port that may already belong to another process.
-		if sb.Meta != nil && sb.Meta.Clone != nil && sb.Meta.Clone.Info != nil && sb.Meta.Clone.Info.GitEndpoint != nil {
-			sb.Meta.Clone.Info.GitEndpoint = nil
-			if err := s.store.Update(ctx, sb); err != nil {
-				return changed, err
-			}
-			changed++
-		}
+		changed += sbChanged
 	}
 	unfinished, err := s.store.Operations().ListUnfinished(ctx)
 	if err != nil {
@@ -2807,6 +2793,47 @@ func (s *Service) Reconcile(ctx context.Context) (int, error) {
 		changed++
 	}
 	return changed, nil
+}
+
+func (s *Service) reconcileSandbox(ctx context.Context, sb *sandbox.Sandbox, now time.Time) (int, error) {
+	if sb.State == sandbox.Deleting {
+		if err := s.reconcileDeletedSandbox(ctx, sb); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	changed := 0
+	switch sb.State {
+	case sandbox.Running, sandbox.Creating:
+		sb.State = sandbox.Unknown
+		sb.Error = "daemon restarted; runtime state is unknown"
+		sb.UpdatedAt = now
+		if err := s.store.Update(ctx, *sb); err != nil {
+			return changed, err
+		}
+		changed++
+	}
+	// The host-side forward dies with the daemon, so a persisted Git
+	// endpoint is never usable after a restart; clear it instead of
+	// reporting a port that may already belong to another process.
+	if sb.Meta != nil && sb.Meta.Clone != nil && sb.Meta.Clone.Info != nil && sb.Meta.Clone.Info.GitEndpoint != nil {
+		sb.Meta.Clone.Info.GitEndpoint = nil
+		if err := s.store.Update(ctx, *sb); err != nil {
+			return changed, err
+		}
+		changed++
+	}
+	return changed, nil
+}
+
+func (s *Service) reconcileDeletedSandbox(ctx context.Context, sb *sandbox.Sandbox) error {
+	release, err := s.acquireLifecycle(ctx, sb.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = s.finishDelete(ctx, sb, false)
+	return err
 }
 
 // Get returns a sandbox by ID.
@@ -3171,7 +3198,26 @@ func (s *Service) Delete(ctx context.Context, id string, force bool) (operation.
 	if err := s.cancelExecSessions(ctx, id); err != nil {
 		return operation.Operation{}, err
 	}
-	cloneStopErr, err := s.teardownDelete(ctx, &sb)
+	// Persist the deletion intent before any destructive runtime or host-side
+	// work. The row remains as a durable pending-delete marker until cleanup
+	// succeeds, so Reconcile can finish an interrupted delete instead of
+	// leaving orphaned secrets, volumes or settings behind.
+	if sb.State != sandbox.Deleting {
+		sb.State = sandbox.Deleting
+		sb.Error = ""
+		sb.UpdatedAt = s.now().UTC()
+		if err := s.store.Update(ctx, sb); err != nil {
+			return operation.Operation{}, err
+		}
+	}
+	return s.finishDelete(ctx, &sb, true)
+}
+
+// finishDelete completes an already-marked delete. Runtime teardown and
+// retryable host cleanup happen before the row and its success operation are
+// removed atomically. Callers must hold the sandbox lifecycle gate.
+func (s *Service) finishDelete(ctx context.Context, sb *sandbox.Sandbox, markRuntimeUnknown bool) (operation.Operation, error) {
+	cloneStopErr, err := s.teardownDelete(ctx, sb, markRuntimeUnknown)
 	if err != nil {
 		return operation.Operation{}, err
 	}
@@ -3182,31 +3228,46 @@ func (s *Service) Delete(ctx context.Context, id string, force bool) (operation.
 	}
 	op := operation.Operation{
 		ID:         opID,
-		SandboxID:  id,
+		SandboxID:  sb.ID,
 		Kind:       operation.KindDelete,
 		State:      operation.Done,
 		Generation: sb.Generation + 1,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	if err := s.store.DeleteSandboxWithOperation(ctx, id, op); err != nil {
-		if s.backend != nil {
-			return operation.Operation{}, s.markRuntimeUnknown(ctx, sb, errors.Join(cloneStopErr, err))
-		}
-		return operation.Operation{}, err
+	if err := s.cleanupDeletedSandbox(ctx, *sb); err != nil {
+		return s.failedDeleteOperation(ctx, *sb, opID, err)
 	}
-	if err := s.cleanupDeletedSandbox(ctx, sb); err != nil {
-		return op, err
+	if err := s.store.DeleteSandboxWithOperation(ctx, sb.ID, op); err != nil {
+		return operation.Operation{}, err
 	}
 	return op, cloneStopErr
 }
 
-func (s *Service) teardownDelete(ctx context.Context, sb *sandbox.Sandbox) (cloneStopErr, err error) {
+func (s *Service) failedDeleteOperation(ctx context.Context, sb sandbox.Sandbox, opID string, cause error) (operation.Operation, error) {
+	now := s.now().UTC()
+	op := operation.Operation{
+		ID:         opID,
+		SandboxID:  sb.ID,
+		Kind:       operation.KindDelete,
+		State:      operation.Failed,
+		Generation: sb.Generation + 1,
+		Error:      "delete cleanup failed: " + cause.Error(),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := s.store.Operations().Create(ctx, op); err != nil {
+		return operation.Operation{}, errors.Join(cause, fmt.Errorf("record failed delete operation: %w", err))
+	}
+	return op, cause
+}
+
+func (s *Service) teardownDelete(ctx context.Context, sb *sandbox.Sandbox, markRuntimeUnknown bool) (cloneStopErr, err error) {
 	if s.backend == nil {
 		return nil, s.stopProxyChannel(sb.Name, sb.ID, false)
 	}
 	cloneStopErr, runtimeUnknown, err := s.teardownDeleteRuntime(ctx, sb)
-	if err != nil && runtimeUnknown {
+	if err != nil && runtimeUnknown && markRuntimeUnknown {
 		return cloneStopErr, s.markRuntimeUnknown(ctx, *sb, errors.Join(cloneStopErr, err))
 	}
 	return cloneStopErr, err
@@ -3226,22 +3287,35 @@ func (s *Service) teardownDeleteRuntime(ctx context.Context, sb *sandbox.Sandbox
 }
 
 func (s *Service) cleanupDeletedSandbox(ctx context.Context, sb sandbox.Sandbox) error {
-	if err := s.store.DeleteSetting(ctx, proxyServiceSettingKey(sb.ID)); err != nil {
-		return err
-	}
-	if err := s.store.DeleteSetting(ctx, registryProxySettingKey(sb.ID)); err != nil {
-		return err
-	}
+	var failures []error
 	if err := s.stopProxyChannel(sb.Name, sb.ID, true); err != nil {
-		return err
+		failures = append(failures, err)
 	}
 	if err := s.cleanupSandboxServiceSecrets(ctx, sb.Name); err != nil {
-		return err
+		failures = append(failures, err)
 	}
 	if err := s.cleanupSandboxRegistryCredentials(ctx, sb.Name); err != nil {
-		return err
+		failures = append(failures, err)
 	}
-	return s.removeDockerVolume(sb.ID)
+	if err := s.removeDockerVolume(sb.ID); err != nil {
+		failures = append(failures, err)
+	}
+	// Remove the sandbox's bookkeeping settings only after host resources are
+	// gone. If a retryable host cleanup step fails, the row and its settings
+	// remain so Reconcile can retry from a known state.
+	if len(failures) == 0 {
+		for _, key := range []string{
+			proxyServiceSettingKey(sb.ID),
+			registryProxySettingKey(sb.ID),
+			privateRegistrySettingKey(sb.ID),
+			dockerSettingKey(sb.ID),
+		} {
+			if err := s.store.DeleteSetting(ctx, key); err != nil {
+				failures = append(failures, err)
+			}
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func (s *Service) markRuntimeUnknown(ctx context.Context, sb sandbox.Sandbox, cause error) error {
