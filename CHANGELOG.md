@@ -5,6 +5,7 @@
 ### Fixed
 
 - Make sandbox deletion durable and retryable. `Delete` now marks the sandbox as deleting, removes secrets, registry credentials, proxy state, settings and the Docker volume before atomically deleting the row, and records a failed delete operation when cleanup fails instead of dropping the row. `Reconcile` finishes pending deletes left by an interrupted cleanup, and every cleanup step is idempotent so retries remove each host resource exactly once.
+- Build alias service proxy routes such as `github-web` and `cursor-api3` by resolving the shared credential service instead of validating the alias name against the service secret store. Rotating or removing a shared credential now updates or removes every live alias route without a sandbox restart, and a route that cannot apply a credential update is stopped rather than continuing to serve the previous credential.
 ### Security
 
 - Require a random per-sandbox token on the managed clone Git endpoint. The

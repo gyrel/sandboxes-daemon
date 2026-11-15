@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	core "github.com/rheic/sandboxes-core"
+	"github.com/rheic/sandboxes-core/sandbox"
 	runtime "github.com/rheic/sandboxes-runtime"
 
 	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
@@ -275,6 +276,120 @@ func TestSandboxSupportsMultipleIsolatedServiceSecrets(t *testing.T) {
 	}
 	if _, err := svc.Delete(ctx, op.SandboxID, true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAliasProxyRouteBuildsAndCredentialRotationReachesLiveRoute(t *testing.T) {
+	ctx := context.Background()
+	stateDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(stateDir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeRuntime{}
+	svc := New(st, backend)
+	helperPath := writeStaticProxyHelperFixture(t)
+	secretVault := &fakeServiceSecretVault{items: make(map[string]string)}
+	secretStore, err := servicesecrets.NewStore(secretVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetServiceSecretStore(secretStore)
+	manager := secretproxy.New()
+	svc.SetSecretProxyManager(manager)
+	svc.SetSecretProxyRuntime(helperPath, "/tmp")
+	t.Cleanup(func() {
+		_ = manager.Close()
+		if backend.lastConfig.ProxySocket != "" {
+			_ = secretproxy.RemovePrivateDir(filepath.Dir(backend.lastConfig.ProxySocket))
+		}
+	})
+	if _, err := svc.SetServiceSecret(ctx, githubCredentialService, servicesecrets.ScopeGlobal, "", []byte("synthetic-github-key")); err != nil {
+		t.Fatal(err)
+	}
+	op, err := svc.Create(ctx, CreateRequest{
+		Name:  "alias-run",
+		Image: "alpine:3.22",
+		Env: map[string]string{
+			"RHEIC_PROXY_GITHUB_WEB": "${proxy:github-web}",
+			"RHEIC_PROXY_GITHUB_RAW": "${proxy:github-raw}",
+		},
+	})
+	if goruntime.GOOS == "windows" {
+		if !errors.Is(err, core.ErrConflict) || backend.created != 0 {
+			t.Fatalf("unsupported Windows alias proxy was not rejected before runtime start: err=%v created=%d", err, backend.created)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("build alias proxy route: %v", err)
+	}
+	if strings.Join(backend.proxyRouteArgs, ",") != "github-raw=raw.githubusercontent.com:43137,github-web=github.com:43136" {
+		t.Fatalf("runtime alias routes=%v", backend.proxyRouteArgs)
+	}
+	for _, route := range []string{"github-raw", "github-web"} {
+		if !manager.Has("alias-run", route) {
+			t.Fatalf("alias proxy route %q was not started", route)
+		}
+	}
+	if _, err := svc.SetServiceSecret(ctx, githubCredentialService, servicesecrets.ScopeGlobal, "", []byte("rotated-github-key")); err != nil {
+		t.Fatalf("rotate shared github credential: %v", err)
+	}
+	for _, route := range []string{"github-raw", "github-web"} {
+		if !manager.Has("alias-run", route) {
+			t.Fatalf("rotation dropped live alias route %q", route)
+		}
+	}
+	removed, err := svc.RemoveServiceSecret(ctx, githubCredentialService, servicesecrets.ScopeGlobal, "")
+	if err != nil || !removed {
+		t.Fatalf("remove shared github credential returned removed=%t err=%v", removed, err)
+	}
+	for _, route := range []string{"github-raw", "github-web"} {
+		if manager.Has("alias-run", route) {
+			t.Fatalf("removing the shared credential left alias route %q serving", route)
+		}
+	}
+	if _, err := svc.Delete(ctx, op.SandboxID, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAliasProxyRouteUsesSharedDynamicCredential(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("dynamic resolver command fixture is Unix-specific")
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "dynamic-alias.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	secretVault := &fakeServiceSecretVault{items: make(map[string]string)}
+	secretStore, err := servicesecrets.NewStore(secretVault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := New(st, nil)
+	svc.SetServiceSecretStore(secretStore)
+	if _, err := svc.SetServiceSecretSource(ctx, githubCredentialService, servicesecrets.ScopeGlobal, "", servicesecrets.Source{
+		Command: "printf dynamic-github-key", Refresh: "on-demand",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	route, runtimeRoute, err := svc.buildProxyRoute(ctx, sandbox.Sandbox{ID: "sb-dynamic-alias", Name: "alias-dynamic"}, "github-web")
+	if err != nil {
+		t.Fatalf("build dynamic alias route: %v", err)
+	}
+	if runtimeRoute != "github-web=github.com:43136" || route.CredentialService != githubCredentialService || route.Service.Credential == nil {
+		t.Fatalf("dynamic alias route=%+v runtime=%q", route, runtimeRoute)
+	}
+	value, err := route.Service.Credential(ctx)
+	if err != nil {
+		t.Fatalf("resolve shared dynamic credential through alias: %v", err)
+	}
+	if string(value) != "dynamic-github-key" {
+		t.Fatalf("dynamic alias credential = %q", value)
 	}
 }
 

@@ -671,10 +671,14 @@ func (s *Service) refreshActiveServiceSecret(ctx context.Context, summary servic
 		credential := func(ctx context.Context) ([]byte, error) {
 			return s.serviceSecrets.Resolve(ctx, summary.Service, summary.Scope, sandboxName)
 		}
-		s.secretProxies.RefreshCredential(summary.Service, summary.SandboxName, string(summary.Scope), credential)
+		if err := s.secretProxies.RefreshCredential(summary.Service, summary.SandboxName, string(summary.Scope), credential); err != nil {
+			return fmt.Errorf("apply rotated service credential: %w", err)
+		}
 		return nil
 	}
-	s.secretProxies.RefreshSecret(summary.Service, summary.SandboxName, string(summary.Scope), value)
+	if err := s.secretProxies.RefreshSecret(summary.Service, summary.SandboxName, string(summary.Scope), value); err != nil {
+		return fmt.Errorf("apply rotated service secret: %w", err)
+	}
 	return nil
 }
 
