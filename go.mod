@@ -7,7 +7,7 @@ toolchain go1.27.4
 require (
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/rheic/sandboxes-api v0.0.25
+	github.com/rheic/sandboxes-api v0.0.26
 	github.com/rheic/sandboxes-core v0.0.12
 	github.com/rheic/sandboxes-gateway v0.0.18
 	github.com/rheic/sandboxes-runtime v0.0.32

@@ -11,6 +11,17 @@
 
 - The broker keeps HTTPS-only forwarding, DNS hostname verification, exact host-header routing, and exact redirect/realm authority matching. IP-literal registries verify the certificate IP SAN and do not invent an SNI name.
 - Live VM pull/push acceptance for custom-port and IP-literal registries remains unverified.
+- Expose the effective organization policy through `SandboxService.GetOrgPolicy`.
+  The read-only view reports the organization, bundle schema version and
+  revision, a SHA-256 payload fingerprint, enforcement state, load and expiry
+  times, and parsed network allow/deny rules marked enforced or advisory. It
+  never returns signatures, tokens or other secret material and fails closed
+  with typed gRPC statuses for missing or invalid bundles.
+- Annotate local network rules with `origin = "local"` so clients can
+  distinguish them from organization rules once the API contract is bumped.
+- Depend on `github.com/rheic/sandboxes-api` v0.0.26. That release carries the
+  additive `GetOrgPolicy` RPC and `NetworkRule.origin`; downstream modules must
+  bump the API contract together.
 
 ## v0.0.52 — 2026-11-11
 

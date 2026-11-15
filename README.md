@@ -284,9 +284,12 @@ sqlite3 "$HOME/.sandboxes/sandboxes.db" \
   'SELECT org_id, revision, datetime(expires_at/1000000000, "unixepoch") FROM org_policy_bundles;'
 ```
 
-The daemon does not expose policy-sync state through the CLI, local API or SDK
-yet. A subsequent slice can add an operation/status surface, offline
-last-known-good reporting and secret-vault token storage instead of a file.
+The daemon does not expose policy-sync token or key material through the CLI,
+local API or SDK. Operators can inspect the effective stored bundle with
+`rsbx policy org`, which reports the organization, revision, payload fingerprint,
+enforcement state, load time and parsed network rules without returning any
+secret value. Offline last-known-good reporting and secret-vault token storage
+instead of a file remain future work.
 
 ## Organization policy enforcement (ADR-0003 slice)
 
@@ -333,3 +336,25 @@ multi-tenancy; and apply-time signature re-verification (the signature is
 verified by the policy sync client before the bundle is stored, and the local
 SQLite store is trusted daemon state). The daemon does not contact the control
 plane in the create/start/policy hot path.
+
+### Visibility
+
+`SandboxService.GetOrgPolicy` (local API contract 0.0.26) returns the effective
+view of the stored bundle as read-only data. It re-validates the same metadata
+as enforcement, so the view and the enforced policy cannot disagree. The
+response includes `org`, `schema_version`, `revision`, `bundle_id` (a SHA-256
+fingerprint of the stored payload), `enforcement_enabled`, `loaded_at_unix`,
+`issued_at_unix`, `expires_at_unix`, `ignored_rules`, and the parsed network
+rules. Each rule carries `source = "org"`, its signed `rule_id`, action,
+protocol, target and port, plus `enforced` and an `advisory_reason`.
+
+- When `org_policy.enforce` is on, network deny rules are `enforced` and
+  organization allow rules remain advisory.
+- When enforcement is off, every rule is advisory with the reason
+  `org_policy.enforce is disabled`, and `enforcement_enabled` is false.
+- A missing bundle returns gRPC `NotFound`; an unconfigured organization,
+  expired bundle, cross-organization payload, malformed deny or otherwise
+  invalid payload returns `FailedPrecondition` with a fixed, non-secret message.
+- The read never writes to SQLite, never contacts the control plane and never
+  returns the stored signature, policy-sync token, vault references or key
+  material. `bundle_id` identifies the payload but is not a credential.
