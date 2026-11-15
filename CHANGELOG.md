@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.0.56 — 2026-11-15
+
 ### Added
 
 - Accept registry endpoints with an explicit non-default port and IPv4 or IPv6 literals in registry credentials, private-registry settings, realm/redirect configuration, and broker request routing. Authorities are normalized with bracketed IPv6 literals, and ambiguous forms with userinfo, paths, schemes, wildcards, or invalid ports are rejected.
