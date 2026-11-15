@@ -45,15 +45,16 @@ func run() error {
 }
 
 type serverOptions struct {
-	listen          string
-	dbPath          string
-	credentialsPath string
-	publicKey       string
-	certPath        string
-	privateKey      string
-	oidcIssuer      string
-	oidcAudience    string
-	oidcJWKSURL     string
+	listen            string
+	dbPath            string
+	credentialsPath   string
+	publicKey         string
+	certPath          string
+	privateKey        string
+	oidcIssuer        string
+	oidcAudience      string
+	oidcJWKSURL       string
+	oidcJWKSAuthority string
 }
 
 func runServer(args []string) error {
@@ -71,6 +72,7 @@ func runServer(args []string) error {
 	oidcIssuer := flags.String("oidc-issuer", "", "optional OIDC issuer URL; enables OIDC bearer validation with --oidc-audience and --oidc-jwks-url")
 	oidcAudience := flags.String("oidc-audience", "", "optional OIDC token audience")
 	oidcJWKSURL := flags.String("oidc-jwks-url", "", "optional HTTPS JWKS URL")
+	oidcJWKSAuthority := flags.String("oidc-trusted-jwks-authority", "", "explicitly trust a JWKS host[:port] different from the issuer")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -80,7 +82,7 @@ func runServer(args []string) error {
 	return serve(serverOptions{
 		listen: *listen, dbPath: *dbPath, credentialsPath: *credentialsPath,
 		publicKey: *publicKeyPath, certPath: *certPath, privateKey: *keyPath,
-		oidcIssuer: *oidcIssuer, oidcAudience: *oidcAudience, oidcJWKSURL: *oidcJWKSURL,
+		oidcIssuer: *oidcIssuer, oidcAudience: *oidcAudience, oidcJWKSURL: *oidcJWKSURL, oidcJWKSAuthority: *oidcJWKSAuthority,
 	})
 }
 
@@ -162,14 +164,14 @@ func serve(options serverOptions) error {
 }
 
 func oidcConfigured(options serverOptions) bool {
-	return options.oidcIssuer != "" || options.oidcAudience != "" || options.oidcJWKSURL != ""
+	return options.oidcIssuer != "" || options.oidcAudience != "" || options.oidcJWKSURL != "" || options.oidcJWKSAuthority != ""
 }
 
 func oidcConfigFromOptions(options serverOptions) (*controlplane.OIDCConfig, error) {
 	if options.oidcIssuer == "" || options.oidcAudience == "" || options.oidcJWKSURL == "" {
 		return nil, errors.New("--oidc-issuer, --oidc-audience and --oidc-jwks-url must be provided together")
 	}
-	return &controlplane.OIDCConfig{Issuer: options.oidcIssuer, Audience: options.oidcAudience, JWKSURL: options.oidcJWKSURL}, nil
+	return &controlplane.OIDCConfig{Issuer: options.oidcIssuer, Audience: options.oidcAudience, JWKSURL: options.oidcJWKSURL, TrustedJWKSAuthority: options.oidcJWKSAuthority}, nil
 }
 
 func loadTLSCertificate(certPath, keyPath string) (tls.Certificate, error) {

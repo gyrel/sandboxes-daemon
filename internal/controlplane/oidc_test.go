@@ -102,7 +102,8 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 	}
 	fixture.config = OIDCConfig{
 		Issuer: testOIDCIssuer, Audience: testOIDCAudience, JWKSURL: idp.server.URL + "/jwks",
-		HTTPClient: idp.server.Client(), Clock: func() time.Time { return fixture.now },
+		TrustedJWKSAuthority: strings.TrimPrefix(idp.server.URL, "https://"),
+		HTTPClient:           idp.server.Client(), Clock: func() time.Time { return fixture.now },
 		RefreshInterval: time.Minute, MaxCacheAge: 5 * time.Minute, MinRefreshInterval: time.Second,
 	}
 	idp.setKeys(t, jwksDocument{Keys: []jwkKey{
@@ -284,12 +285,16 @@ func TestOIDCRejectsStaleKeyCacheWhenRefreshFails(t *testing.T) {
 func TestOIDCConfigValidationFailsClosed(t *testing.T) {
 	base := OIDCConfig{Issuer: testOIDCIssuer, Audience: testOIDCAudience, JWKSURL: "https://issuer.example.test/jwks"}
 	cases := map[string]OIDCConfig{
-		"missing issuer":   {Audience: base.Audience, JWKSURL: base.JWKSURL},
-		"missing audience": {Issuer: base.Issuer, JWKSURL: base.JWKSURL},
-		"missing jwks":     {Issuer: base.Issuer, Audience: base.Audience},
-		"http issuer":      {Issuer: "http://issuer.example.test", Audience: base.Audience, JWKSURL: base.JWKSURL},
-		"http jwks":        {Issuer: base.Issuer, Audience: base.Audience, JWKSURL: "http://issuer.example.test/jwks"},
-		"negative leeway":  {Issuer: base.Issuer, Audience: base.Audience, JWKSURL: base.JWKSURL, Leeway: -time.Second},
+		"missing issuer":           {Audience: base.Audience, JWKSURL: base.JWKSURL},
+		"missing audience":         {Issuer: base.Issuer, JWKSURL: base.JWKSURL},
+		"missing jwks":             {Issuer: base.Issuer, Audience: base.Audience},
+		"http issuer":              {Issuer: "http://issuer.example.test", Audience: base.Audience, JWKSURL: base.JWKSURL},
+		"http jwks":                {Issuer: base.Issuer, Audience: base.Audience, JWKSURL: "http://issuer.example.test/jwks"},
+		"cross host":               {Issuer: base.Issuer, Audience: base.Audience, JWKSURL: "https://attacker.example.test/jwks"},
+		"cross port":               {Issuer: base.Issuer, Audience: base.Audience, JWKSURL: "https://issuer.example.test:444/jwks"},
+		"wrong explicit authority": {Issuer: base.Issuer, Audience: base.Audience, JWKSURL: "https://attacker.example.test/jwks", TrustedJWKSAuthority: "other.example.test"},
+		"authority with path":      {Issuer: base.Issuer, Audience: base.Audience, JWKSURL: base.JWKSURL, TrustedJWKSAuthority: "issuer.example.test/path"},
+		"negative leeway":          {Issuer: base.Issuer, Audience: base.Audience, JWKSURL: base.JWKSURL, Leeway: -time.Second},
 		"inconsistent cache": {
 			Issuer: base.Issuer, Audience: base.Audience, JWKSURL: base.JWKSURL,
 			RefreshInterval: 10 * time.Minute, MaxCacheAge: time.Minute, MinRefreshInterval: time.Second,
@@ -301,6 +306,45 @@ func TestOIDCConfigValidationFailsClosed(t *testing.T) {
 				t.Fatal("invalid OIDC configuration was accepted")
 			}
 		})
+	}
+}
+
+func TestOIDCExplicitJWKSAuthority(t *testing.T) {
+	config := OIDCConfig{Issuer: testOIDCIssuer, Audience: testOIDCAudience,
+		JWKSURL: "https://keys.example.test:8443/jwks", TrustedJWKSAuthority: "keys.example.test:8443"}
+	if _, err := NewOIDCValidator(config); err != nil {
+		t.Fatalf("explicitly trusted JWKS authority rejected: %v", err)
+	}
+}
+
+func TestOIDCJWKSRedirectAuthority(t *testing.T) {
+	for _, useCustom := range []bool{false, true} {
+		var original *http.Client
+		if useCustom {
+			original = &http.Client{}
+		}
+		client := newOIDCClient(original)
+		previous, err := http.NewRequest(http.MethodGet, "https://issuer.example.test/jwks", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			target  string
+			allowed bool
+		}{
+			{"https://issuer.example.test/keys", true},
+			{"https://attacker.example.test/keys", false},
+			{"https://issuer.example.test:444/keys", false},
+			{"http://issuer.example.test/keys", false},
+		} {
+			request, err := http.NewRequest(http.MethodGet, tc.target, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := client.CheckRedirect(request, []*http.Request{previous}) == nil; got != tc.allowed {
+				t.Errorf("custom=%v redirect %s allowed=%v, want %v", useCustom, tc.target, got, tc.allowed)
+			}
+		}
 	}
 }
 
