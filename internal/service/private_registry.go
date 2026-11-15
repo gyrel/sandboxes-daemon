@@ -32,16 +32,18 @@ func privateRegistrySettingKey(id string) string { return "sandbox.registry-priv
 // SetPrivateRegistry configures the single allowlisted private registry that
 // the guest registry proxy may reach. Empty host disables the feature.
 func (s *Service) SetPrivateRegistry(host, service string, realms, redirects []string, caPEM []byte) error {
-	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
 	if host == "" {
 		if service != "" || len(realms) != 0 || len(redirects) != 0 {
 			return errors.New("private registry host is required")
 		}
 		return nil
 	}
-	if !validRegistryHost(host) {
+	normalizedHost, err := registrycredentials.NormalizeRegistryEndpoint(host)
+	if err != nil {
 		return fmt.Errorf("%w: private registry host is invalid", core.ErrConflict)
 	}
+	host = normalizedHost
 	if service == "" || strings.ContainsAny(service, " \t\r\n") {
 		return fmt.Errorf("%w: private registry service is required", core.ErrConflict)
 	}
@@ -72,11 +74,12 @@ func parsePrivateRealms(realms []string) ([]registryauth.Realm, error) {
 	parsed := make([]registryauth.Realm, 0, len(realms))
 	for _, raw := range realms {
 		realmHost, path, found := strings.Cut(raw, "/")
-		realmHost = strings.ToLower(strings.TrimSpace(realmHost))
-		if !found || !validRegistryHost(realmHost) || path == "" || strings.ContainsAny(path, "?#\\") || strings.Contains(path, "..") {
+		realmHost = strings.TrimSuffix(strings.TrimSpace(realmHost), ".")
+		normalizedHost, err := registrycredentials.NormalizeRegistryEndpoint(realmHost)
+		if !found || err != nil || path == "" || strings.ContainsAny(path, "?#\\") || strings.Contains(path, "..") {
 			return nil, fmt.Errorf("%w: private registry realm is invalid", core.ErrConflict)
 		}
-		parsed = append(parsed, registryauth.Realm{Host: realmHost, Path: "/" + strings.TrimPrefix(path, "/")})
+		parsed = append(parsed, registryauth.Realm{Host: normalizedHost, Path: "/" + strings.TrimPrefix(path, "/")})
 	}
 	if len(parsed) == 0 {
 		return nil, fmt.Errorf("%w: private registry realm is required", core.ErrConflict)
@@ -87,41 +90,20 @@ func parsePrivateRealms(realms []string) ([]registryauth.Realm, error) {
 func parsePrivateRedirects(redirects []string) ([]string, error) {
 	clean := make([]string, 0, len(redirects))
 	for _, redirect := range redirects {
-		redirect = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(redirect), "."))
-		if !validRegistryHost(redirect) {
+		redirect = strings.TrimSuffix(strings.TrimSpace(redirect), ".")
+		normalized, err := registrycredentials.NormalizeRegistryEndpoint(redirect)
+		if err != nil {
 			return nil, fmt.Errorf("%w: private registry redirect host is invalid", core.ErrConflict)
 		}
-		clean = append(clean, redirect)
+		clean = append(clean, normalized)
 	}
 	return clean, nil
 }
 
+//nolint:unused // retained for package-level validation callers and tests.
 func validRegistryHost(host string) bool {
-	if host == "" || len(host) > 253 || strings.ContainsAny(host, "*/@?#\\ \t\r\n") || strings.Contains(host, "://") || strings.HasSuffix(host, ".") {
-		return false
-	}
-	if net.ParseIP(host) != nil {
-		return false
-	}
-	for _, label := range strings.Split(host, ".") {
-		if !validRegistryLabel(label) {
-			return false
-		}
-	}
-	return true
-}
-
-func validRegistryLabel(label string) bool {
-	if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-		return false
-	}
-	for _, char := range label {
-		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	_, err := registrycredentials.NormalizeRegistryEndpoint(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	return err == nil
 }
 
 func (s *Service) privateRegistryScopeFor(ctx context.Context, id string) (registrycredentials.Scope, error) {
@@ -175,7 +157,7 @@ type privateRegistryTransportFactory struct {
 }
 
 func (f privateRegistryTransportFactory) Registry(ctx context.Context, authority string) (http.RoundTripper, error) {
-	if !strings.EqualFold(authority, f.host) {
+	if !registrycredentials.SameRegistryEndpoint(authority, f.host) {
 		return nil, errors.New("untrusted private registry authority")
 	}
 	prefixes, err := f.prefixes(ctx, authority)
@@ -188,7 +170,7 @@ func (f privateRegistryTransportFactory) Registry(ctx context.Context, authority
 func (f privateRegistryTransportFactory) Token(ctx context.Context, realm registryauth.Realm) (http.RoundTripper, error) {
 	trusted := false
 	for _, candidate := range f.realms {
-		if strings.EqualFold(candidate.Host, realm.Host) && candidate.Path == realm.Path {
+		if registrycredentials.SameRegistryEndpoint(candidate.Host, realm.Host) && candidate.Path == realm.Path {
 			trusted = true
 		}
 	}
@@ -205,11 +187,15 @@ func (f privateRegistryTransportFactory) Token(ctx context.Context, realm regist
 func (f privateRegistryTransportFactory) Redirect(ctx context.Context, authority string) (http.RoundTripper, error) {
 	trusted := false
 	for _, candidate := range f.redirects {
-		if strings.EqualFold(candidate, authority) {
+		if registrycredentials.SameRegistryEndpoint(candidate, authority) {
 			trusted = true
 		}
 	}
 	if !trusted {
+		return nil, errors.New("untrusted private registry redirect authority")
+	}
+	endpoint, err := registrycredentials.ParseRegistryEndpoint(authority)
+	if err != nil {
 		return nil, errors.New("untrusted private registry redirect authority")
 	}
 	prefixes, err := f.prefixes(ctx, authority)
@@ -222,16 +208,19 @@ func (f privateRegistryTransportFactory) Redirect(ctx context.Context, authority
 	}
 	var next atomic.Uint64
 	return &http.Transport{
-		Proxy: nil, DisableKeepAlives: true, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: f.roots, ServerName: authority},
+		Proxy: nil, DisableKeepAlives: true,
+		// For IP-literal redirects ServerName is the IP itself: Go then checks
+		// the certificate IP SAN and omits SNI instead of inventing a name.
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: f.roots, ServerName: endpoint.Hostname},
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			if network != "tcp" || address != net.JoinHostPort(authority, "443") {
+			if network != "tcp" || address != net.JoinHostPort(endpoint.Hostname, endpoint.PortString()) {
 				return nil, errors.New("redirect transport rejected unexpected destination")
 			}
 			start := int(next.Add(1) % uint64(len(addresses))) //nolint:gosec // bounded by len(addresses).
 			var failures []error
 			for offset := range addresses {
 				ip := addresses[(start+offset)%len(addresses)]
-				conn, dialErr := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, "443"))
+				conn, dialErr := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, endpoint.PortString()))
 				if dialErr == nil {
 					return conn, nil
 				}
@@ -242,10 +231,22 @@ func (f privateRegistryTransportFactory) Redirect(ctx context.Context, authority
 	}, nil
 }
 
-func (f privateRegistryTransportFactory) prefixes(ctx context.Context, host string) ([]netip.Prefix, error) {
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	if err != nil || len(addresses) == 0 {
-		return nil, errors.New("private registry DNS lookup failed")
+func (f privateRegistryTransportFactory) prefixes(ctx context.Context, authority string) ([]netip.Prefix, error) {
+	endpoint, err := registrycredentials.ParseRegistryEndpoint(authority)
+	if err != nil {
+		return nil, errors.New("private registry authority is invalid")
+	}
+	host := endpoint.Hostname
+	var addresses []netip.Addr
+	if address, parseErr := netip.ParseAddr(host); parseErr == nil {
+		// An IP-literal registry has no DNS step and no second resolution that
+		// could disagree with the address the broker dials.
+		addresses = []netip.Addr{address}
+	} else {
+		addresses, err = net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		if err != nil || len(addresses) == 0 {
+			return nil, errors.New("private registry DNS lookup failed")
+		}
 	}
 	prefixes := make([]netip.Prefix, 0, len(addresses))
 	seen := make(map[netip.Addr]struct{}, len(addresses))
@@ -256,7 +257,9 @@ func (f privateRegistryTransportFactory) prefixes(ctx context.Context, host stri
 			// addresses; skip the unusable entry and keep the verified set.
 			continue
 		}
-		decision, err := f.service.checkResolvedEgress(ctx, f.sandboxID, host, address)
+		// Policy is evaluated for the exact host and TCP port the broker will
+		// dial, so a custom-port registry cannot borrow a rule for port 443.
+		decision, err := f.service.checkResolvedEgress(ctx, f.sandboxID, host, address, endpoint.Port())
 		if err != nil {
 			return nil, err
 		}

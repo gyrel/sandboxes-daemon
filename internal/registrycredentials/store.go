@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -207,45 +206,23 @@ func canonicalRegistry(value string) (string, error) {
 	if host == "" {
 		host = "docker.io"
 	}
-	if strings.ContainsAny(host, "/@?#\\\x00\r\n \t") || strings.Contains(host, "://") {
-		return "", fmt.Errorf("%w: registry must be a host name with an optional port", ErrInvalidCredential)
-	}
-	hostname, port, err := splitRegistryHostPort(host)
+	endpoint, err := ParseRegistryEndpoint(host)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: registry must be a host name or IP literal with an optional port", ErrInvalidCredential)
 	}
-	if !validRegistryHostname(hostname) {
-		return "", fmt.Errorf("%w: registry host name is invalid", ErrInvalidCredential)
-	}
-	if port != "" {
-		return net.JoinHostPort(hostname, port), nil
-	}
-	if strings.Contains(hostname, ":") {
-		return "[" + hostname + "]", nil
-	}
-	return hostname, nil
+	return endpoint.Authority(), nil
 }
 
+//nolint:unused // retained for package-level compatibility with earlier callers.
 func splitRegistryHostPort(host string) (string, string, error) {
-	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		address := strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-		if net.ParseIP(address) == nil || !strings.Contains(address, ":") {
-			return "", "", fmt.Errorf("%w: registry host or port is invalid", ErrInvalidCredential)
-		}
-		return address, "", nil
-	}
-	if !strings.HasPrefix(host, "[") && strings.Count(host, ":") != 1 {
-		return host, "", nil
-	}
-	hostname, port, err := net.SplitHostPort(host)
+	endpoint, err := ParseRegistryEndpoint(host)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: registry host or port is invalid", ErrInvalidCredential)
 	}
-	portNumber, err := strconv.Atoi(port)
-	if err != nil || portNumber < 1 || portNumber > 65535 {
-		return "", "", fmt.Errorf("%w: registry port is invalid", ErrInvalidCredential)
+	if !endpoint.portSet {
+		return endpoint.Hostname, "", nil
 	}
-	return hostname, port, nil
+	return endpoint.Hostname, endpoint.port, nil
 }
 
 func validRegistryHostname(hostname string) bool {

@@ -70,20 +70,23 @@ func TestNewPullProxyRedirectDefaultsAreRegistryScoped(t *testing.T) {
 	}
 }
 
-func TestNewPullProxyRejectsInvalidRedirectAuthority(t *testing.T) {
-	_, err := NewPullProxy(&Store{}, PullProxyConfig{
+func TestNewPullProxyValidatesRedirectAuthority(t *testing.T) {
+	proxy, err := NewPullProxy(&Store{}, PullProxyConfig{
 		Registry: "registry.private.test", Authority: "registry.private.test", SandboxName: "synthetic-sandbox",
 		CredentialScope: ScopeSandbox, Service: "registry.fixture",
 		Realms:              []registryauth.Realm{{Host: "auth.private.test", Path: "/token"}},
 		RedirectAuthorities: []string{"cdn.private.test:8443"}, TransportFactory: pullRedirectFactory{},
 		Limiter: NewPullLimiter(), MaxBytes: 1024,
 	})
-	if err == nil {
-		t.Fatal("NewPullProxy accepted a non-HTTPS registry redirect authority")
+	if err != nil {
+		t.Fatalf("NewPullProxy rejected a custom-port redirect authority: %v", err)
 	}
-	for _, invalid := range []string{"*", "cdn..private.test", "-cdn.private.test", "cdn.private.test:"} {
+	if !proxy.isRedirectHost("cdn.private.test:8443") || proxy.isRedirectHost("cdn.private.test:9443") {
+		t.Fatal("custom-port redirect authority matching is not exact")
+	}
+	for _, invalid := range []string{"*", "cdn..private.test", "-cdn.private.test", "cdn.private.test:", "user@cdn.private.test", "https://cdn.private.test", "cdn.private.test:0", "cdn.private.test:65536"} {
 		if _, ok := normalizedRedirectHost(invalid); ok {
-			t.Errorf("normalizedRedirectHost(%q) accepted an invalid DNS authority", invalid)
+			t.Errorf("normalizedRedirectHost(%q) accepted an invalid authority", invalid)
 		}
 	}
 }

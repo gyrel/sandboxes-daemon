@@ -127,10 +127,17 @@ func (f sandboxRegistryTransportFactory) allowedPrefixes(ctx context.Context, ho
 	return prefixes, nil
 }
 
-func (s *Service) checkResolvedEgress(ctx context.Context, sandboxID, host string, address netip.Addr) (PolicyDecision, error) {
+// checkResolvedEgress evaluates a pinned registry/service destination against
+// the sandbox policy. The optional port is the exact TCP port the broker will
+// dial; callers that omit it keep the historical HTTPS default of 443.
+func (s *Service) checkResolvedEgress(ctx context.Context, sandboxID, host string, address netip.Addr, ports ...uint16) (PolicyDecision, error) {
 	allow, deny, err := s.checkPolicyRules(ctx, sandboxID)
 	if err != nil {
 		return PolicyDecision{}, err
+	}
+	port := uint16(443)
+	if len(ports) > 0 && ports[0] != 0 {
+		port = ports[0]
 	}
 	convert := func(rules []sandbox.NetworkRule, action gatewaypolicy.Action) []gatewaypolicy.Rule {
 		converted := make([]gatewaypolicy.Rule, 0, len(rules))
@@ -141,7 +148,7 @@ func (s *Service) checkResolvedEgress(ctx context.Context, sandboxID, host strin
 		return converted
 	}
 	decision := gatewaypolicy.Check(convert(allow, gatewaypolicy.Allow), convert(deny, gatewaypolicy.Deny), gatewaypolicy.Request{
-		Protocol: tcpProtocol, Address: address.String(), Domain: host, Port: 443,
+		Protocol: tcpProtocol, Address: address.String(), Domain: host, Port: port,
 	})
 	return PolicyDecision{Allowed: decision.Allow, RuleID: decision.RuleID, Reason: decision.Reason}, nil
 }

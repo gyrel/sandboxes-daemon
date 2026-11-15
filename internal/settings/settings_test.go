@@ -75,6 +75,54 @@ func TestLoadRejectsUnsafeAndUnknown(t *testing.T) {
 	}
 }
 
+func TestRegistryPrivateSettingsAcceptCustomPortsAndIPLiterals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("settings ACLs are covered by TestLoadDefaultsAndFile on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.toml")
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "DNS custom port", host: "registry.example.test:5000", want: "registry.example.test:5000"},
+		{name: "IPv4 custom port", host: "192.0.2.10:5000", want: "192.0.2.10:5000"},
+		{name: "IPv6 custom port", host: "[2001:DB8::1]:5000", want: "[2001:db8::1]:5000"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := `registry_private_host = "` + test.host + `"
+registry_private_service = "svc"
+registry_private_realms = "auth.example.test:5000/token"
+registry_private_redirects = "cdn.example.test:5000"
+`
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			values, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if values.RegistryPrivateHost != test.want || values.RegistryPrivateRealms[0] != "auth.example.test:5000/token" || values.RegistryPrivateRedirects[0] != "cdn.example.test:5000" {
+				t.Fatalf("values = %+v", values)
+			}
+		})
+	}
+	for _, invalid := range []string{"https://registry.example.test", "user@registry.example.test", "registry.example.test/path", "registry.example.test:0", "[2001:db8::1"} {
+		body := `registry_private_host = "` + invalid + `"
+registry_private_service = "svc"
+registry_private_realms = "auth.example.test/token"
+`
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("invalid registry host %q was accepted", invalid)
+		}
+	}
+}
+
 func TestRegistryPrivateSettings(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("settings ACLs are covered by TestLoadDefaultsAndFile on Windows")

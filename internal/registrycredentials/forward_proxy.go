@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -44,15 +43,22 @@ func (p *PullProxy) serveForwardRequest(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "TLS host does not match CONNECT target", http.StatusMisdirectedRequest)
 		return
 	}
-	host, ok := normalizedRedirectHost(r.TLS.ServerName)
+	// Host-header routing is exact and includes any custom port. The SNI check
+	// above proves the guest reached the CONNECT authority; every route below
+	// compares this normalized host:port before selecting a transport.
+	host, ok := normalizedRedirectHost(trimRegistryLookupHost(r.Host))
 	if !ok {
 		http.Error(w, "invalid TLS host", http.StatusMisdirectedRequest)
+		return
+	}
+	if target, ok := r.Context().Value(registryConnectTargetKey{}).(string); ok && !SameRegistryEndpoint(target, host) {
+		http.Error(w, "request host does not match CONNECT target", http.StatusMisdirectedRequest)
 		return
 	}
 	// The broker terminates the guest-visible token exchange on the registry
 	// authority. The real realm stays host-side and is selected from the
 	// upstream Bearer challenge.
-	if strings.EqualFold(host, p.authority) && r.URL.Path == brokerTokenPath {
+	if SameRegistryEndpoint(host, p.authority) && r.URL.Path == brokerTokenPath {
 		p.servePrivateTokenRequest(w, r)
 		return
 	}
@@ -62,7 +68,7 @@ func (p *PullProxy) serveForwardRequest(w http.ResponseWriter, r *http.Request) 
 		p.serveTokenRequest(w, r, realm)
 		return
 	}
-	if strings.EqualFold(host, p.authority) {
+	if SameRegistryEndpoint(host, p.authority) {
 		p.serveRegistryForward(w, r, host)
 		return
 	}
@@ -78,17 +84,14 @@ func (p *PullProxy) serveForwardRequest(w http.ResponseWriter, r *http.Request) 
 }
 
 func requestHostMatchesTLS(r *http.Request) bool {
-	if r == nil || r.TLS == nil || r.TLS.ServerName == "" || r.Host == "" {
+	if r == nil || r.TLS == nil || r.Host == "" {
 		return false
 	}
-	host := strings.ToLower(strings.TrimSuffix(r.Host, "."))
-	if parsedHost, port, err := net.SplitHostPort(host); err == nil {
-		if port != "443" {
-			return false
-		}
-		host = strings.ToLower(strings.TrimSuffix(parsedHost, "."))
+	endpoint, err := ParseRegistryEndpoint(trimRegistryLookupHost(r.Host))
+	if err != nil {
+		return false
 	}
-	return host == strings.ToLower(strings.TrimSuffix(r.TLS.ServerName, "."))
+	return tlsServerNameMatches(r.TLS.ServerName, endpoint.Hostname)
 }
 
 func (p *PullProxy) serveTokenRequest(w http.ResponseWriter, r *http.Request, realm registryauth.Realm) {
@@ -602,7 +605,7 @@ func (p *PullProxy) exchangeOperationToken(ctx context.Context, operation regist
 }
 
 func parseRegistryOperation(method string, endpoint *url.URL, expectedHost string) (registryOperation, error) {
-	if endpoint == nil || endpoint.Scheme != registryHTTPScheme || !strings.EqualFold(endpoint.Host, expectedHost) || endpoint.User != nil || endpoint.Opaque != "" || endpoint.Fragment != "" {
+	if endpoint == nil || endpoint.Scheme != registryHTTPScheme || !SameRegistryEndpoint(endpoint.Host, expectedHost) || endpoint.User != nil || endpoint.Opaque != "" || endpoint.Fragment != "" {
 		return registryOperation{}, errors.New("invalid registry request URL")
 	}
 	if endpoint.Path == registryV2Path && (method == http.MethodGet || method == http.MethodHead) {
@@ -765,14 +768,14 @@ func (p *PullProxy) authorizeUploadRequest(endpoint *url.URL, operation registry
 		}
 	}
 	session, ok := p.uploads[key]
-	if !ok || session.registryHost != endpoint.Host || session.repository != operation.repository || session.id != operation.uploadID {
+	if !ok || !SameRegistryEndpoint(session.registryHost, endpoint.Host) || session.repository != operation.repository || session.id != operation.uploadID {
 		return false
 	}
 	return sameUploadURL(session.location, endpoint, method)
 }
 
 func sameUploadURL(stored, incoming *url.URL, method string) bool {
-	if stored == nil || incoming == nil || !strings.EqualFold(stored.Host, incoming.Host) || stored.Path != incoming.Path || stored.Scheme != incoming.Scheme {
+	if stored == nil || incoming == nil || !SameRegistryEndpoint(stored.Host, incoming.Host) || stored.Path != incoming.Path || stored.Scheme != incoming.Scheme {
 		return false
 	}
 	storedValues, err := url.ParseQuery(stored.RawQuery)
@@ -861,7 +864,7 @@ func (p *PullProxy) finishGuestRedirect(w http.ResponseWriter, endpoint *url.URL
 		http.Error(w, "registry redirect is untrusted", http.StatusBadGateway)
 		return
 	}
-	if !strings.EqualFold(redirect.Host, p.authority) {
+	if !SameRegistryEndpoint(redirect.Host, p.authority) {
 		if err := p.recordBlobRedirect(redirect); err != nil {
 			_ = response.Body.Close()
 			http.Error(w, "registry redirect capacity reached", http.StatusServiceUnavailable)
@@ -881,7 +884,7 @@ func (p *PullProxy) followPrivateRedirect(ctx context.Context, w http.ResponseWr
 			http.Error(w, "registry redirect is untrusted", http.StatusBadGateway)
 			return
 		}
-		if strings.EqualFold(redirect.Host, p.authority) {
+		if SameRegistryEndpoint(redirect.Host, p.authority) {
 			http.Error(w, "registry redirect loop", http.StatusBadGateway)
 			return
 		}
@@ -1036,7 +1039,7 @@ func (p *PullProxy) validateUploadLocation(current *url.URL, location, repositor
 
 func validUploadLocationAuthority(next *url.URL, authority string) bool {
 	return next != nil && next.Scheme == registryHTTPScheme && next.User == nil && next.Fragment == "" &&
-		next.Opaque == "" && strings.EqualFold(next.Host, authority) && next.RawPath == ""
+		next.Opaque == "" && SameRegistryEndpoint(next.Host, authority) && next.RawPath == ""
 }
 
 func uploadIDFromLocationPath(path, repository string) (string, bool) {

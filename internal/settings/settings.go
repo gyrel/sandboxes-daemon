@@ -15,6 +15,7 @@ import (
 
 	"github.com/rheic/sandboxes-daemon/internal/controlplane"
 	"github.com/rheic/sandboxes-daemon/internal/policysync"
+	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
 )
 
 // Values are the supported user overrides. Zero means "not set".
@@ -173,9 +174,11 @@ func validateRegistryPrivate(values *Values) error {
 		}
 		return nil
 	}
-	if !validDNSHost(values.RegistryPrivateHost) {
-		return errors.New("settings registry_private_host must be an exact DNS hostname")
+	normalizedHost, err := registrycredentials.NormalizeRegistryEndpoint(values.RegistryPrivateHost)
+	if err != nil {
+		return errors.New("settings registry_private_host must be a DNS host or IP literal with an optional port")
 	}
+	values.RegistryPrivateHost = normalizedHost
 	if values.RegistryPrivateService == "" || len(values.RegistryPrivateService) > 253 || strings.ContainsAny(values.RegistryPrivateService, " \t\r\n") {
 		return errors.New("settings registry_private_service is required and must be a token")
 	}
@@ -195,14 +198,15 @@ func parseRegistryRealms(value string) ([]string, error) {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		host, path, found := strings.Cut(part, "/")
-		host = strings.ToLower(strings.TrimSpace(host))
-		if !found || !validDNSHost(host) || path == "" || strings.ContainsAny(path, "?#\\") || strings.Contains(path, "..") {
+		host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+		normalizedHost, err := registrycredentials.NormalizeRegistryEndpoint(host)
+		if !found || err != nil || path == "" || strings.ContainsAny(path, "?#\\") || strings.Contains(path, "..") {
 			return nil, errors.New("registry_private_realms must be a comma-separated list of HOST/PATH")
 		}
 		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
-		entry := host + path
+		entry := normalizedHost + path
 		if _, exists := seen[entry]; exists {
 			return nil, errors.New("registry_private_realms contains a duplicate entry")
 		}
@@ -301,7 +305,7 @@ func parseRegistryPrivateSetting(values *Values, key, value string) error {
 		}
 		values.RegistryPrivateRealms = realms
 	case "registry_private_redirects":
-		redirects, err := parseHostList(value)
+		redirects, err := parseRegistryHostList(value)
 		if err != nil {
 			return err
 		}
@@ -344,6 +348,27 @@ func parseHostList(value string) ([]string, error) {
 		}
 		seen[host] = struct{}{}
 		hosts[i] = host
+	}
+	return hosts, nil
+}
+
+func parseRegistryHostList(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	hosts := strings.Split(value, ",")
+	for i := range hosts {
+		host := strings.TrimSuffix(strings.TrimSpace(hosts[i]), ".")
+		normalized, err := registrycredentials.NormalizeRegistryEndpoint(host)
+		if err != nil {
+			return nil, errors.New("registry_private_redirects must be a comma-separated list of exact registry authorities")
+		}
+		if _, exists := seen[normalized]; exists {
+			return nil, errors.New("registry_private_redirects contains a duplicate host")
+		}
+		seen[normalized] = struct{}{}
+		hosts[i] = normalized
 	}
 	return hosts, nil
 }
