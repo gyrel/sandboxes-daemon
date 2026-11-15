@@ -260,14 +260,26 @@ func TestCloneLiveAcceptanceAgainstOwnedVM(t *testing.T) {
 		}
 	}
 
-	// 3. The Git export entry must use the gitdir indirection.
-	out, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID,
-		[]string{"cat", posixpath.Join(cloneExportGuestDir, posixpath.Base(workdir), ".git")}, nil)
-	if err != nil || code != 0 {
-		t.Fatalf("cat clone export entry: code=%d err=%v stderr=%q", code, err, stderr)
+	// 3. The endpoint must be guarded by a per-sandbox token: the guest keeps
+	// exactly that token, the repository name and an access hook.
+	token, repository, ok := strings.Cut(firstEndpoint.Repository, "/")
+	if !ok || token == "" || repository != posixpath.Base(workdir) {
+		t.Fatalf("clone endpoint repository = %q, want <token>/%s", firstEndpoint.Repository, posixpath.Base(workdir))
 	}
-	if want := "gitdir: " + posixpath.Join(workdir, ".git"); strings.TrimSpace(out) != want {
-		t.Fatalf("clone export entry = %q, want %q", strings.TrimSpace(out), want)
+	for path, want := range map[string]string{
+		posixpath.Join(cloneAuthGuestDir, "token"):      token,
+		posixpath.Join(cloneAuthGuestDir, "repository"): repository,
+	} {
+		out, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID, []string{"cat", path}, nil)
+		if err != nil || code != 0 {
+			t.Fatalf("cat %s: code=%d err=%v stderr=%q", path, code, err, stderr)
+		}
+		if strings.TrimSpace(out) != want {
+			t.Fatalf("%s = %q, want %q", path, strings.TrimSpace(out), want)
+		}
+	}
+	if _, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID, []string{"test", "-x", posixpath.Join(cloneAuthGuestDir, "access-hook")}, nil); err != nil || code != 0 {
+		t.Fatalf("access hook is not executable: code=%d err=%v stderr=%q", code, err, stderr)
 	}
 
 	// 4. Hooks and credential helpers must be disabled locally.
