@@ -6,6 +6,7 @@
 
 ### Added
 
+- Centralize network policy evaluation in the pure `orgpolicy.Apply` evaluator used by every create, start and policy-update path. Organization deny rules keep precedence over local rules, local allows and denies are preserved, organization allows stay advisory so they can never widen access, and duplicate targets are removed deterministically.
 - Accept registry endpoints with an explicit non-default port and IPv4 or IPv6 literals in registry credentials, private-registry settings, realm/redirect configuration, and broker request routing. Authorities are normalized with bracketed IPv6 literals, and ambiguous forms with userinfo, paths, schemes, wildcards, or invalid ports are rejected.
 - Evaluate registry egress policy against the exact normalized host and TCP port the broker dials, so a custom-port registry cannot reuse a rule for port 443.
 
@@ -15,6 +16,7 @@
 
 ### Security and limitations
 
+- When organization policy enforcement is enabled, a missing or unparsable stored bundle still fails closed with a typed `ErrBundleMissing` or `ErrBundleInvalid` conflict before any sandbox start reaches the runtime.
 - The broker keeps HTTPS-only forwarding, DNS hostname verification, exact host-header routing, and exact redirect/realm authority matching. IP-literal registries verify the certificate IP SAN and do not invent an SNI name.
 - Live VM pull/push acceptance for custom-port and IP-literal registries remains unverified.
 - Expose the effective organization policy through `SandboxService.GetOrgPolicy`.

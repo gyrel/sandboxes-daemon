@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rheic/sandboxes-core/sandbox"
+	gatewaypolicy "github.com/rheic/sandboxes-gateway/policy"
 
 	"github.com/rheic/sandboxes-daemon/internal/controlplane"
 	"github.com/rheic/sandboxes-daemon/internal/store"
@@ -203,6 +207,162 @@ func TestInspectFailsClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestApplyDenyPrecedenceMatrix(t *testing.T) {
+	orgDeny443 := sandbox.NetworkRule{Protocol: "tcp", CIDR: "203.0.113.7/32", Port: 443, RuleID: "org-deny-443"}
+	localAllow443 := sandbox.NetworkRule{Protocol: "tcp", CIDR: "203.0.113.7/32", Port: 443, RuleID: "local-allow-443"}
+	localDenyDomain := sandbox.NetworkRule{Protocol: "tcp", Domain: "api.example.test", Port: 8443, RuleID: "local-deny-domain"}
+	orgAllowDomain := sandbox.NetworkRule{Protocol: "tcp", Domain: "api.example.test", Port: 8443, RuleID: "org-allow-domain"}
+	duplicateOrgDeny := sandbox.NetworkRule{Protocol: "tcp", CIDR: "203.0.113.7/32", Port: 443, RuleID: "org-deny-duplicate"}
+	localDenySameAsOrg := sandbox.NetworkRule{Protocol: "tcp", CIDR: "203.0.113.7/32", Port: 443, RuleID: "local-deny-duplicate"}
+	localDenyUnique := sandbox.NetworkRule{Protocol: "udp", CIDR: "198.51.100.0/24", Port: 53, RuleID: "local-deny-unique"}
+	allowFirst := sandbox.NetworkRule{Protocol: "tcp", CIDR: "198.51.100.10/32", Port: 443, RuleID: "allow-first"}
+	allowDuplicate := sandbox.NetworkRule{Protocol: "tcp", CIDR: "198.51.100.10/32", Port: 443, RuleID: "allow-duplicate"}
+	orgDenyIPv4 := sandbox.NetworkRule{Protocol: "tcp", CIDR: "203.0.113.0/24", Port: 443, RuleID: "org-v4"}
+	orgDenyDomain := sandbox.NetworkRule{Protocol: "udp", Domain: "api.example.test", Port: 8443, RuleID: "org-domain"}
+	localDenyUDP := sandbox.NetworkRule{Protocol: "udp", CIDR: "203.0.113.0/24", Port: 443, RuleID: "local-v4-udp"}
+	localAllowDomain := sandbox.NetworkRule{Protocol: "tcp", Domain: "allowed.example.test", Port: 443, RuleID: "local-domain"}
+	orgAllowUnrelated := sandbox.NetworkRule{Protocol: "tcp", Domain: "advisory.example.test", Port: 443, RuleID: "org-advisory"}
+	unrelatedOrgDeny := sandbox.NetworkRule{Protocol: "udp", CIDR: "203.0.113.9/32", Port: 8443, RuleID: "org-unrelated"}
+	localAllowPositive := sandbox.NetworkRule{Protocol: "tcp", CIDR: "198.51.100.0/24", Port: 443, RuleID: "local-positive"}
+
+	tests := []struct {
+		name         string
+		local        Policy
+		organization Policy
+		wantAllow    []sandbox.NetworkRule
+		wantDeny     []sandbox.NetworkRule
+		request      *gatewaypolicy.Request
+		wantAllowed  bool
+		wantRuleID   string
+	}{
+		{
+			name:         "organization deny wins over matching local allow",
+			local:        Policy{Allow: []sandbox.NetworkRule{localAllow443}},
+			organization: Policy{Deny: []sandbox.NetworkRule{orgDeny443}},
+			wantAllow:    []sandbox.NetworkRule{localAllow443},
+			wantDeny:     []sandbox.NetworkRule{orgDeny443},
+			request:      &gatewaypolicy.Request{Protocol: "tcp", Address: "203.0.113.7", Port: 443},
+			wantAllowed:  false,
+			wantRuleID:   "org-deny-443",
+		},
+		{
+			name:         "organization allow does not override local deny",
+			local:        Policy{Deny: []sandbox.NetworkRule{localDenyDomain}},
+			organization: Policy{Allow: []sandbox.NetworkRule{orgAllowDomain}},
+			wantDeny:     []sandbox.NetworkRule{localDenyDomain},
+			request:      &gatewaypolicy.Request{Protocol: "tcp", Domain: "api.example.test", Port: 8443},
+			wantAllowed:  false,
+			wantRuleID:   "local-deny-domain",
+		},
+		{
+			name: "both empty",
+		},
+		{
+			name:         "organization allow alone never widens",
+			organization: Policy{Allow: []sandbox.NetworkRule{orgAllowDomain}},
+		},
+		{
+			name: "duplicates are removed deterministically",
+			local: Policy{
+				Allow: []sandbox.NetworkRule{allowFirst, allowDuplicate},
+				Deny:  []sandbox.NetworkRule{localDenySameAsOrg, localDenyUnique},
+			},
+			organization: Policy{Deny: []sandbox.NetworkRule{orgDeny443, duplicateOrgDeny}},
+			wantAllow:    []sandbox.NetworkRule{allowFirst},
+			wantDeny:     []sandbox.NetworkRule{orgDeny443, localDenyUnique},
+			request:      &gatewaypolicy.Request{Protocol: "tcp", Address: "203.0.113.7", Port: 443},
+			wantAllowed:  false,
+			wantRuleID:   "org-deny-443",
+		},
+		{
+			name: "mixed IPv4 domain and port rules keep distinct targets",
+			local: Policy{
+				Allow: []sandbox.NetworkRule{localAllowDomain},
+				Deny:  []sandbox.NetworkRule{localDenyUDP},
+			},
+			organization: Policy{
+				Allow: []sandbox.NetworkRule{orgAllowUnrelated},
+				Deny:  []sandbox.NetworkRule{orgDenyIPv4, orgDenyDomain, orgDenyIPv4},
+			},
+			wantAllow: []sandbox.NetworkRule{localAllowDomain},
+			wantDeny:  []sandbox.NetworkRule{orgDenyIPv4, orgDenyDomain, localDenyUDP},
+			request:   &gatewaypolicy.Request{Protocol: "udp", Domain: "api.example.test", Port: 8443},
+		},
+		{
+			name:         "positive control keeps local allow when no organization deny matches",
+			local:        Policy{Allow: []sandbox.NetworkRule{localAllowPositive}},
+			organization: Policy{Deny: []sandbox.NetworkRule{unrelatedOrgDeny}},
+			wantAllow:    []sandbox.NetworkRule{localAllowPositive},
+			wantDeny:     []sandbox.NetworkRule{unrelatedOrgDeny},
+			request:      &gatewaypolicy.Request{Protocol: "tcp", Address: "198.51.100.42", Port: 443},
+			wantAllowed:  true,
+			wantRuleID:   "local-positive",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			allow, deny := Apply(test.local, test.organization)
+			if !slices.Equal(allow, test.wantAllow) {
+				t.Fatalf("allow = %+v; want %+v", allow, test.wantAllow)
+			}
+			if !slices.Equal(deny, test.wantDeny) {
+				t.Fatalf("deny = %+v; want %+v", deny, test.wantDeny)
+			}
+			if test.request == nil {
+				return
+			}
+			decision := gatewaypolicy.Check(
+				gatewayRulesForTest(allow, gatewaypolicy.Allow),
+				gatewayRulesForTest(deny, gatewaypolicy.Deny),
+				*test.request,
+			)
+			if decision.Allow != test.wantAllowed {
+				t.Fatalf("gateway allow = %v; want %v (%+v)", decision.Allow, test.wantAllowed, decision)
+			}
+			if test.wantRuleID != "" && decision.RuleID != test.wantRuleID {
+				t.Fatalf("gateway rule ID = %q; want %q", decision.RuleID, test.wantRuleID)
+			}
+		})
+	}
+}
+
+func TestApplyDoesNotMutateInputs(t *testing.T) {
+	local := Policy{
+		Allow: []sandbox.NetworkRule{{Protocol: "tcp", CIDR: "198.51.100.0/24", Port: 443, RuleID: "local-allow"}},
+		Deny:  []sandbox.NetworkRule{{Protocol: "udp", CIDR: "203.0.113.0/24", Port: 53, RuleID: "local-deny"}},
+	}
+	organization := Policy{
+		Allow: []sandbox.NetworkRule{{Protocol: "tcp", Domain: "advisory.example.test", Port: 443, RuleID: "org-allow"}},
+		Deny:  []sandbox.NetworkRule{{Protocol: "tcp", CIDR: "203.0.113.7/32", Port: 443, RuleID: "org-deny"}},
+	}
+	localBefore := Policy{Allow: slices.Clone(local.Allow), Deny: slices.Clone(local.Deny)}
+	organizationBefore := Policy{Allow: slices.Clone(organization.Allow), Deny: slices.Clone(organization.Deny)}
+
+	allow, deny := Apply(local, organization)
+	if !slices.Equal(local.Allow, localBefore.Allow) || !slices.Equal(local.Deny, localBefore.Deny) ||
+		!slices.Equal(organization.Allow, organizationBefore.Allow) || !slices.Equal(organization.Deny, organizationBefore.Deny) {
+		t.Fatal("Apply mutated its inputs")
+	}
+	if len(allow) != 1 || len(deny) != 2 {
+		t.Fatalf("effective policy = allow %+v deny %+v", allow, deny)
+	}
+	if allow[0].RuleID != "local-allow" || deny[0].RuleID != "org-deny" || deny[1].RuleID != "local-deny" {
+		t.Fatalf("effective rule order = allow %+v deny %+v", allow, deny)
+	}
+}
+
+func gatewayRulesForTest(rules []sandbox.NetworkRule, action gatewaypolicy.Action) []gatewaypolicy.Rule {
+	out := make([]gatewaypolicy.Rule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, gatewaypolicy.Rule{
+			ID: rule.RuleID, Action: action, Protocol: rule.Protocol,
+			CIDR: rule.CIDR, Domain: rule.Domain, Port: rule.Port,
+		})
+	}
+	return out
 }
 
 func TestParseNetworkResource(t *testing.T) {
