@@ -118,6 +118,31 @@ func TestDeleteRegistryCredential(t *testing.T) {
 	}
 }
 
+func TestCustomPortAndIPRegistrySaveNormalizesAccount(t *testing.T) {
+	tests := []struct {
+		registry string
+		want     string
+	}{
+		{registry: "Registry.Example.Test:5000", want: "registry.example.test:5000"},
+		{registry: "192.0.2.10:5000", want: "192.0.2.10:5000"},
+		{registry: "[2001:DB8::1]:5000", want: "[2001:db8::1]:5000"},
+	}
+	for _, test := range tests {
+		vault := &fakeVault{}
+		store, err := NewStore(vault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary, err := store.Save(context.Background(), Credential{Registry: test.registry, Username: "alice", Password: []byte("synthetic-token")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary.Registry != test.want || vault.account != test.want+"/host-only" {
+			t.Fatalf("registry %q normalized to %q with account %q", test.registry, summary.Registry, vault.account)
+		}
+	}
+}
+
 func TestIPv6RegistrySaveAndDelete(t *testing.T) {
 	vault := &fakeVault{}
 	store, err := NewStore(vault)

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"strings"
 	"time"
 )
@@ -169,9 +170,11 @@ func (a *ProxyAuthority) Certificate() []byte {
 }
 
 // Leaf creates a short-lived server certificate signed by the host authority.
+// DNS targets are bound through DNSNames. IP-literal targets are bound through
+// IPAddresses so clients verify the IP SAN rather than an invented DNS name.
 func (a *ProxyAuthority) Leaf(host string, now time.Time) (tlsCertificate tls.Certificate, err error) {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if a == nil || a.certificate == nil || a.signer == nil || !a.allowsHost(host) {
+	host, ok := normalizeCertificateHost(host)
+	if a == nil || a.certificate == nil || a.signer == nil || !ok || !a.allowsHost(host) {
 		return tls.Certificate{}, errors.New("invalid registry proxy certificate request")
 	}
 	serial, err := randomSerial()
@@ -181,9 +184,14 @@ func (a *ProxyAuthority) Leaf(host string, now time.Time) (tlsCertificate tls.Ce
 	now = now.UTC()
 	template := &x509.Certificate{
 		SerialNumber: serial, Subject: pkix.Name{CommonName: host},
-		DNSNames: []string{host}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
+		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		template.IPAddresses = []net.IP{ip}
+	} else {
+		template.DNSNames = []string{host}
 	}
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -217,7 +225,9 @@ func defaultProxyHosts() map[string]struct{} {
 }
 
 // AllowHosts extends the hosts this authority may sign certificates for. The
-// caller must enforce the same allowlist on the CONNECT/SNI path.
+// caller must enforce the same allowlist on the CONNECT/SNI path. Entries may
+// include a custom port; the port is validated but omitted from the certificate
+// identity because TLS authenticates the host or IP, not a TCP port.
 func (a *ProxyAuthority) AllowHosts(hosts ...string) {
 	if a == nil {
 		return
@@ -226,18 +236,30 @@ func (a *ProxyAuthority) AllowHosts(hosts ...string) {
 		a.hosts = defaultProxyHosts()
 	}
 	for _, host := range hosts {
-		host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
-		if host != "" {
-			a.hosts[host] = struct{}{}
+		if normalized, ok := normalizeCertificateHost(host); ok {
+			a.hosts[normalized] = struct{}{}
 		}
 	}
+}
+
+func normalizeCertificateHost(value string) (string, bool) {
+	value = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+	endpoint, err := ParseRegistryEndpoint(value)
+	if err != nil {
+		return "", false
+	}
+	return endpoint.Hostname, true
 }
 
 func (a *ProxyAuthority) allowsHost(host string) bool {
 	if a == nil {
 		return false
 	}
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	normalized, ok := normalizeCertificateHost(host)
+	if !ok {
+		return false
+	}
+	host = normalized
 	if a.hosts != nil {
 		_, ok := a.hosts[host]
 		return ok

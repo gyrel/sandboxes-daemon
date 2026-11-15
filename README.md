@@ -122,8 +122,13 @@ excluded. The guest receives only a synthetic, repository/action-scoped token.
 The real registry token is acquired by the host for each request and is never
 forwarded to the guest. Upload cancellation is allowed only for a session
 created through that proxy; manifest/blob deletion and cross-host upload
-locations are denied. Other registries and live VM pull/push acceptance remain
-unsupported or unverified.
+locations are denied. The allowlisted private registry may use an explicit
+non-default port and an IPv4 or IPv6 literal; configured realm and redirect
+authorities are matched by exact normalized host and port. Egress policy is
+evaluated against the same host and port the broker dials. TLS never falls back
+to plaintext: DNS names use hostname verification, IP literals verify the
+certificate IP SAN without inventing SNI, and redirects to any other authority
+are rejected. Live VM pull/push acceptance remains unverified.
 
 `SecretService` stores service API keys (`openai`, `anthropic`, `github`, ...)
 in the host vault, scoped globally or to one sandbox. Values are held in memory

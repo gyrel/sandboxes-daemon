@@ -125,15 +125,17 @@ func NewPullProxy(store *Store, cfg PullProxyConfig) (*PullProxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	authority := cfg.Authority
+	authority := strings.TrimSpace(cfg.Authority)
 	if authority == "" {
 		authority = registry
 	}
-	parsedAuthority, authorityErr := url.Parse("https://" + authority)
-	if authorityErr != nil || parsedAuthority.Host != authority || parsedAuthority.Hostname() == "" || parsedAuthority.User != nil ||
-		parsedAuthority.Path != "" || parsedAuthority.RawQuery != "" || parsedAuthority.Fragment != "" {
+	authorityEndpoint, authorityErr := ParseRegistryEndpoint(authority)
+	if authorityErr != nil {
 		return nil, errors.New("invalid pull proxy authority")
 	}
+	// Routing and redirect comparison use the match form, which normalizes an
+	// explicit default port away while preserving custom ports and IP literals.
+	authority = authorityEndpoint.MatchAuthority()
 	if !validPullProxyConfig(store, cfg) {
 		return nil, errors.New("invalid pull proxy configuration")
 	}
@@ -154,7 +156,7 @@ func NewPullProxy(store *Store, cfg PullProxyConfig) (*PullProxy, error) {
 }
 
 func configuredRedirectHosts(authority string, authorities []string) (map[string]struct{}, error) {
-	if len(authorities) == 0 && strings.EqualFold(authority, "registry-1.docker.io") {
+	if len(authorities) == 0 && SameRegistryEndpoint(authority, "registry-1.docker.io") {
 		authorities = []string{dockerHubBlobAuthority}
 	}
 	for _, authority := range authorities {
@@ -406,29 +408,23 @@ func validatePullRedirectWithAllowlist(current *url.URL, location, registryAutho
 	}
 	redirectHost, ok := normalizedRedirectHost(next.Host)
 	registryHost, registryOK := normalizedRedirectHost(registryAuthority)
-	if !ok || !registryOK || (!strings.EqualFold(redirectHost, registryHost) && !redirectAllowed(redirectHost)) {
+	if !ok || !registryOK || (!SameRegistryEndpoint(redirectHost, registryHost) && !redirectAllowed(redirectHost)) {
 		return nil, errors.New("untrusted registry redirect authority")
 	}
 	next.Host = redirectHost
 	return next, nil
 }
 
+// normalizedRedirectHost validates one redirect authority and returns its
+// canonical matching form. DNS names, IPv4/IPv6 literals, and explicit custom
+// ports are accepted. The default HTTPS port is normalized away so an explicit
+// :443 compares exactly like an omitted port, matching the historical behavior.
 func normalizedRedirectHost(authority string) (string, bool) {
-	parsed, err := url.Parse("https://" + authority)
-	if err != nil || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+	endpoint, err := ParseRegistryEndpoint(authority)
+	if err != nil {
 		return "", false
 	}
-	if strings.HasSuffix(parsed.Host, ":") {
-		return "", false
-	}
-	if port := parsed.Port(); port != "" && port != "443" {
-		return "", false
-	}
-	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
-	if net.ParseIP(host) != nil || !validRegistryHostname(host) {
-		return "", false
-	}
-	return host, true
+	return endpoint.MatchAuthority(), true
 }
 
 func trustedPullRedirectHost(host string) bool {
@@ -479,9 +475,18 @@ func copyPullResponseHeaders(dst, src http.Header) {
 	}
 }
 
+// registryConnectTargetKey carries the normalized CONNECT authority into the
+// intercepted HTTP handler so a request Host header cannot retarget a tunnel.
+type registryConnectTargetKey struct{}
+
 func (p *PullProxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	host, valid := p.connectHost(r)
 	if !valid {
+		http.Error(w, "registry CONNECT is unsupported", http.StatusForbidden)
+		return
+	}
+	connectTarget, err := ParseRegistryEndpoint(trimRegistryLookupHost(r.Host))
+	if err != nil {
 		http.Error(w, "registry CONNECT is unsupported", http.StatusForbidden)
 		return
 	}
@@ -496,6 +501,7 @@ func (p *PullProxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
+	ctx = context.WithValue(ctx, registryConnectTargetKey{}, connectTarget.MatchAuthority())
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "registry CONNECT is unavailable", http.StatusInternalServerError)
@@ -515,8 +521,11 @@ func (p *PullProxy) connectHost(r *http.Request) (string, bool) {
 		r.URL.Path != "" || r.URL.RawQuery != "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 		return "", false
 	}
-	host, port, err := net.SplitHostPort(r.Host)
-	return host, err == nil && port == "443" && p.allowedConnectHost(host)
+	endpoint, err := ParseRegistryEndpoint(trimRegistryLookupHost(r.Host))
+	if err != nil || !p.allowedConnectHost(r.Host) {
+		return "", false
+	}
+	return endpoint.Hostname, true
 }
 
 func (p *PullProxy) serveTLSConnection(ctx context.Context, conn net.Conn, host string) {
@@ -529,7 +538,7 @@ func (p *PullProxy) serveTLSConnection(ctx context.Context, conn net.Conn, host 
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if !strings.EqualFold(hello.ServerName, host) {
+			if !tlsServerNameMatches(hello.ServerName, host) {
 				return nil, errors.New("registry TLS SNI does not match CONNECT target")
 			}
 			certificate, err := p.tlsAuthority.Leaf(host, time.Now())
@@ -548,20 +557,36 @@ func (p *PullProxy) serveTLSConnection(ctx context.Context, conn net.Conn, host 
 	_ = server.Serve(listener)
 }
 
+// tlsServerNameMatches validates the guest TLS SNI against the CONNECT target.
+// IP-literal targets are verified by the certificate IP SAN instead of an
+// invented SNI name: RFC 6066 clients omit SNI for IP addresses, so an empty
+// SNI is accepted only when the CONNECT target itself is an IP literal.
+func tlsServerNameMatches(serverName, host string) bool {
+	host = trimRegistryLookupHost(host)
+	serverName = trimRegistryLookupHost(serverName)
+	if net.ParseIP(host) != nil {
+		return serverName == "" || strings.EqualFold(serverName, host)
+	}
+	return strings.EqualFold(serverName, host)
+}
+
 func (p *PullProxy) allowedConnectHost(host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if strings.EqualFold(host, p.authority) {
+	authority, ok := normalizedRedirectHost(trimRegistryLookupHost(host))
+	if !ok {
+		return false
+	}
+	if SameRegistryEndpoint(authority, p.authority) {
 		return true
 	}
-	if _, ok := p.authRealm(host); ok {
+	if _, ok := p.authRealm(authority); ok {
 		return true
 	}
-	_, ok := p.redirectHosts[host]
+	_, ok = p.redirectHosts[authority]
 	return ok
 }
 
 func (p *PullProxy) isRedirectHost(host string) bool {
-	host, ok := normalizedRedirectHost(host)
+	host, ok := normalizedRedirectHost(trimRegistryLookupHost(host))
 	if !ok {
 		return false
 	}
@@ -580,10 +605,17 @@ func redirectHostSet(hosts []string) map[string]struct{} {
 	return set
 }
 
+func trimRegistryLookupHost(host string) string {
+	return strings.TrimSuffix(strings.TrimSpace(host), ".")
+}
+
 func (p *PullProxy) realmForPath(host, path string) (registryauth.Realm, bool) {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	host, ok := normalizedRedirectHost(trimRegistryLookupHost(host))
+	if !ok {
+		return registryauth.Realm{}, false
+	}
 	for _, realm := range p.realms {
-		if strings.EqualFold(realm.Host, host) && realm.Path == path {
+		if SameRegistryEndpoint(realm.Host, host) && realm.Path == path {
 			return realm, true
 		}
 	}
@@ -591,9 +623,12 @@ func (p *PullProxy) realmForPath(host, path string) (registryauth.Realm, bool) {
 }
 
 func (p *PullProxy) authRealm(host string) (registryauth.Realm, bool) {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	host, ok := normalizedRedirectHost(trimRegistryLookupHost(host))
+	if !ok {
+		return registryauth.Realm{}, false
+	}
 	for _, realm := range p.realms {
-		if strings.EqualFold(realm.Host, host) {
+		if SameRegistryEndpoint(realm.Host, host) {
 			return realm, true
 		}
 	}
