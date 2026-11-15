@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.0.57 — 2026-11-15
+
 ### Fixed
 
 - Make sandbox deletion durable and retryable. `Delete` now marks the sandbox as deleting, removes secrets, registry credentials, proxy state, settings and the Docker volume before atomically deleting the row, and records a failed delete operation when cleanup fails instead of dropping the row. `Reconcile` finishes pending deletes left by an interrupted cleanup, and every cleanup step is idempotent so retries remove each host resource exactly once.
