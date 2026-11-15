@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.0.57 — 2026-11-15
+
 ### Fixed
 
 - Make sandbox creation crash-safe. `Create` now persists a `creating` intent row before allocating the Docker volume, starting the proxy or creating the VM, and commits the running/stopped state and completed operation atomically at the end. A crash at any point leaves a row that `Reconcile` can find; reconcile removes the runtime, proxy state, volume, settings and intent row for an interrupted create, so a running VM can no longer outlive its record. A create that fails before starting the VM is cleaned the same way, and cleanup retries are idempotent.
