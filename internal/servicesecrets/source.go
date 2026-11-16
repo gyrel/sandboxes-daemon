@@ -211,6 +211,15 @@ func (s *Store) SaveSource(ctx context.Context, service string, scope Scope, san
 		return Summary{}, errors.New("store service secret source in host keychain")
 	}
 	s.resolver().invalidate(account(summary))
+	if source.Reference != "" {
+		summary.SourceKind = SourceKindReference
+	} else {
+		summary.SourceKind = SourceKindCommand
+	}
+	summary.Refresh = source.Refresh
+	summary.Refreshable = true
+	summary.SecretType = SecretTypeExternal
+	summary.Origin = OriginLocal
 	return summary, nil
 }
 

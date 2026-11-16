@@ -55,6 +55,42 @@ func TestStoreRoundTripAndScopes(t *testing.T) {
 	}
 }
 
+func TestSummaryMetadataDescribesSourceWithoutSecretMaterial(t *testing.T) {
+	ctx := context.Background()
+	store, _ := NewStore(NativeVault{Backend: &fakeBackend{items: make(map[string]string)}})
+
+	valueSummary, err := store.Save(ctx, "openai", ScopeGlobal, "", []byte("sk-synthetic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valueSummary.SourceKind != SourceKindValue || valueSummary.SecretType != SecretTypeAPIKey ||
+		valueSummary.Refresh != "" || valueSummary.Refreshable || valueSummary.Origin != OriginLocal {
+		t.Fatalf("value metadata=%+v", valueSummary)
+	}
+
+	referenceSummary, err := store.SaveSource(ctx, "github", ScopeSandbox, "dev", Source{
+		Reference: "op://Work/Item/credential", NoVerify: true, Refresh: "on-demand",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if referenceSummary.SourceKind != SourceKindReference || referenceSummary.SecretType != SecretTypeExternal ||
+		referenceSummary.Refresh != "on-demand" || !referenceSummary.Refreshable || referenceSummary.Origin != OriginLocal {
+		t.Fatalf("reference metadata=%+v", referenceSummary)
+	}
+
+	commandSummary, err := store.SaveSource(ctx, "anthropic", ScopeGlobal, "", Source{
+		Command: "printf synthetic", NoVerify: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commandSummary.SourceKind != SourceKindCommand || commandSummary.SecretType != SecretTypeExternal ||
+		commandSummary.Refresh != defaultSourceRefresh.String() || !commandSummary.Refreshable {
+		t.Fatalf("command metadata=%+v", commandSummary)
+	}
+}
+
 func TestMCPHeaderSecretUsesExactGlobalVaultKey(t *testing.T) {
 	backend := &fakeBackend{items: make(map[string]string)}
 	store, err := NewStore(NativeVault{Backend: backend})

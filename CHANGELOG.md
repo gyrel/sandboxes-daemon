@@ -4,6 +4,18 @@
 
 ### Added
 
+- Return non-secret secret-inventory metadata over the local RPC so JSON
+  inventories can match the Docker `sbx secret ls --json` shape: creation and
+  update times, source kind, refresh policy and capability, coarse secret type,
+  and origin for service secrets; creation and update times and origin for
+  registry credentials. Responses never carry a secret value, reference,
+  command, password, or environment value.
+- Advance the persisted SQLite schema to version 5 with additive secret-index
+  metadata columns. Existing rows are preserved; service creation time is
+  backfilled from the existing update time when available.
+- Depend on `github.com/rheic/sandboxes-api` v0.0.27, the additive local RPC
+  contract carrying the secret metadata fields. Downstream modules must use the
+  same contract release.
 - Add a local daemon lifecycle control surface. The daemon now writes a private
   `daemon.installation`, `daemon.control.json` and `daemon.loglevel.json` in its
   state directory after the socket is listening, removes the control record on

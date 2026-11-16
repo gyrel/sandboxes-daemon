@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -41,11 +42,21 @@ type Credential struct {
 	SandboxName string
 }
 
+const (
+	// OriginLocal identifies entries written by the local daemon.
+	OriginLocal = "local"
+)
+
+// Summary is non-secret metadata. It never contains a password or other
+// secret material.
 type Summary struct {
 	Registry    string
 	Username    string
 	Scope       Scope
 	SandboxName string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Origin      string
 }
 
 type Vault interface {
@@ -122,6 +133,7 @@ func (s *Store) Save(ctx context.Context, credential Credential) (Summary, error
 		}
 		return Summary{}, fmt.Errorf("store registry credential in host keychain")
 	}
+	summary.Origin = OriginLocal
 	return summary, nil
 }
 

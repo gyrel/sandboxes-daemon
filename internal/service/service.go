@@ -624,8 +624,16 @@ func (s *Service) storeServiceSecret(ctx context.Context, service string, scope 
 	if err != nil {
 		return servicesecrets.Summary{}, err
 	}
+	now := s.now().UTC()
+	summary.CreatedAt = now
+	summary.UpdatedAt = now
+	if summary.Origin == "" {
+		summary.Origin = servicesecrets.OriginLocal
+	}
 	if err := s.store.UpsertServiceSecretIndex(ctx, store.ServiceSecretIndex{
 		Service: summary.Service, Scope: string(summary.Scope), SandboxName: summary.SandboxName,
+		CreatedAt: now, UpdatedAt: now, SourceKind: string(summary.SourceKind), Refresh: summary.Refresh,
+		Refreshable: summary.Refreshable, SecretType: summary.SecretType, Origin: summary.Origin,
 	}); err != nil {
 		return servicesecrets.Summary{}, errors.Join(err, s.rollbackServiceSecretAfterIndexFailure(ctx, summary, previous, hadPrevious))
 	}
@@ -707,9 +715,24 @@ func (s *Service) ListServiceSecrets(ctx context.Context) ([]servicesecrets.Summ
 		return nil, err
 	}
 	out := make([]servicesecrets.Summary, 0, len(entries))
-	for _, entry := range entries {
+	for index := range entries {
+		entry := &entries[index]
+		sourceKind := servicesecrets.SourceKind(entry.SourceKind)
+		if sourceKind == "" {
+			sourceKind = servicesecrets.SourceKindValue
+		}
+		secretType := entry.SecretType
+		if secretType == "" {
+			secretType = servicesecrets.SecretTypeAPIKey
+		}
+		origin := entry.Origin
+		if origin == "" {
+			origin = servicesecrets.OriginLocal
+		}
 		out = append(out, servicesecrets.Summary{
 			Service: entry.Service, Scope: servicesecrets.Scope(entry.Scope), SandboxName: entry.SandboxName,
+			CreatedAt: entry.CreatedAt, UpdatedAt: entry.UpdatedAt, SourceKind: sourceKind,
+			Refresh: entry.Refresh, Refreshable: entry.Refreshable, SecretType: secretType, Origin: origin,
 		})
 	}
 	return out, nil
@@ -911,8 +934,15 @@ func (s *Service) LoginRegistry(ctx context.Context, credential registrycredenti
 	if err != nil {
 		return registrycredentials.Summary{}, err
 	}
+	now := s.now().UTC()
+	summary.CreatedAt = now
+	summary.UpdatedAt = now
+	if summary.Origin == "" {
+		summary.Origin = registrycredentials.OriginLocal
+	}
 	if err := s.store.UpsertRegistryCredentialIndex(ctx, store.RegistryCredentialIndex{
 		Registry: summary.Registry, Username: summary.Username, Scope: string(summary.Scope), SandboxName: summary.SandboxName,
+		CreatedAt: now, UpdatedAt: now, Origin: summary.Origin,
 	}); err != nil {
 		_, _ = s.registryCredentials.Delete(ctx, summary.Registry, summary.Scope, summary.SandboxName)
 		return registrycredentials.Summary{}, err
@@ -961,10 +991,16 @@ func (s *Service) ListRegistryCredentials(ctx context.Context) ([]registrycreden
 		return nil, err
 	}
 	out := make([]registrycredentials.Summary, 0, len(entries))
-	for _, entry := range entries {
+	for index := range entries {
+		entry := &entries[index]
+		origin := entry.Origin
+		if origin == "" {
+			origin = registrycredentials.OriginLocal
+		}
 		out = append(out, registrycredentials.Summary{
 			Registry: entry.Registry, Username: entry.Username,
 			Scope: registrycredentials.Scope(entry.Scope), SandboxName: entry.SandboxName,
+			CreatedAt: entry.CreatedAt, UpdatedAt: entry.UpdatedAt, Origin: origin,
 		})
 	}
 	return out, nil
@@ -989,7 +1025,8 @@ func (s *Service) cleanupSandboxServiceSecrets(ctx context.Context, sandboxName 
 		return err
 	}
 	var failures []error
-	for _, entry := range entries {
+	for index := range entries {
+		entry := &entries[index]
 		if entry.Scope != string(servicesecrets.ScopeSandbox) || entry.SandboxName != sandboxName {
 			continue
 		}
@@ -1010,7 +1047,8 @@ func (s *Service) deleteSandboxRegistryCredentials(ctx context.Context, sandboxN
 		return err
 	}
 	var failures []error
-	for _, entry := range entries {
+	for index := range entries {
+		entry := &entries[index]
 		if entry.Scope != string(registrycredentials.ScopeSandbox) || entry.SandboxName != sandboxName {
 			continue
 		}
