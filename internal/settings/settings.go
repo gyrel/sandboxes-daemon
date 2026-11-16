@@ -34,6 +34,8 @@ type Values struct {
 	OrgPolicyOrg string
 	// RegistryPrivate configures one explicitly allowlisted private registry
 	// reached through the guest registry proxy. Empty disables the feature.
+	RegistryDockerGrants     []string
+	RegistryPrivateGrants    []string
 	RegistryPrivateHost      string
 	RegistryPrivateService   string
 	RegistryPrivateRealms    []string
@@ -278,6 +280,16 @@ func parse(r io.Reader, values *Values) error {
 				return fmt.Errorf("settings line %d: %w", lineNumber, err)
 			}
 			values.PolicySyncInterval = interval
+		case "registry_docker_grants", "registry_private_grants":
+			grants, parseErr := parseRepositoryGrants(value)
+			if parseErr != nil {
+				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
+			}
+			if key == "registry_docker_grants" {
+				values.RegistryDockerGrants = grants
+			} else {
+				values.RegistryPrivateGrants = grants
+			}
 		case "registry_private_host", "registry_private_service", "registry_private_realms", "registry_private_redirects", "registry_private_ca":
 			if err := parseRegistryPrivateSetting(values, key, value); err != nil {
 				return fmt.Errorf("settings line %d: %w", lineNumber, err)
@@ -290,6 +302,20 @@ func parse(r io.Reader, values *Values) error {
 		return fmt.Errorf("read settings: %w", err)
 	}
 	return nil
+}
+
+func parseRepositoryGrants(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	grants := strings.Split(value, ";")
+	for i := range grants {
+		grants[i] = strings.TrimSpace(grants[i])
+	}
+	if _, err := registrycredentials.ParseSandboxRepositoryGrants(grants); err != nil {
+		return nil, err
+	}
+	return grants, nil
 }
 
 func parseRegistryPrivateSetting(values *Values, key, value string) error {

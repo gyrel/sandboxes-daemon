@@ -44,6 +44,7 @@ type PullProxy struct {
 	challenges        map[string]realmGrant
 	challengeMu       sync.Mutex
 	privateRegistry   bool
+	repositoryGrants  map[string]map[string]struct{}
 }
 
 type tokenGrant struct {
@@ -97,6 +98,9 @@ const maxPullErrorResponseBytes = maxRegistryErrorBody
 
 // PullProxyConfig is trusted host configuration, never a guest request.
 type PullProxyConfig struct {
+	// RepositoryGrants are trusted host grants in repository:name:pull,push form.
+	// An empty list denies all repository operations.
+	RepositoryGrants  []string
 	Registry          string
 	Authority         string
 	SandboxName       string
@@ -142,6 +146,10 @@ func NewPullProxy(store *Store, cfg PullProxyConfig) (*PullProxy, error) {
 	if _, _, err := validateScope(ScopeSandbox, cfg.SandboxName); err != nil {
 		return nil, errors.New("invalid pull proxy sandbox identity")
 	}
+	repositoryGrants, err := compileRepositoryGrants(cfg.RepositoryGrants)
+	if err != nil {
+		return nil, err
+	}
 	redirectHosts, err := configuredRedirectHosts(authority, cfg.RedirectAuthorities)
 	if err != nil {
 		return nil, err
@@ -152,7 +160,7 @@ func NewPullProxy(store *Store, cfg PullProxyConfig) (*PullProxy, error) {
 		maxBytes: cfg.MaxBytes, inflight: make(chan struct{}, 4), tlsAuthority: cfg.TLSAuthority,
 		tunnelSlots: make(chan struct{}, 8), tokens: make(map[string]tokenGrant), uploads: make(map[string]uploadSession),
 		blobRedirects: make(map[string]blobRedirectSession), redirectHosts: redirectHosts, challenges: make(map[string]realmGrant),
-		privateRegistry: cfg.PrivateRegistry}, nil
+		privateRegistry: cfg.PrivateRegistry, repositoryGrants: repositoryGrants}, nil
 }
 
 func configuredRedirectHosts(authority string, authorities []string) (map[string]struct{}, error) {
@@ -193,11 +201,24 @@ func (p *PullProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	endpoint := &url.URL{Scheme: registryHTTPScheme, Host: p.authority, Path: r.URL.Path, RawPath: r.URL.RawPath, RawQuery: r.URL.RawQuery, ForceQuery: r.URL.ForceQuery}
 	probe := endpoint.Path == registryV2Path && endpoint.RawPath == "" && endpoint.RawQuery == "" && !endpoint.ForceQuery && r.URL.Fragment == "" && r.URL.Opaque == "" &&
 		(r.Method == http.MethodGet || r.Method == http.MethodHead)
-	if _, err := registryauth.PullScope(r.Method, endpoint, p.authority); err != nil && !probe {
-		http.Error(w, "unsupported registry request", http.StatusForbidden)
+	if !probe && !p.authorizeMirrorRequest(w, r.Method, endpoint) {
 		return
 	}
 	p.serveAllowed(w, r, endpoint, probe)
+}
+
+func (p *PullProxy) authorizeMirrorRequest(w http.ResponseWriter, method string, endpoint *url.URL) bool {
+	scope, err := registryauth.PullScope(method, endpoint, p.authority)
+	if err != nil {
+		http.Error(w, "unsupported registry request", http.StatusForbidden)
+		return false
+	}
+	repository, actions, ok := parseRepositoryScope(scope)
+	if !ok || !p.allowsRepository(repository, actions) {
+		denyRepository(w)
+		return false
+	}
+	return true
 }
 
 func (p *PullProxy) serveAllowed(w http.ResponseWriter, r *http.Request, endpoint *url.URL, probe bool) {

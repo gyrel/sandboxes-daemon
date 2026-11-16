@@ -476,7 +476,7 @@ func TestAuthenticatedForwardProxyDispatchesExactRealmAndPath(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := NewPullProxy(store, PullProxyConfig{
+	proxy, err := NewPullProxy(store, PullProxyConfig{RepositoryGrants: fixtureRepositoryGrants(),
 		Registry: "registry.private.test", SandboxName: sandbox, CredentialScope: ScopeSandbox,
 		Service: service, Realms: realms, TransportFactory: factory, PrivateRegistry: true, Limiter: NewPullLimiter(), MaxBytes: 1024,
 	})
@@ -610,7 +610,7 @@ func TestPrivateForwardUsesUpstreamChallengeRealmAndLocalTokenEndpoint(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := NewPullProxy(store, PullProxyConfig{
+	proxy, err := NewPullProxy(store, PullProxyConfig{RepositoryGrants: fixtureRepositoryGrants(),
 		Registry: "registry.private.test", SandboxName: sandbox, CredentialScope: ScopeSandbox,
 		Service: service, Realms: realms, TransportFactory: factory, PrivateRegistry: true, Limiter: NewPullLimiter(), MaxBytes: 1024,
 	})
@@ -705,7 +705,7 @@ func TestPrivateForwardRejectsChallengeRealmOutsideAllowlist(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := NewPullProxy(store, PullProxyConfig{
+	proxy, err := NewPullProxy(store, PullProxyConfig{RepositoryGrants: fixtureRepositoryGrants(),
 		Registry: "registry.private.test", SandboxName: sandbox, CredentialScope: ScopeSandbox,
 		Service: service, Realms: realms, TransportFactory: factory, PrivateRegistry: true, Limiter: NewPullLimiter(), MaxBytes: 1024,
 	})

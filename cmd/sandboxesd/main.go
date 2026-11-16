@@ -45,6 +45,8 @@ type options struct {
 	defaultMemoryMiB      uint32
 	dockerVolumeSize      string
 	mcpRemoteAllowedHosts []string
+	registryDockerGrants  []string
+	registryPrivateGrants []string
 	registryPrivateHost   string
 	registryPrivateSvc    string
 	registryPrivateRealms []string
@@ -114,6 +116,8 @@ func run() int {
 		DefaultMemoryMiB:         opts.defaultMemoryMiB,
 		DockerVolumeSize:         opts.dockerVolumeSize,
 		MCPRemoteAllowedHosts:    opts.mcpRemoteAllowedHosts,
+		RegistryDockerGrants:     opts.registryDockerGrants,
+		RegistryPrivateGrants:    opts.registryPrivateGrants,
 		RegistryPrivateHost:      opts.registryPrivateHost,
 		RegistryPrivateService:   opts.registryPrivateSvc,
 		RegistryPrivateRealms:    opts.registryPrivateRealms,
@@ -167,6 +171,8 @@ func parseOptions() options {
 	opts.defaultMemoryMiB = values.DefaultMemoryMiB
 	opts.dockerVolumeSize = values.DockerVolumeSize
 	opts.mcpRemoteAllowedHosts = values.MCPRemoteAllowedHosts
+	opts.registryDockerGrants = values.RegistryDockerGrants
+	opts.registryPrivateGrants = values.RegistryPrivateGrants
 	opts.registryPrivateHost = values.RegistryPrivateHost
 	opts.registryPrivateSvc = values.RegistryPrivateService
 	opts.registryPrivateRealms = values.RegistryPrivateRealms

@@ -104,6 +104,10 @@ func (p *PullProxy) serveTokenRequest(w http.ResponseWriter, r *http.Request, re
 		http.Error(w, message, status)
 		return
 	}
+	if !p.allowsRepository(repository, actions) {
+		denyRepository(w)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if !p.limiter.acquire(ctx) {
@@ -140,6 +144,10 @@ func (p *PullProxy) servePrivateTokenRequest(w http.ResponseWriter, r *http.Requ
 			message = "registry token request is unsupported"
 		}
 		http.Error(w, message, status)
+		return
+	}
+	if !p.allowsRepository(repository, actions) {
+		denyRepository(w)
 		return
 	}
 	realm, ok := p.cachedRealm(repository)
@@ -341,6 +349,10 @@ func (p *PullProxy) serveRegistryForward(w http.ResponseWriter, r *http.Request,
 	operation, err := parseRegistryOperation(r.Method, endpoint, host)
 	if err != nil {
 		http.Error(w, "unsupported registry operation", http.StatusForbidden)
+		return
+	}
+	if !p.allowsRepository(operation.repository, map[string]struct{}{operation.action: {}}) {
+		denyRepository(w)
 		return
 	}
 	endpoint, ok := p.prepareRegistryRequest(w, r, endpoint, operation)

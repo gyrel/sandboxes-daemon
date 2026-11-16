@@ -51,6 +51,8 @@ type Config struct {
 	MCPRemoteAllowedHosts []string
 	// RegistryPrivate configures one allowlisted private registry reached
 	// through the guest registry proxy (ADR-0006).
+	RegistryDockerGrants     []string
+	RegistryPrivateGrants    []string
 	RegistryPrivateHost      string
 	RegistryPrivateService   string
 	RegistryPrivateRealms    []string
@@ -69,6 +71,9 @@ type Config struct {
 // starts the gateway-loss watcher.
 func configureService(ctx context.Context, cfg *Config, svc *service.Service) (func() error, error) {
 	applyConfig(svc, *cfg)
+	if err := svc.SetRegistryRepositoryGrants(cfg.RegistryDockerGrants, cfg.RegistryPrivateGrants); err != nil {
+		return nil, fmt.Errorf("configure registry repository grants: %w", err)
+	}
 	svc.SetSecretProxyRuntime(cfg.ProxyHelperPath, "/tmp")
 	credentialCleanup, err := configureCredentialStores(svc)
 	if err != nil {

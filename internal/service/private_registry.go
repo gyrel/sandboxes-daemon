@@ -27,6 +27,22 @@ const (
 	privateRegistryGuestPort    = uint16(43135)
 )
 
+// SetRegistryRepositoryGrants configures exact host-authorized OCI scopes.
+// An empty list disables repository access for that registry.
+func (s *Service) SetRegistryRepositoryGrants(docker, private []string) error {
+	dockerGrants, err := registrycredentials.ParseSandboxRepositoryGrants(docker)
+	if err != nil {
+		return fmt.Errorf("docker hub repository grants: %w", err)
+	}
+	privateGrants, err := registrycredentials.ParseSandboxRepositoryGrants(private)
+	if err != nil {
+		return fmt.Errorf("private registry repository grants: %w", err)
+	}
+	s.registryDockerGrants = dockerGrants
+	s.registryPrivateGrants = privateGrants
+	return nil
+}
+
 func privateRegistrySettingKey(id string) string { return "sandbox.registry-private." + id }
 
 // SetPrivateRegistry configures the single allowlisted private registry that
@@ -297,7 +313,8 @@ func (s *Service) buildPrivateRegistryProxy(ctx context.Context, sb sandbox.Sand
 	hosts = append(hosts, s.privateRegistryRedirects...)
 	ca.AllowHosts(hosts...)
 	proxy, err := registrycredentials.NewPullProxy(s.registryCredentials, registrycredentials.PullProxyConfig{
-		Registry: s.privateRegistryHost, Authority: s.privateRegistryHost, SandboxName: sb.Name,
+		RepositoryGrants: s.registryPrivateGrants[sb.Name],
+		Registry:         s.privateRegistryHost, Authority: s.privateRegistryHost, SandboxName: sb.Name,
 		CredentialScope: scope, Service: s.privateRegistrySvc,
 		Realms: s.privateRegistryRealms, RedirectAuthorities: s.privateRegistryRedirects,
 		TransportFactory: privateRegistryTransportFactory{

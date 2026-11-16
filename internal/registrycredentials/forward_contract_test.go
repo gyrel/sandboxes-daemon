@@ -107,7 +107,7 @@ func TestDockerHubForwardContractPullsAndPushesWithoutGuestBearerLeak(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := NewPullProxy(store, PullProxyConfig{
+	proxy, err := NewPullProxy(store, PullProxyConfig{RepositoryGrants: fixtureRepositoryGrants(),
 		Registry: "docker.io", Authority: registryHost, SandboxName: "contract-sandbox", CredentialScope: ScopeSandbox,
 		Service: service, Realms: []registryauth.Realm{{Host: authHost, Path: "/token"}},
 		TransportFactory: contractTransportFactory{registry: registryTransport, token: tokenTransport},

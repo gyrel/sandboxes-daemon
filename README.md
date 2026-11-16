@@ -63,6 +63,25 @@ IP literals are rejected, and an empty value disables remote MCP. The file is
 strict, mode-checked and never contains secrets. Settings need a daemon restart
 to take effect; new sandboxes use the policy profile and resource defaults.
 
+### Registry repository access
+
+Authenticated registry proxy access is denied by default. Grant exact repository
+and action combinations to named sandboxes in the host settings file:
+
+```toml
+registry_docker_grants = "build=repository:team/app:pull;publish=repository:team/app:pull,push"
+registry_private_grants = "build=repository:team/private:pull"
+```
+
+Separate entries with semicolons. Each entry binds one existing or future
+sandbox name to an exact repository and `pull`, `push`, or both. Wildcards and
+duplicate grants for the same sandbox and repository are rejected. Separate
+settings control Docker Hub and the configured private registry. Names are
+reusable, so remove an old grant before reusing a sandbox name for a different
+trust boundary. Restart the daemon after editing these host-owned settings.
+Existing installations must add grants before registry proxy access resumes.
+The host credential must still be explicitly made available to the sandbox.
+
 All remote MCP headers must use host-vault placeholder templates. Static header
 values are rejected because custom names cannot establish whether a value is a
 credential. Only `${placeholder}` references are persisted and resolved at
