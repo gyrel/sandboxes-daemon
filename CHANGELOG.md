@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+## v0.0.62 — 2026-11-16
+
 ### Changed
+
+- Update API to v0.0.28, core to v0.0.13, gateway to v0.0.21, and runtime to v0.0.34.
 
 - Release workflows no longer require the M7 external security review
   environment or an exact-SHA M7 approval variable. Release candidate
