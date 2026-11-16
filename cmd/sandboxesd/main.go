@@ -18,6 +18,7 @@ import (
 	runtimectr "github.com/rheic/sandboxes-runtime/ctr"
 
 	daemon "github.com/rheic/sandboxes-daemon"
+	"github.com/rheic/sandboxes-daemon/internal/lifecycle"
 	daemonnetwork "github.com/rheic/sandboxes-daemon/internal/network"
 	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
 	"github.com/rheic/sandboxes-daemon/internal/policysync"
@@ -40,6 +41,7 @@ type options struct {
 	proxyHelperPath       string
 	dnsUpstream           string
 	settingsPath          string
+	policy                string
 	defaultPolicyProfile  string
 	defaultCPUs           uint32
 	defaultMemoryMiB      uint32
@@ -81,14 +83,20 @@ func run() int {
 		_, _ = fmt.Fprintln(os.Stdout, version.Version)
 		return 0
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if controller, err := lifecycle.OpenLogController(opts.stateDir); err != nil {
+		slog.Warn("log-level control unavailable; using info", "error", err)
+	} else {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: controller.Leveler()})))
+		go controller.Watch(ctx)
+	}
 	lost := make(chan string, 8)
 	backend, cleanup, err := buildBackend(&opts, lost)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	privateCA, caErr := readPrivateRegistryCA(opts.registryPrivateCAPath)
 	if caErr != nil {
 		slog.Error("read private registry CA", "error", caErr)
@@ -156,6 +164,7 @@ func parseOptions() options {
 	flag.BoolVar(&opts.ipv6Experimental, "ipv6-experimental", false, "enable the experimental IPv6 guest datapath (acceptance only)")
 	flag.BoolVar(&opts.quicExperimental, "quic-experimental", false, "enable experimental UDP domain policy backed by QUIC classification (acceptance only)")
 	flag.StringVar(&opts.settingsPath, "settings", settings.DefaultPath(), "user settings file")
+	flag.StringVar(&opts.policy, "policy", "", "initialize the global network policy: allow-all, balanced or deny-all")
 	flag.BoolVar(&opts.showVersion, "version", false, "print version")
 	flag.Parse()
 	values, err := settings.Load(opts.settingsPath)
@@ -163,6 +172,28 @@ func parseOptions() options {
 		_, _ = fmt.Fprintln(os.Stderr, "load settings:", err)
 		os.Exit(2)
 	}
+	if err := applyPolicyOverride(&values, opts.policy); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	opts.applySettings(&values)
+	return opts
+}
+
+func applyPolicyOverride(values *settings.Values, policy string) error {
+	if policy == "" {
+		return nil
+	}
+	switch policy {
+	case "allow-all", "balanced", "deny-all":
+		values.DefaultPolicyProfile = policy
+		return nil
+	default:
+		return errors.New(`--policy must be "allow-all", "balanced" or "deny-all"`)
+	}
+}
+
+func (opts *options) applySettings(values *settings.Values) {
 	if opts.dnsUpstream == "" {
 		opts.dnsUpstream = values.DNSUpstream
 	}
@@ -185,7 +216,6 @@ func parseOptions() options {
 	opts.policySyncPublicKey = values.PolicySyncPublicKeyFile
 	opts.policySyncTokenFile = values.PolicySyncTokenFile
 	opts.policySyncInterval = values.PolicySyncInterval
-	return opts
 }
 
 // loadPolicySync reads the protected token and public-key files only when the
