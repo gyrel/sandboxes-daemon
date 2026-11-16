@@ -2,7 +2,6 @@ package registrycredentials
 
 import (
 	"errors"
-	"net"
 	"testing"
 )
 
@@ -45,9 +44,6 @@ func TestRegistryEndpointNormalization(t *testing.T) {
 			}
 			if endpoint.Hostname != test.wantHostname || endpoint.PortString() != test.wantPort || endpoint.portSet != test.wantPortIsSet {
 				t.Fatalf("endpoint = %#v, want host=%q port=%q portSet=%t", endpoint, test.wantHostname, test.wantPort, test.wantPortIsSet)
-			}
-			if endpoint.DialAuthority() != net.JoinHostPort(test.wantHostname, test.wantPort) {
-				t.Fatalf("DialAuthority() = %q", endpoint.DialAuthority())
 			}
 			if test.input == "" {
 				return

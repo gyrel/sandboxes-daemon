@@ -8,5 +8,4 @@ coverage.out
 .DS_Store
 
 # Host-native helper binaries are build outputs.
-/klorq-proxy-helper
 .worktrees/

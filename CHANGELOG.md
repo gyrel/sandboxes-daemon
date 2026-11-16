@@ -4,6 +4,17 @@
 
 ## v0.0.62 — 2026-11-16
 
+### Removed
+
+- Remove unused compatibility helpers left by the custom-registry-port work:
+  the old host/port splitter, the authority-string dial wrapper, and the
+  duplicate registry-host validator. Registry endpoint normalization continues
+  to use `ParseRegistryEndpoint`.
+- Remove the unused exported `RegistryEndpoint.DialAuthority` helper. Callers
+  already dial the normalized `Hostname` and `PortString`.
+- Drop a stale build-output ignore entry for the retired helper binary name;
+  current helper assets build under `bin/` or an explicit output path.
+
 ### Changed
 
 - Update API to v0.0.28, core to v0.0.13, gateway to v0.0.21, and runtime to v0.0.34.
