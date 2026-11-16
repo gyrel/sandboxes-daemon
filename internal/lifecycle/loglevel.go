@@ -159,12 +159,6 @@ type LogController struct {
 	general  slog.LevelVar
 	mu       sync.RWMutex
 	levels   Levels
-	stamp    fileStamp
-}
-
-type fileStamp struct {
-	modTime time.Time
-	size    int64
 }
 
 // OpenLogController loads the persisted levels, writes defaults when the file
@@ -182,7 +176,6 @@ func OpenLogController(stateDir string) (*LogController, error) {
 	if err := WriteLevels(stateDir, levels); err != nil {
 		return nil, err
 	}
-	controller.stamp, _ = statStamp(LevelPath(stateDir))
 	return controller, nil
 }
 
@@ -205,7 +198,6 @@ func (c *LogController) Reload() error {
 		return err
 	}
 	c.apply(levels)
-	c.stamp, _ = statStamp(LevelPath(c.stateDir))
 	return nil
 }
 
@@ -219,10 +211,12 @@ func (c *LogController) Watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			stamp, err := statStamp(LevelPath(c.stateDir))
-			if err != nil || stamp == c.stamp {
+			if _, err := os.Lstat(LevelPath(c.stateDir)); err != nil {
 				continue
 			}
+			// A replacement can have the same size and modification time as
+			// the previous file (notably on Windows). Read the small bounded
+			// configuration every time so such changes are not missed.
 			if err := c.Reload(); err != nil {
 				slog.Warn("reload log levels", "error", err)
 			}
@@ -263,12 +257,4 @@ func marshalLevels(levels Levels) ([]byte, error) {
 		return nil, fmt.Errorf("encode log levels: %w", err)
 	}
 	return append(data, '\n'), nil
-}
-
-func statStamp(path string) (fileStamp, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return fileStamp{}, err
-	}
-	return fileStamp{modTime: info.ModTime(), size: info.Size()}, nil
 }
