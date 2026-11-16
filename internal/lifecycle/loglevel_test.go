@@ -141,6 +141,44 @@ func TestLogControllerWatchObservesCliWrite(t *testing.T) {
 	t.Fatalf("watcher did not reload: %+v", controller.Levels())
 }
 
+func TestLogControllerWatchObservesSameFileStamp(t *testing.T) {
+	stateDir := t.TempDir()
+	controller, err := OpenLogController(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := LevelPath(stateDir)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "warn" and "info" have the same length; preserve the timestamp too.
+	if _, err := SetLevel(stateDir, "all", "warn"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("test requires identical stamps: before=%v/%d after=%v/%d", before.ModTime(), before.Size(), after.ModTime(), after.Size())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go controller.Watch(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if controller.Levels().General == "warn" {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("watcher missed same-stamp update: %+v", controller.Levels())
+}
+
 func TestOpenLogControllerRepairsMissingFile(t *testing.T) {
 	stateDir := t.TempDir()
 	if _, err := OpenLogController(stateDir); err != nil {
