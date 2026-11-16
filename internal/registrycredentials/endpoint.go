@@ -171,11 +171,6 @@ func (e RegistryEndpoint) MatchAuthority() string {
 	return net.JoinHostPort(e.Hostname, e.port)
 }
 
-// DialAuthority always includes the port that the broker will actually dial.
-func (e RegistryEndpoint) DialAuthority() string {
-	return net.JoinHostPort(e.Hostname, e.PortString())
-}
-
 // NormalizeRegistryEndpoint validates one authority and returns its canonical
 // spelling for configuration and credential storage.
 func NormalizeRegistryEndpoint(value string) (string, error) {

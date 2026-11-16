@@ -5,7 +5,7 @@
 
 ## Import path migration
 
-The canonical Go module path is now `github.com/rheic/sandboxes-daemon` (previously `github.com/quoiner/sandboxes-daemon`). Update imports and `go.mod` requirements when moving to a release that includes this change. The old module path is not kept as a compatibility alias.
+The canonical Go module path is now `github.com/rheic/sandboxes-daemon` (previously `github.com/quoiner/sandboxes-daemon`). Update imports and `go.mod` requirements when moving to a release that includes this change. The old module path is not kept as a compatibility alias. The daemon reads settings only from `~/.config/rheic/settings.toml` (or `$XDG_CONFIG_HOME/rheic/settings.toml`) and uses its own `com.rheic.*` keychain services; no legacy brand settings or keychain paths are consulted.
 
 Policy updates use atomic single-rule mutations. The legacy whole-policy
 replacement RPC is rejected to prevent stale clients from restoring revoked

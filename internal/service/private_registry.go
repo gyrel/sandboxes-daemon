@@ -116,12 +116,6 @@ func parsePrivateRedirects(redirects []string) ([]string, error) {
 	return clean, nil
 }
 
-//nolint:unused // retained for package-level validation callers and tests.
-func validRegistryHost(host string) bool {
-	_, err := registrycredentials.NormalizeRegistryEndpoint(strings.TrimSuffix(strings.TrimSpace(host), "."))
-	return err == nil
-}
-
 func (s *Service) privateRegistryScopeFor(ctx context.Context, id string) (registrycredentials.Scope, error) {
 	value, err := s.store.GetSetting(ctx, privateRegistrySettingKey(id))
 	if errors.Is(err, core.ErrNotFound) {

@@ -86,18 +86,6 @@ func (t *forwardRegistryTransport) RoundTrip(request *http.Request) (*http.Respo
 	return t.transport.RoundTrip(request) // #nosec G704 -- URL is fixed to one authority and DialContext pins the checked IP set.
 }
 
-// dialPinnedRegistry keeps the historical helper signature for package-level
-// callers while accepting an authority with or without a custom port.
-//
-//nolint:unused // retained for callers that still pass an authority string.
-func dialPinnedRegistry(ctx context.Context, network, address, authority string, prefixes []netip.Prefix) (net.Conn, error) {
-	endpoint, err := ParseRegistryEndpoint(authority)
-	if err != nil {
-		return nil, errors.New("forward registry transport rejected an unexpected authority")
-	}
-	return dialPinnedRegistryPort(ctx, network, address, endpoint.Hostname, endpoint.PortString(), prefixes)
-}
-
 func dialPinnedRegistryPort(ctx context.Context, network, address, authority, port string, prefixes []netip.Prefix) (net.Conn, error) {
 	host, dialPort, err := net.SplitHostPort(address)
 	if err != nil || network != "tcp" || !strings.EqualFold(host, authority) || dialPort != port {

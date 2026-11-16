@@ -225,18 +225,6 @@ func canonicalRegistry(value string) (string, error) {
 	return endpoint.Authority(), nil
 }
 
-//nolint:unused // retained for package-level compatibility with earlier callers.
-func splitRegistryHostPort(host string) (string, string, error) {
-	endpoint, err := ParseRegistryEndpoint(host)
-	if err != nil {
-		return "", "", fmt.Errorf("%w: registry host or port is invalid", ErrInvalidCredential)
-	}
-	if !endpoint.portSet {
-		return endpoint.Hostname, "", nil
-	}
-	return endpoint.Hostname, endpoint.port, nil
-}
-
 func validRegistryHostname(hostname string) bool {
 	if net.ParseIP(hostname) != nil {
 		return true
