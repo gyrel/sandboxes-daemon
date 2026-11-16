@@ -180,8 +180,13 @@ func TestGRPCLifecycle(t *testing.T) {
 	if _, err := sandboxes.UpdatePolicy(ctx, &localv1.UpdatePolicyRequest{Id: id}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("legacy policy replacement error = %v", err)
 	}
-	updated, err := sandboxes.MutatePolicy(ctx, &localv1.MutatePolicyRequest{
+	if _, err := sandboxes.MutatePolicy(ctx, &localv1.MutatePolicyRequest{
 		Id: id, Action: "allow", Rule: &localv1.NetworkRule{Protocol: "tcp", Cidr: "192.0.2.0/24", Port: 443},
+	}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("opposite-action mutation was not rejected: %v", err)
+	}
+	updated, err := sandboxes.MutatePolicy(ctx, &localv1.MutatePolicyRequest{
+		Id: id, Action: "allow", Rule: &localv1.NetworkRule{Protocol: "tcp", Cidr: "198.51.100.0/24", Port: 443},
 	})
 	if err != nil || len(updated.GetSandbox().GetAllow()) != 1 {
 		t.Fatalf("atomic policy mutation = %+v, %v", updated, err)

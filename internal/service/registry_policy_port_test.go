@@ -42,6 +42,16 @@ func TestResolvedRegistryEgressMatchesCustomPort(t *testing.T) {
 	}
 	if _, err := svc.MutatePolicy(ctx, op.SandboxID, "deny", sandbox.NetworkRule{
 		Protocol: "tcp", Domain: "registry.example.test", Port: 5000,
+	}); err == nil {
+		t.Fatal("opposite-action deny was accepted next to the allow")
+	}
+	if _, err := svc.MutatePolicy(ctx, op.SandboxID, "rm", sandbox.NetworkRule{
+		Protocol: "tcp", Domain: "registry.example.test", Port: 5000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.MutatePolicy(ctx, op.SandboxID, "deny", sandbox.NetworkRule{
+		Protocol: "tcp", Domain: "registry.example.test", Port: 5000,
 	}); err != nil {
 		t.Fatal(err)
 	}
