@@ -19,7 +19,7 @@ func TestResolvedRegistryEgressMatchesCustomPort(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	svc := New(st, nil)
-	op, err := svc.Create(ctx, CreateRequest{Name: "registry-port-policy"})
+	op, err := svc.Create(ctx, CreateRequest{Name: "registry-port-policy", PolicyProfile: policyProfileDenyAll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestPrivateRegistryPrefixesUseConfiguredPortForPolicy(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	svc := New(st, nil)
-	op, err := svc.Create(ctx, CreateRequest{Name: "private-registry-port-policy"})
+	op, err := svc.Create(ctx, CreateRequest{Name: "private-registry-port-policy", PolicyProfile: policyProfileDenyAll})
 	if err != nil {
 		t.Fatal(err)
 	}

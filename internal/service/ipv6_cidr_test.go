@@ -22,7 +22,9 @@ func openIPv6TestService(t *testing.T) (*Service, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return New(st, &fakePolicyRuntime{}), st
+	svc := New(st, &fakePolicyRuntime{})
+	svc.DefaultPolicyProfile = policyProfileDenyAll
+	return svc, st
 }
 
 func TestIPv6CIDRRulesRequireExplicitCapability(t *testing.T) {

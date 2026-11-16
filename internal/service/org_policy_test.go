@@ -207,8 +207,17 @@ func TestOrgPolicyDenyBlocksMatchingAllow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(backend.lastConfig.Allow) != 1 {
-		t.Fatalf("runtime allow = %+v", backend.lastConfig.Allow)
+	if len(backend.lastConfig.Allow) != 3 {
+		t.Fatalf("runtime allow = %+v; want default allow-all plus the matching local allow", backend.lastConfig.Allow)
+	}
+	foundLocal := false
+	for _, allow := range backend.lastConfig.Allow {
+		if allow.CIDR == "203.0.113.7/32" && allow.Port == 443 {
+			foundLocal = true
+		}
+	}
+	if !foundLocal {
+		t.Fatalf("runtime allow = %+v; missing local allow", backend.lastConfig.Allow)
 	}
 	if len(backend.lastConfig.Deny) != 2 {
 		t.Fatalf("runtime deny = %+v; want tcp and udp expansion", backend.lastConfig.Deny)
@@ -264,8 +273,17 @@ func TestOrgPolicyUnrelatedDenyKeepsLocalAllow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(backend.lastConfig.Allow) != 1 || backend.lastConfig.Allow[0].CIDR != "198.51.100.0/24" || backend.lastConfig.Allow[0].Port != 443 {
-		t.Fatalf("runtime allow = %+v; want the local allow rule", backend.lastConfig.Allow)
+	if len(backend.lastConfig.Allow) != 3 {
+		t.Fatalf("runtime allow = %+v; want the default allow-all profile plus the local allow rule", backend.lastConfig.Allow)
+	}
+	foundLocal := false
+	for _, allow := range backend.lastConfig.Allow {
+		if allow.CIDR == "198.51.100.0/24" && allow.Port == 443 {
+			foundLocal = true
+		}
+	}
+	if !foundLocal {
+		t.Fatalf("runtime allow = %+v; missing the local allow rule", backend.lastConfig.Allow)
 	}
 	if len(backend.lastConfig.Deny) != 2 {
 		t.Fatalf("runtime deny = %+v; want the tcp/udp organization deny", backend.lastConfig.Deny)
@@ -286,8 +304,17 @@ func TestOrgPolicyUnrelatedDenyKeepsLocalAllow(t *testing.T) {
 	if _, err := svc.Start(ctx, op.SandboxID); err != nil {
 		t.Fatal(err)
 	}
-	if len(backend.lastHandle.Allow) != 1 || backend.lastHandle.Allow[0].CIDR != "198.51.100.0/24" {
-		t.Fatalf("start allow = %+v; want the local allow rule", backend.lastHandle.Allow)
+	if len(backend.lastHandle.Allow) != 3 {
+		t.Fatalf("start allow = %+v; want default allow-all plus local allow", backend.lastHandle.Allow)
+	}
+	foundLocal = false
+	for _, allow := range backend.lastHandle.Allow {
+		if allow.CIDR == "198.51.100.0/24" && allow.Port == 443 {
+			foundLocal = true
+		}
+	}
+	if !foundLocal {
+		t.Fatalf("start allow = %+v; missing the local allow rule", backend.lastHandle.Allow)
 	}
 }
 
@@ -345,7 +372,7 @@ func TestOrgPolicyDomainDenyRequiresQUICCapability(t *testing.T) {
 	svc, st := openOrgPolicyService(t, backend)
 	saveBundle(t, st, signedBundle(t, testPolicyPayload("acme", rule)))
 	enableOrgPolicy(svc, "acme")
-	if _, err := svc.Create(ctx, CreateRequest{Name: "domain-no-quic"}); !errors.Is(err, orgpolicy.ErrPolicyConflict) {
+	if _, err := svc.Create(ctx, CreateRequest{Name: "domain-no-quic", PolicyProfile: policyProfileDenyAll}); !errors.Is(err, orgpolicy.ErrPolicyConflict) {
 		t.Fatalf("create error = %v; want fail-closed conflict without QUIC", err)
 	}
 	if backend.created != 0 {
@@ -353,7 +380,7 @@ func TestOrgPolicyDomainDenyRequiresQUICCapability(t *testing.T) {
 	}
 
 	svc.QUICEnabled = true
-	if _, err := svc.Create(ctx, CreateRequest{Name: "domain-quic"}); err != nil {
+	if _, err := svc.Create(ctx, CreateRequest{Name: "domain-quic", PolicyProfile: policyProfileDenyAll}); err != nil {
 		t.Fatalf("create with QUIC capability: %v", err)
 	}
 	if len(backend.lastConfig.Deny) != 2 || backend.lastConfig.Deny[0].Domain != "api.example.test" || backend.lastConfig.Deny[0].ID != "rule-001" {
@@ -414,7 +441,7 @@ func TestOrgPolicyMalformedResourcesFailClosed(t *testing.T) {
 		}
 		saveBundle(t, st, signedBundle(t, testPolicyPayload("acme", rules...)))
 		enableOrgPolicy(svc, "acme")
-		if _, err := svc.Create(ctx, CreateRequest{Name: "mixed"}); err != nil {
+		if _, err := svc.Create(ctx, CreateRequest{Name: "mixed", PolicyProfile: policyProfileDenyAll}); err != nil {
 			t.Fatalf("create with ignored rules: %v", err)
 		}
 		if len(backend.lastConfig.Deny) != 2 || backend.lastConfig.Deny[0].ID != "rule-003" {
@@ -433,7 +460,7 @@ func TestOrgPolicyEnforcementOffChangesNothing(t *testing.T) {
 	if svc.OrgPolicyEnforce {
 		t.Fatal("enforcement must default off")
 	}
-	if _, err := svc.Create(ctx, CreateRequest{Name: "off",
+	if _, err := svc.Create(ctx, CreateRequest{Name: "off", PolicyProfile: policyProfileDenyAll,
 		Allow: []sandbox.NetworkRule{{Protocol: "tcp", CIDR: "198.51.100.0/24", Port: 443}},
 	}); err != nil {
 		t.Fatal(err)

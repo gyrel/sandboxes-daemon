@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -1215,6 +1216,19 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	if err != nil {
 		return operation.Operation{}, err
 	}
+	profileSource := "default"
+	if strings.TrimSpace(req.PolicyProfile) != "" {
+		profileSource = "explicit"
+	}
+	// Network policy is the primary egress boundary. Log the resolved profile on
+	// every create so a permissive default is always visible in the daemon log.
+	slog.Info("network policy profile selected",
+		"sandbox", name,
+		"profile", profile,
+		"source", profileSource,
+		"allow_rules", len(allow),
+		"deny_rules", len(deny),
+	)
 	intent := createIntent{
 		name: name, image: image, workspace: workspace, workspaces: workspaces, clone: cloneOptions, ports: ports,
 		allow: allow, deny: deny, agent: req.Agent, detached: req.Detached, cpus: cpus, memoryMiB: memoryMiB,
@@ -1994,7 +2008,11 @@ const (
 	policyProfileDenyAll  = "deny-all"
 	policyProfileBalanced = "balanced"
 	policyProfileAllowAll = "allow-all"
-	anyIPv4CIDR           = "0.0.0.0/0"
+	// defaultPolicyProfile matches the Docker sbx baseline: a new sandbox starts
+	// with local allow-all egress. Explicit profiles and settings can still
+	// select deny-all or balanced.
+	defaultPolicyProfile = policyProfileAllowAll
+	anyIPv4CIDR          = "0.0.0.0/0"
 )
 
 func (s *Service) normalizeCreatePolicy(ctx context.Context, req CreateRequest) (string, []sandbox.Port, []sandbox.NetworkRule, []sandbox.NetworkRule, error) {
@@ -2383,14 +2401,16 @@ func (s *Service) storeGlobalRules(ctx context.Context, key string, rules []sand
 	return s.store.SetSetting(ctx, key, string(encoded))
 }
 
-// GetPolicyProfile returns the global default profile for new sandboxes.
+// GetPolicyProfile returns the global default profile for new sandboxes. With
+// no stored setting and no host override it returns allow-all, matching the
+// Docker sbx default. An explicitly configured deny-all still wins.
 func (s *Service) GetPolicyProfile(ctx context.Context) (string, error) {
 	profile, err := s.store.GetSetting(ctx, policyProfileSetting)
 	if errors.Is(err, core.ErrNotFound) {
 		if s.DefaultPolicyProfile != "" {
 			return s.DefaultPolicyProfile, nil
 		}
-		return policyProfileDenyAll, nil
+		return defaultPolicyProfile, nil
 	}
 	if err != nil {
 		return "", err
@@ -2399,7 +2419,7 @@ func (s *Service) GetPolicyProfile(ctx context.Context) (string, error) {
 		if s.DefaultPolicyProfile != "" {
 			return s.DefaultPolicyProfile, nil
 		}
-		return policyProfileDenyAll, nil
+		return defaultPolicyProfile, nil
 	}
 	return profile, nil
 }
@@ -2437,13 +2457,12 @@ func (s *Service) resolveCreateProfile(ctx context.Context, requested string) (s
 
 func normalizePolicyProfile(profile string) (string, []sandbox.NetworkRule, error) {
 	switch profile {
-	case "", policyProfileDenyAll:
+	case "":
+		return policyProfileAllowAll, allowAllProfileRules(), nil
+	case policyProfileDenyAll:
 		return policyProfileDenyAll, nil, nil
 	case policyProfileAllowAll, "sbx-compat":
-		return policyProfileAllowAll, []sandbox.NetworkRule{
-			{Protocol: tcpProtocol, CIDR: anyIPv4CIDR},
-			{Protocol: "udp", CIDR: anyIPv4CIDR},
-		}, nil
+		return policyProfileAllowAll, allowAllProfileRules(), nil
 	case policyProfileBalanced:
 		return policyProfileBalanced, []sandbox.NetworkRule{
 			{Protocol: tcpProtocol, CIDR: anyIPv4CIDR, Port: 80},
@@ -2453,6 +2472,13 @@ func normalizePolicyProfile(profile string) (string, []sandbox.NetworkRule, erro
 		}, nil
 	default:
 		return "", nil, fmt.Errorf("%w: unknown policy profile", core.ErrConflict)
+	}
+}
+
+func allowAllProfileRules() []sandbox.NetworkRule {
+	return []sandbox.NetworkRule{
+		{Protocol: tcpProtocol, CIDR: anyIPv4CIDR},
+		{Protocol: "udp", CIDR: anyIPv4CIDR},
 	}
 }
 
