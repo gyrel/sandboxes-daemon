@@ -163,7 +163,8 @@ func (s *Service) buildDockerHubProxy(ctx context.Context, sb sandbox.Sandbox, s
 	}
 	proxy, err := registrycredentials.NewPullProxy(s.registryCredentials, registrycredentials.PullProxyConfig{
 		Registry: dockerHubRegistry, Authority: dockerHubRegistryHost, SandboxName: sb.Name,
-		CredentialScope: scope, Service: dockerHubTokenService,
+		RepositoryGrants: s.registryDockerGrants[sb.Name],
+		CredentialScope:  scope, Service: dockerHubTokenService,
 		Realms:              []registryauth.Realm{{Host: dockerHubAuthHost, Path: "/token"}},
 		TransportFactory:    sandboxRegistryTransportFactory{service: s, sandboxID: sb.ID},
 		Limiter:             s.registryPullLimiter,

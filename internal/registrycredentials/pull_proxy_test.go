@@ -50,7 +50,7 @@ func TestNewPullProxyRedirectDefaultsAreRegistryScoped(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			proxy, err := NewPullProxy(&Store{}, PullProxyConfig{
+			proxy, err := NewPullProxy(&Store{}, PullProxyConfig{RepositoryGrants: fixtureRepositoryGrants(),
 				Registry: test.registry, Authority: test.authority, SandboxName: "synthetic-sandbox",
 				CredentialScope: ScopeSandbox, Service: "registry.fixture", Realms: test.realms,
 				RedirectAuthorities: test.redirects, TransportFactory: pullRedirectFactory{},
@@ -71,7 +71,7 @@ func TestNewPullProxyRedirectDefaultsAreRegistryScoped(t *testing.T) {
 }
 
 func TestNewPullProxyValidatesRedirectAuthority(t *testing.T) {
-	proxy, err := NewPullProxy(&Store{}, PullProxyConfig{
+	proxy, err := NewPullProxy(&Store{}, PullProxyConfig{RepositoryGrants: fixtureRepositoryGrants(),
 		Registry: "registry.private.test", Authority: "registry.private.test", SandboxName: "synthetic-sandbox",
 		CredentialScope: ScopeSandbox, Service: "registry.fixture",
 		Realms:              []registryauth.Realm{{Host: "auth.private.test", Path: "/token"}},
@@ -372,7 +372,7 @@ func TestPullProxyUsesHostCredentialsAndIsolatesSandboxes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := PullProxyConfig{Registry: registryURL.Host, SandboxName: "one", CredentialScope: ScopeSandbox, Service: "registry.fixture", Realms: []registryauth.Realm{realm}, RegistryTransport: registryTransport, TokenTransport: tokenTransport, Limiter: NewPullLimiter(), MaxBytes: 1024}
+	cfg := PullProxyConfig{RepositoryGrants: fixtureRepositoryGrants(), Registry: registryURL.Host, SandboxName: "one", CredentialScope: ScopeSandbox, Service: "registry.fixture", Realms: []registryauth.Realm{realm}, RegistryTransport: registryTransport, TokenTransport: tokenTransport, Limiter: NewPullLimiter(), MaxBytes: 1024}
 	proxy, err := NewPullProxy(store, cfg)
 	if err != nil {
 		t.Fatal(err)

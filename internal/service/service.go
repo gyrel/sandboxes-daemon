@@ -96,6 +96,8 @@ type Service struct {
 	mcpManager               *mcpmanager.Manager
 	mcpApprover              mcpmanager.ApprovalProvider
 	mcpRemoteHosts           []string
+	registryDockerGrants     map[string][]string
+	registryPrivateGrants    map[string][]string
 	privateRegistryHost      string
 	privateRegistrySvc       string
 	privateRegistryRealms    []registryauth.Realm

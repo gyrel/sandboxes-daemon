@@ -161,3 +161,21 @@ registry_private_redirects = "cdn.example.test"
 		})
 	}
 }
+
+func TestParseSandboxRegistryGrants(t *testing.T) {
+	var values Values
+	input := `registry_docker_grants = "one=repository:team/a:pull;two=repository:team/b:pull,push"
+registry_private_grants = "one=repository:team/private:pull"
+`
+	if err := parse(strings.NewReader(input), &values); err != nil {
+		t.Fatal(err)
+	}
+	if len(values.RegistryDockerGrants) != 2 || len(values.RegistryPrivateGrants) != 1 {
+		t.Fatalf("incorrect grants: %+v", values)
+	}
+	for _, invalid := range []string{"one=repository:team/a:delete", "*=repository:team/a:pull", "one=repository:team/*:pull"} {
+		if err := parse(strings.NewReader(`registry_docker_grants = "`+invalid+`"`), &Values{}); err == nil {
+			t.Fatalf("accepted %q", invalid)
+		}
+	}
+}
