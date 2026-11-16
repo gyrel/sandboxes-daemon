@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -184,6 +186,48 @@ func TestRecursiveReadOnlyNestedSubmountLiveAcceptanceAgainstOwnedVM(t *testing.
 	}()
 
 	repoDir, nestedHostDir, trackedContent, nestedContent := makeRROLiveWorkspaces(t, root)
+	// Synthetic host IPC fixtures, under the owned temporary workspace only.
+	fifoPath := filepath.Join(repoDir, "ipc-probe.fifo")
+	if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fifo, err := os.OpenFile(fifoPath, os.O_RDWR|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fifo.Close()
+	if _, err := fifo.WriteString("fixture-token"); err != nil {
+		t.Fatal(err)
+	}
+	localToken := make([]byte, len("fixture-token"))
+	if n, err := fifo.Read(localToken); err != nil || n != len(localToken) || string(localToken) != "fixture-token" {
+		t.Fatalf("host FIFO positive control failed: n=%d err=%v", n, err)
+	}
+	if _, err := fifo.WriteString("fixture-token"); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(repoDir, "ipc-probe.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	// The owned host socket must accept a local connection before guest probing.
+	hostClient, err := net.Dial("unix", filepath.Join(repoDir, "ipc-probe.sock"))
+	if err != nil {
+		t.Fatalf("host socket positive control dial: %v", err)
+	}
+	hostServer, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("host socket positive control accept: %v", err)
+	}
+	if err := hostClient.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := hostServer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	svc := New(state, backend)
 	svc.DefaultImage = inputs.image
 
@@ -244,6 +288,50 @@ func TestRecursiveReadOnlyNestedSubmountLiveAcceptanceAgainstOwnedVM(t *testing.
 	}
 	if out != nestedContent {
 		t.Fatalf("nested file content = %q, want %q", out, nestedContent)
+	}
+
+	// Probe only synthetic, owned IPC objects; a regular file above is the
+	// positive control proving the guest sees this mounted directory.
+	out, stderr, code, err = execRROLiveGuest(ctx, svc, sandboxID,
+		[]string{"/bin/sh", "-c", "if test -p /workspace/repo/ipc-probe.fifo; then timeout 3 head -c 13 /workspace/repo/ipc-probe.fifo; else echo FIFO_NOT_EXPOSED; fi"}, nil)
+	t.Logf("synthetic FIFO probe: exit=%d err=%v stdout=%q stderr=%q", code, err, out, stderr)
+	if err != nil && code != 124 {
+		t.Fatalf("could not execute FIFO probe: exit=%d: %v", code, err)
+	}
+	if out == "fixture-token" {
+		t.Error("guest read from host FIFO across read-only workspace")
+	}
+	out, stderr, code, err = execRROLiveGuest(ctx, svc, sandboxID,
+		[]string{"/bin/sh", "-c", "if test -S /workspace/repo/ipc-probe.sock; then echo SOCKET_EXPOSED; else echo SOCKET_NOT_EXPOSED; fi"}, nil)
+	t.Logf("synthetic socket visibility probe: exit=%d err=%v stdout=%q stderr=%q", code, err, out, stderr)
+	if err != nil || code != 0 {
+		t.Fatalf("could not execute socket visibility probe: %v", err)
+	}
+	unixListener := listener.(*net.UnixListener)
+	if err := unixListener.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan bool, 1)
+	go func() {
+		conn, err := unixListener.Accept()
+		if err != nil {
+			accepted <- false
+			return
+		}
+		defer conn.Close()
+		accepted <- true
+	}()
+	out, stderr, code, err = execRROLiveGuest(ctx, svc, sandboxID, []string{"/bin/sh", "-c", `if command -v python3 >/dev/null; then python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect("/workspace/repo/ipc-probe.sock")'; else echo PYTHON_NOT_AVAILABLE; fi`}, nil)
+	connected := <-accepted
+	t.Logf("synthetic socket connect probe: exit=%d err=%v stdout=%q stderr=%q host_accepted=%v", code, err, out, stderr, connected)
+	if connected {
+		t.Error("guest connected to host Unix socket across read-only workspace")
+	}
+	if strings.Contains(out, "PYTHON_NOT_AVAILABLE") {
+		t.Fatal("socket probe is inconclusive: python3 is unavailable in the guest")
+	}
+	if err == nil || !strings.Contains(stderr, "ConnectionRefusedError") {
+		t.Fatalf("socket probe is inconclusive: exit=%d err=%v stderr=%q", code, err, stderr)
 	}
 
 	// 2. The nested destination is a real mount nested inside the repository
