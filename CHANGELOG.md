@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Clarify the lifecycle control contract: the daemon's on-disk record is
+  unchanged, and a supervisor may additionally prove a daemon started directly
+  with `sandboxesd` from the live socket peer before signaling. A peer PID,
+  process start identity, and `sandboxesd` executable or matching `--socket`
+  argument must agree; unprovable identity still fails closed without a signal.
 - Release workflows no longer require the M7 external security review
   environment or an exact-SHA M7 approval variable. Release candidate
   validation, full CI on the candidate SHA, immutable tag creation, tag

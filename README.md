@@ -92,9 +92,12 @@ sends `SIGTERM` on Unix and terminates the process on Windows. `restart` stops
 the proven process before starting a new one. The daemon removes the control
 record on graceful shutdown. The CLI refuses to signal a PID unless the record
 names the same installation, state directory and socket, and the process start
-identifier still matches; missing, stale or unverifiable identity data fails
-closed. Stale socket paths are removed only after the recorded process is
-proven gone and the socket is owned by the current user. The log-level file is
+identifier still matches. When the record is missing or stale, the CLI may
+instead prove a daemon started directly with `sandboxesd` from the live socket
+peer: the peer PID, its process start identity, and a `sandboxesd` executable
+or matching `--socket` argument must agree. Missing, stale or unverifiable
+identity data fails closed. Stale socket paths are not removed automatically;
+verify that no daemon owns them before manual removal. The log-level file is
 polled, so changes apply without a restart and work on Windows.
 
 Runtime mode is explicit:
