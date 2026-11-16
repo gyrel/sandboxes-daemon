@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.0.60 — 2026-11-16
+
+### Added
+
+- Depend on gateway `v0.0.20`, which evaluates HTTP policy conditions
+  (`method`, `path` glob, `query`) on the bounded request head with deny
+  precedence and fail-closed handling of unevaluable conditions.
+
+### Security and limitations
+
+- Conflicts between allow and deny rules in the same scope are rejected with a
+  typed error naming both rules.
+- A rule whose conditions cannot be evaluated does not match; it never falls
+  back to matching everything.
+
 ## v0.0.59 — 2026-11-16
 
 ## v0.0.58 — 2026-11-16
