@@ -1,6 +1,26 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/rheic/sandboxes-daemon/internal/settings"
+)
+
+func TestApplyPolicyOverride(t *testing.T) {
+	values := settings.Values{DefaultPolicyProfile: "deny-all"}
+	if err := applyPolicyOverride(&values, ""); err != nil || values.DefaultPolicyProfile != "deny-all" {
+		t.Fatalf("empty policy = %+v, %v", values, err)
+	}
+	if err := applyPolicyOverride(&values, "balanced"); err != nil || values.DefaultPolicyProfile != "balanced" {
+		t.Fatalf("balanced policy = %+v, %v", values, err)
+	}
+	if err := applyPolicyOverride(&values, "allow-all"); err != nil || values.DefaultPolicyProfile != "allow-all" {
+		t.Fatalf("allow-all policy = %+v, %v", values, err)
+	}
+	if err := applyPolicyOverride(&values, "sbx-compat"); err == nil {
+		t.Fatal("unsupported policy override accepted")
+	}
+}
 
 func TestIPv6RuleCapabilityRequiresFlagAndGateway(t *testing.T) {
 	for _, test := range []struct {

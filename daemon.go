@@ -14,6 +14,7 @@ import (
 	runtime "github.com/rheic/sandboxes-runtime"
 	"google.golang.org/grpc"
 
+	"github.com/rheic/sandboxes-daemon/internal/lifecycle"
 	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
 	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
 	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
@@ -21,6 +22,7 @@ import (
 	"github.com/rheic/sandboxes-daemon/internal/service"
 	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
 	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/rheic/sandboxes-daemon/internal/version"
 )
 
 // Config is the daemon configuration.
@@ -117,7 +119,7 @@ func recoverLostGateways(ctx context.Context, svc *service.Service, events <-cha
 
 // Run starts the daemon and blocks until ctx is canceled.
 //
-//nolint:gocritic // Config is constructed once at the process boundary; copying it is intentional.
+//nolint:gocritic,gocyclo,cyclop,funlen // Config is constructed once at the process boundary; startup is one linear sequence.
 func Run(ctx context.Context, cfg Config) (runErr error) {
 	if cfg.SocketPath == "" || cfg.StateDir == "" {
 		return fmt.Errorf("socket path and state dir are required")
@@ -162,6 +164,12 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("listen local daemon endpoint: %w", err)
 	}
+	registration, err := lifecycle.Register(cfg.StateDir, cfg.SocketPath, version.Version)
+	if err != nil {
+		_ = lis.Close()
+		return fmt.Errorf("register daemon lifecycle: %w", err)
+	}
+	defer func() { runErr = errors.Join(runErr, registration.Close()) }()
 	if policySync != nil {
 		defer startPolicySync(ctx, policySync)()
 	}
