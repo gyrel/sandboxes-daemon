@@ -40,9 +40,8 @@ func TestResolvedRegistryEgressMatchesCustomPort(t *testing.T) {
 	if err != nil || decision.Allowed {
 		t.Fatalf("port 443 reused custom-port allow decision=%+v err=%v", decision, err)
 	}
-	if _, err := svc.MutatePolicy(ctx, op.SandboxID, "deny", sandbox.NetworkRule{
-		Protocol: "tcp", Domain: "registry.example.test", Port: 5000,
-	}); err != nil {
+	rule := sandbox.NetworkRule{Protocol: "tcp", Domain: "registry.example.test", Port: 5000}
+	if _, err := svc.UpdatePolicy(ctx, op.SandboxID, []sandbox.NetworkRule{rule}, []sandbox.NetworkRule{rule}); err != nil {
 		t.Fatal(err)
 	}
 	decision, err = svc.checkResolvedEgress(ctx, op.SandboxID, "registry.example.test", address, 5000)

@@ -2144,10 +2144,16 @@ func (s *Service) MutateGlobalPolicy(ctx context.Context, action string, rule sa
 		if slices.Contains(allow, rule) {
 			return nil, nil, fmt.Errorf("%w: allow rule already exists", core.ErrConflict)
 		}
+		if slices.Contains(deny, rule) {
+			return nil, nil, fmt.Errorf("%w: matching deny rule already exists", core.ErrConflict)
+		}
 		allow = append(allow, rule)
 	case "deny":
 		if slices.Contains(deny, rule) {
 			return nil, nil, fmt.Errorf("%w: deny rule already exists", core.ErrConflict)
+		}
+		if slices.Contains(allow, rule) {
+			return nil, nil, fmt.Errorf("%w: matching allow rule already exists", core.ErrConflict)
 		}
 		deny = append(deny, rule)
 	case "rm":
@@ -3200,10 +3206,16 @@ func (s *Service) MutatePolicy(ctx context.Context, id, action string, rule sand
 		if slices.Contains(allow, rule) {
 			return sandbox.Sandbox{}, fmt.Errorf("%w: allow rule already exists", core.ErrConflict)
 		}
+		if slices.Contains(deny, rule) {
+			return sandbox.Sandbox{}, fmt.Errorf("%w: matching deny rule already exists", core.ErrConflict)
+		}
 		allow = append(allow, rule)
 	case "deny":
 		if slices.Contains(deny, rule) {
 			return sandbox.Sandbox{}, fmt.Errorf("%w: deny rule already exists", core.ErrConflict)
+		}
+		if slices.Contains(allow, rule) {
+			return sandbox.Sandbox{}, fmt.Errorf("%w: matching allow rule already exists", core.ErrConflict)
 		}
 		deny = append(deny, rule)
 	case "rm":
