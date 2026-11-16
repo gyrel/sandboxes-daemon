@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.0.61 — 2026-11-16
+
+### Changed
+
+- New sandboxes default to the allow-all egress profile, matching the Docker
+  sbx baseline. Explicit deny rules, organization deny precedence and every
+  fail-closed control are unchanged; `deny-all` remains selectable through
+  `--policy-profile` and settings.
+
+### Added
+
+- Policy engine evaluates HTTP conditions (`method`, `path` glob, `query`) with
+  deny precedence, and same-scope allow/deny conflicts are rejected with a typed
+  error naming both rules.
+
 ## v0.0.60 — 2026-11-16
 
 ### Added
