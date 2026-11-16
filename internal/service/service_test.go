@@ -2421,6 +2421,168 @@ func TestStartDockerProfileEnablesOnlyConfiguredRegistryMirror(t *testing.T) {
 	}
 }
 
+func TestStartDockerProfileFailureReportsClassifiedDiagnostic(t *testing.T) {
+	backend := &dockerProfileFailureRuntime{
+		startCode: 1,
+		log: strings.Repeat("noise\n", 2000) + strings.Repeat("y", 10000) +
+			"\nfailed to start daemon: failed to setup IP tables\n",
+	}
+	svc := &Service{backend: backend}
+	err := svc.startDockerProfile(context.Background(), runtime.Handle{ID: "owned"}, false, false)
+	if err == nil {
+		t.Fatal("expected dockerd startup failure")
+	}
+	want := "start dockerd: code=1: " + dockerdDiagnosticIptables
+	if err.Error() != want {
+		t.Fatalf("diagnostic = %q, want %q", err.Error(), want)
+	}
+	if len(backend.calls) != 2 {
+		t.Fatalf("expected startup and diagnostic exec calls, got %d", len(backend.calls))
+	}
+	diagnostic := backend.calls[1]
+	if len(diagnostic.Env) != 0 {
+		t.Fatalf("diagnostic command received environment overrides: %v", diagnostic.Env)
+	}
+	if !strings.Contains(strings.Join(diagnostic.Argv, " "), "/var/log/dockerd.log") {
+		t.Fatalf("diagnostic did not read the dockerd log: %v", diagnostic.Argv)
+	}
+}
+
+func TestStartDockerProfileFailureClassifiesKnownSignatures(t *testing.T) {
+	tests := []struct {
+		name string
+		log  string
+		want string
+	}{
+		{name: "cgroup", log: "failed to mount cgroup2 at /sys/fs/cgroup", want: dockerdDiagnosticCgroup},
+		{name: "iptables", log: "FAILED TO SETUP IP TABLES: iptables v1.8.9", want: dockerdDiagnosticIptables},
+		{name: "socket", log: "bind: address already in use", want: dockerdDiagnosticSocket},
+		{name: "overlay", log: "failed to mount overlay: invalid argument", want: dockerdDiagnosticOverlay},
+		{name: "no space", log: "write /var/lib/docker: no space left on device", want: dockerdDiagnosticNoSpace},
+		{name: "permission", log: "open /var/run/docker.pid: permission denied", want: dockerdDiagnosticPermission},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &dockerProfileFailureRuntime{startCode: 1, log: tc.log}
+			svc := &Service{backend: backend}
+			err := svc.startDockerProfile(context.Background(), runtime.Handle{ID: "owned"}, false, false)
+			if err == nil {
+				t.Fatal("expected dockerd startup failure")
+			}
+			want := "start dockerd: code=1: " + tc.want
+			if err.Error() != want {
+				t.Fatalf("diagnostic = %q, want %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestStartDockerProfileFailureNeverReturnsGuestLogText(t *testing.T) {
+	secrets := []string{
+		"SYNTHETIC-DOCKERD-TOKEN-7c1f0e",
+		"hunter2",
+		"alice:s3cret@example.invalid",
+		"http://synthetic-user:synthetic-password@example.invalid/v2/",
+		"/var/lib/dockerd/arbitrary-guest-path",
+		"--registry-mirror=https://registry.invalid",
+		"HTTP_PROXY=http://127.0.0.1:43134",
+		"\x1b[31mred\x1b[0m",
+		"\x1b]0;hostile-title\x07",
+	}
+	for i, secret := range secrets {
+		t.Run(fmt.Sprintf("secret_%d", i), func(t *testing.T) {
+			backend := &dockerProfileFailureRuntime{
+				startCode: 1,
+				log:       "failed to start daemon: failed to setup IP tables\n" + secret + "\n",
+			}
+			svc := &Service{backend: backend}
+			err := svc.startDockerProfile(context.Background(), runtime.Handle{ID: "owned"}, false, false)
+			if err == nil {
+				t.Fatal("expected dockerd startup failure")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("guest log text %q reached the error: %q", secret, err.Error())
+			}
+			want := "start dockerd: code=1: " + dockerdDiagnosticIptables
+			if err.Error() != want {
+				t.Fatalf("diagnostic = %q, want %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestStartDockerProfileFailureUsesGenericDiagnosticForArbitraryLog(t *testing.T) {
+	backend := &dockerProfileFailureRuntime{
+		startCode: 1,
+		log: "\x1b[2J\x1b]0;hostile-title\x07fatal guest content token=SYNTHETIC-DOCKERD-TOKEN\n" +
+			"http://synthetic-user:synthetic-password@example.invalid/arbitrary/path\n",
+	}
+	svc := &Service{backend: backend}
+	err := svc.startDockerProfile(context.Background(), runtime.Handle{ID: "owned"}, false, false)
+	if err == nil {
+		t.Fatal("expected dockerd startup failure")
+	}
+	want := "start dockerd: code=1: " + dockerdDiagnosticGeneric
+	if err.Error() != want {
+		t.Fatalf("diagnostic = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestStartDockerProfileTransportErrorWrapsCause(t *testing.T) {
+	sentinel := errors.New("guest transport failed")
+	backend := &dockerProfileFailureRuntime{
+		startCode: 1,
+		startErr:  sentinel,
+		log:       "permission denied: SYNTHETIC-DOCKERD-TOKEN\n",
+	}
+	svc := &Service{backend: backend}
+	err := svc.startDockerProfile(context.Background(), runtime.Handle{ID: "owned"}, false, false)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("transport cause was not wrapped: %v", err)
+	}
+	want := "start dockerd: code=1: " + dockerdDiagnosticPermission + ": " + sentinel.Error()
+	if err.Error() != want {
+		t.Fatalf("wrapped error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestStartDockerProfileFailureSkipsDiagnosticsWhenContextIsDone(t *testing.T) {
+	backend := &dockerProfileFailureRuntime{startCode: 1, log: "dockerd exploded\n"}
+	svc := &Service{backend: backend}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := svc.startDockerProfile(ctx, runtime.Handle{ID: "owned"}, false, false)
+	if err == nil {
+		t.Fatal("expected dockerd startup failure")
+	}
+	want := "start dockerd: code=1: " + dockerdDiagnosticGeneric
+	if err.Error() != want {
+		t.Fatalf("diagnostic = %q, want %q", err.Error(), want)
+	}
+	if len(backend.calls) != 1 {
+		t.Fatalf("diagnostic ran after context cancellation: %d calls", len(backend.calls))
+	}
+}
+
+type dockerProfileFailureRuntime struct {
+	fakeRuntime
+	calls     []runtime.ExecRequest
+	startCode int
+	startErr  error
+	log       string
+}
+
+func (f *dockerProfileFailureRuntime) ExecNative(_ context.Context, _ runtime.Handle, req runtime.ExecRequest) (int, error) {
+	f.calls = append(f.calls, req)
+	if len(f.calls) == 1 {
+		return f.startCode, f.startErr
+	}
+	if req.Stdout != nil && f.log != "" {
+		_, _ = io.WriteString(req.Stdout, f.log)
+	}
+	return 0, nil
+}
+
 func TestCreateWiresScopedDockerHubPullBrokerIntoGuest(t *testing.T) {
 	if goruntime.GOOS == "windows" || !dockerVolumeSecuritySupported() {
 		t.Skip("guest Docker profile requires supported Unix sockets and private volume semantics")

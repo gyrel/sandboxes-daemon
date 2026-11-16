@@ -2732,12 +2732,118 @@ echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
 for i in $(seq 1 50); do docker info >/dev/null 2>&1 && exit 0; sleep 0.2; done
 exit 1
 `
-	if code, err := native.ExecNative(ctx, handle, runtime.ExecRequest{
+	code, err := native.ExecNative(ctx, handle, runtime.ExecRequest{
 		Argv: []string{cloneShellCommand, "-c", script}, User: "0:0",
-	}); err != nil || code != 0 {
-		return fmt.Errorf("start dockerd: code=%d err=%w", code, err)
+	})
+	if err != nil || code != 0 {
+		return dockerProfileStartError(code, err, dockerdStartupDiagnostic(ctx, native, handle))
 	}
 	return nil
+}
+
+const (
+	dockerdDiagnosticMaxBytes = 4 << 10
+	dockerdDiagnosticTimeout  = 2 * time.Second
+
+	dockerdDiagnosticGeneric    = "dockerd startup failed (unrecognized diagnostic)"
+	dockerdDiagnosticCgroup     = "dockerd startup failed (cgroup mount)"
+	dockerdDiagnosticIptables   = "dockerd startup failed (iptables setup)"
+	dockerdDiagnosticSocket     = "dockerd startup failed (socket address already in use)"
+	dockerdDiagnosticOverlay    = "dockerd startup failed (overlay mount)"
+	dockerdDiagnosticNoSpace    = "dockerd startup failed (no space left on device)"
+	dockerdDiagnosticPermission = "dockerd startup failed (permission denied)"
+)
+
+// dockerdDiagnosticSignatures maps a small set of known dockerd startup
+// failures to fixed literal labels. Guest log content is only inspected, never
+// returned: the selected label is the entire diagnostic.
+var dockerdDiagnosticSignatures = []struct {
+	label   string
+	markers []string
+}{
+	{label: dockerdDiagnosticCgroup, markers: []string{"failed to mount cgroup", "cgroup2 not mounted", "cannot mount cgroup"}},
+	{label: dockerdDiagnosticIptables, markers: []string{"iptables failed", "failed to setup ip tables", "iptables: permission denied"}},
+	{label: dockerdDiagnosticSocket, markers: []string{"address already in use"}},
+	{label: dockerdDiagnosticOverlay, markers: []string{"failed to mount overlay", "overlay2 mount"}},
+	{label: dockerdDiagnosticNoSpace, markers: []string{"no space left on device"}},
+	{label: dockerdDiagnosticPermission, markers: []string{"permission denied"}},
+}
+
+// dockerProfileStartError reports a failed dockerd startup without formatting a
+// nil error with %w, which would print %!w(<nil>) and hide the real failure.
+func dockerProfileStartError(code int, err error, diagnostic string) error {
+	if diagnostic == "" {
+		diagnostic = dockerdDiagnosticGeneric
+	}
+	message := fmt.Sprintf("start dockerd: code=%d: %s", code, diagnostic)
+	if err != nil {
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	return errors.New(message)
+}
+
+// dockerdStartupDiagnostic reads a bounded tail of the guest dockerd log after
+// a failed profile start and classifies it into a fixed literal label. It never
+// returns guest text: arbitrary log content, including credentials, paths,
+// URLs, commands, and terminal control sequences, cannot reach the caller.
+func dockerdStartupDiagnostic(ctx context.Context, native runtime.NativeExecutor, handle runtime.Handle) string {
+	if ctx.Err() != nil {
+		return dockerdDiagnosticGeneric
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, dockerdDiagnosticTimeout)
+	defer cancel()
+	var output boundedDockerLogBuffer
+	output.limit = dockerdDiagnosticMaxBytes
+	// tail bounds the guest output at the source; the buffer enforces the same
+	// cap in case the image lacks a usable tail or emits more than requested.
+	_, _ = native.ExecNative(commandCtx, handle, runtime.ExecRequest{
+		Argv:   []string{cloneShellCommand, "-c", "tail -c " + strconv.Itoa(dockerdDiagnosticMaxBytes) + " /var/log/dockerd.log 2>/dev/null"},
+		User:   "0:0",
+		Stdout: &output,
+	})
+	return classifyDockerdDiagnostic(output.String())
+}
+
+// classifyDockerdDiagnostic returns only a fixed literal label. Signatures are
+// matched case-insensitively as plain substrings; no log text is copied into
+// the result.
+func classifyDockerdDiagnostic(log string) string {
+	normalized := strings.ToLower(log)
+	for _, signature := range dockerdDiagnosticSignatures {
+		for _, marker := range signature.markers {
+			if strings.Contains(normalized, marker) {
+				return signature.label
+			}
+		}
+	}
+	return dockerdDiagnosticGeneric
+}
+
+type boundedDockerLogBuffer struct {
+	buf   []byte
+	limit int
+}
+
+// Write keeps only the most recent limit bytes so a broken dockerd cannot
+// produce an unbounded error message or unbounded memory use.
+func (b *boundedDockerLogBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	if b.limit <= 0 {
+		return written, nil
+	}
+	if len(p) >= b.limit {
+		b.buf = append(b.buf[:0], p[len(p)-b.limit:]...)
+		return written, nil
+	}
+	if overflow := len(b.buf) + len(p) - b.limit; overflow > 0 {
+		b.buf = b.buf[overflow:]
+	}
+	b.buf = append(b.buf, p...)
+	return written, nil
+}
+
+func (b *boundedDockerLogBuffer) String() string {
+	return string(b.buf)
 }
 
 type createIntent struct {
