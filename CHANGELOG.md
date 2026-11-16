@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- Add a local daemon lifecycle control surface. The daemon now writes a private
+  `daemon.installation`, `daemon.control.json` and `daemon.loglevel.json` in its
+  state directory after the socket is listening, removes the control record on
+  graceful shutdown, and applies `general`/`proxy` log-level changes without a
+  restart. `sandboxesd --policy allow-all|balanced|deny-all` initializes the
+  global policy profile used by `rsbx daemon start --policy`.
+- Add process-start identity checks and installation/socket matching before a
+  supervisor may signal the daemon. Linux uses the boot ID plus `/proc` start
+  ticks, macOS uses `kern.proc.pid` start time, and Windows uses process
+  creation time; missing or unverifiable identity fails closed.
+
 ## v0.0.57 — 2026-11-15
 
 ### Fixed

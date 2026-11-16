@@ -38,11 +38,43 @@ paths are not removed automatically because their ownership is unverified.
 The daemon also holds a state-directory lock while running; a second cooperating
 daemon using that state directory fails to start. The lock file is retained.
 
+### Local lifecycle control surface
+
+The daemon cannot supervise its own process, so it publishes a private control
+record after its socket is listening. The CLI is the only supervisor and uses
+that record to start, stop, restart and inspect the daemon.
+
+The state directory contains:
+
+- `daemon.installation`: one random installation identifier, created once.
+- `daemon.control.json`: schema version, installation identifier, canonical
+  state directory and socket, PID, an opaque process-start identifier (Linux
+  boot ID plus `/proc` start ticks, macOS `kern.proc.pid` start time, or Windows
+  process creation time), start time and daemon version.
+- `daemon.loglevel.json`: persistent `general` and `proxy` levels. Accepted
+  levels are `debug`, `info`, `warn`, `error`; `proxy` is reserved for proxy
+  logs and is accepted for `sbx daemon log-level` grammar parity.
+- `daemon.log`: detached-start output.
+
+`daemon start` spawns `sandboxesd --state <dir> --socket <socket>`; `--policy
+allow-all|balanced|deny-all` initializes the global policy profile. `stop`
+sends `SIGTERM` on Unix and terminates the process on Windows. `restart` stops
+the proven process before starting a new one. The daemon removes the control
+record on graceful shutdown. The CLI refuses to signal a PID unless the record
+names the same installation, state directory and socket, and the process start
+identifier still matches; missing, stale or unverifiable identity data fails
+closed. Stale socket paths are removed only after the recorded process is
+proven gone and the socket is owned by the current user. The log-level file is
+polled, so changes apply without a restart and work on Windows.
+
 Runtime mode is explicit:
 
 ```sh
 # state-only default
 sandboxesd --state "$HOME/.sandboxes"
+
+# initialize the global policy on startup
+sandboxesd --state "$HOME/.sandboxes" --policy balanced
 
 # containerd/nerdbox backend
 sandboxesd --state "$HOME/.sandboxes" \
