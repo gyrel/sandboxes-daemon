@@ -409,7 +409,7 @@ func (f *oidcFixture) newServer(t *testing.T) (*Server, ed25519.PrivateKey) {
 	}
 	config := f.config
 	server, err := New(Config{
-		DBPath: filepath.Join(t.TempDir(), "controlplane.db"), Credentials: testCredentials(t),
+		DBPath: filepath.Join(t.TempDir(), "controlplane.db"), Credentials: testCredentials(t), AllowInstallationWideCredentials: true,
 		PolicyKey: publicKey, OIDC: &config, Clock: func() time.Time { return f.now },
 	})
 	if err != nil {

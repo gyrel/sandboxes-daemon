@@ -65,11 +65,12 @@ type AuditEvent struct {
 }
 
 type Config struct {
-	DBPath      string
-	Credentials *CredentialSet
-	PolicyKey   ed25519.PublicKey
-	OIDC        *OIDCConfig
-	Clock       func() time.Time
+	DBPath                           string
+	Credentials                      *CredentialSet
+	AllowInstallationWideCredentials bool
+	PolicyKey                        ed25519.PublicKey
+	OIDC                             *OIDCConfig
+	Clock                            func() time.Time
 }
 
 type Server struct {
@@ -81,9 +82,22 @@ type Server struct {
 	httpServer  *http.ServeMux
 }
 
-func New(config Config) (*Server, error) {
+func validateServerConfig(config Config) error {
 	if config.DBPath == "" || config.Credentials == nil || len(config.PolicyKey) != ed25519.PublicKeySize {
-		return nil, errors.New("database path, role-scoped credentials, and Ed25519 policy public key are required")
+		return errors.New("database path, role-scoped credentials, and Ed25519 policy public key are required")
+	}
+	if len(config.Credentials.hashes) == 0 || len(config.Credentials.hashes) != len(config.Credentials.roles) || len(config.Credentials.hashes) != len(config.Credentials.orgs) {
+		return errors.New("invalid credential set")
+	}
+	if config.Credentials.hasUnscoped() && !config.AllowInstallationWideCredentials {
+		return errors.New("installation-wide credentials require explicit opt-in")
+	}
+	return nil
+}
+
+func New(config Config) (*Server, error) {
+	if err := validateServerConfig(config); err != nil {
+		return nil, err
 	}
 	dbPath := filepath.ToSlash(config.DBPath)
 	if len(dbPath) >= 2 && dbPath[1] == ':' {

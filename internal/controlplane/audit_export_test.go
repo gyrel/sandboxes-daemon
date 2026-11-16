@@ -132,9 +132,9 @@ func newServerWithRole(t *testing.T, role Role) *Server {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte(nonReaderToken))
-	credentials := &CredentialSet{hashes: [][sha256.Size]byte{digest}, roles: []Role{role}}
+	credentials := &CredentialSet{hashes: [][sha256.Size]byte{digest}, roles: []Role{role}, orgs: []string{""}}
 	now := time.Date(2026, time.November, 8, 0, 0, 0, 0, time.UTC)
-	server, err := New(Config{DBPath: filepath.Join(t.TempDir(), "controlplane.db"), Credentials: credentials, PolicyKey: publicKey, Clock: func() time.Time { return now }})
+	server, err := New(Config{DBPath: filepath.Join(t.TempDir(), "controlplane.db"), Credentials: credentials, AllowInstallationWideCredentials: true, PolicyKey: publicKey, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}

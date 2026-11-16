@@ -179,7 +179,7 @@ func TestMigrationBacksUpExistingDatabaseAndRejectsNewerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := New(Config{DBPath: dbPath, Credentials: testCredentials(t), PolicyKey: publicKey})
+	server, err := New(Config{DBPath: dbPath, Credentials: testCredentials(t), AllowInstallationWideCredentials: true, PolicyKey: publicKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestMigrationBacksUpExistingDatabaseAndRejectsNewerSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = db.Close()
-	if _, err := New(Config{DBPath: dbPath, Credentials: testCredentials(t), PolicyKey: publicKey}); err == nil {
+	if _, err := New(Config{DBPath: dbPath, Credentials: testCredentials(t), AllowInstallationWideCredentials: true, PolicyKey: publicKey}); err == nil {
 		t.Fatal("newer schema was accepted")
 	}
 }
@@ -226,7 +226,7 @@ func TestNewSupportsURICharactersInDatabaseFilename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := New(Config{DBPath: dbPath, Credentials: testCredentials(t), PolicyKey: publicKey})
+	server, err := New(Config{DBPath: dbPath, Credentials: testCredentials(t), AllowInstallationWideCredentials: true, PolicyKey: publicKey})
 	if err != nil {
 		t.Fatalf("open control-plane database at URI-like path: %v", err)
 	}
@@ -298,7 +298,7 @@ func newTestServer(t *testing.T) (*Server, ed25519.PrivateKey, time.Time) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, time.November, 8, 0, 0, 0, 0, time.UTC)
-	server, err := New(Config{DBPath: filepath.Join(t.TempDir(), "controlplane.db"), Credentials: testCredentials(t), PolicyKey: publicKey, Clock: func() time.Time { return now }})
+	server, err := New(Config{DBPath: filepath.Join(t.TempDir(), "controlplane.db"), Credentials: testCredentials(t), AllowInstallationWideCredentials: true, PolicyKey: publicKey, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}

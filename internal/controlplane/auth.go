@@ -52,8 +52,8 @@ func (s *Server) authenticate(r *http.Request) (Principal, bool) {
 	if !ok {
 		return Principal{}, false
 	}
-	if role, ok := s.credentials.Authenticate(token); ok {
-		return Principal{Role: role}, true
+	if principal, ok := s.credentials.authenticatePrincipal(token); ok {
+		return principal, true
 	}
 	if s.oidc != nil {
 		if principal, err := s.oidc.Authenticate(r.Context(), token); err == nil {
