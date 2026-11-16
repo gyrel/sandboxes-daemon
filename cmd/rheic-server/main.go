@@ -45,16 +45,17 @@ func run() error {
 }
 
 type serverOptions struct {
-	listen            string
-	dbPath            string
-	credentialsPath   string
-	publicKey         string
-	certPath          string
-	privateKey        string
-	oidcIssuer        string
-	oidcAudience      string
-	oidcJWKSURL       string
-	oidcJWKSAuthority string
+	listen                           string
+	dbPath                           string
+	credentialsPath                  string
+	publicKey                        string
+	certPath                         string
+	privateKey                       string
+	oidcIssuer                       string
+	oidcAudience                     string
+	oidcJWKSURL                      string
+	oidcJWKSAuthority                string
+	allowInstallationWideCredentials bool
 }
 
 func runServer(args []string) error {
@@ -70,6 +71,7 @@ func runServer(args []string) error {
 	certPath := flags.String("tls-cert", "", "TLS certificate PEM")
 	keyPath := flags.String("tls-key", "", "TLS private key PEM")
 	oidcIssuer := flags.String("oidc-issuer", "", "optional OIDC issuer URL; enables OIDC bearer validation with --oidc-audience and --oidc-jwks-url")
+	allowInstallationWideCredentials := flags.Bool("installation-wide-credentials", false, "allow credentials without an organization to access all organizations")
 	oidcAudience := flags.String("oidc-audience", "", "optional OIDC token audience")
 	oidcJWKSURL := flags.String("oidc-jwks-url", "", "optional HTTPS JWKS URL")
 	oidcJWKSAuthority := flags.String("oidc-trusted-jwks-authority", "", "explicitly trust a JWKS host[:port] different from the issuer")
@@ -80,7 +82,8 @@ func runServer(args []string) error {
 		return errors.New("--credentials-file, --policy-public-key, --tls-cert, and --tls-key are required")
 	}
 	return serve(serverOptions{
-		listen: *listen, dbPath: *dbPath, credentialsPath: *credentialsPath,
+		allowInstallationWideCredentials: *allowInstallationWideCredentials,
+		listen:                           *listen, dbPath: *dbPath, credentialsPath: *credentialsPath,
 		publicKey: *publicKeyPath, certPath: *certPath, privateKey: *keyPath,
 		oidcIssuer: *oidcIssuer, oidcAudience: *oidcAudience, oidcJWKSURL: *oidcJWKSURL, oidcJWKSAuthority: *oidcJWKSAuthority,
 	})
@@ -129,7 +132,10 @@ func serve(options serverOptions) error {
 			return err
 		}
 	}
-	service, err := controlplane.New(controlplane.Config{DBPath: options.dbPath, Credentials: credentials, PolicyKey: ed25519.PublicKey(publicKey), OIDC: oidcConfig})
+	if options.allowInstallationWideCredentials {
+		slog.Warn("installation-wide credentials enabled; unscoped tokens can access every organization")
+	}
+	service, err := controlplane.New(controlplane.Config{AllowInstallationWideCredentials: options.allowInstallationWideCredentials, DBPath: options.dbPath, Credentials: credentials, PolicyKey: ed25519.PublicKey(publicKey), OIDC: oidcConfig})
 	if err != nil {
 		return err
 	}

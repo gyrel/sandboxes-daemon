@@ -32,8 +32,8 @@ bearer credential:
 ```json
 {
   "credentials": [
-    {"name": "ops-admin", "role": "admin", "token": "<random value, at least 32 bytes>"},
-    {"name": "audit-reader", "role": "reader", "token": "<different random value, at least 32 bytes>"}
+    {"name": "ops-admin", "role": "admin", "org": "example-org", "token": "<random value, at least 32 bytes>"},
+    {"name": "audit-reader", "role": "reader", "org": "example-org", "token": "<different random value, at least 32 bytes>"}
   ]
 }
 ```
@@ -57,9 +57,11 @@ not put it on a command line or in shell history:
 export RHEIC_ADMIN_TOKEN="$(jq -r '.credentials[] | select(.role == "admin") | .token' ./credentials.json)"
 ```
 
-Static credentials are installation wide: they are not scoped to an org. Each
-org path is still isolated in storage, but a credential holder may use any org
-ID handled by this server. Per-org authorization is an OIDC/follow-up gate.
+Static credentials are restricted to their configured `org`. An unscoped
+credential can access every organization and is rejected at startup unless the
+operator explicitly supplies `--installation-wide-credentials`; enabling the
+flag emits a warning. Existing installations with unscoped credentials must
+add an `org` to each entry or explicitly opt in to installation-wide access.
 
 Provide a certificate and an owner-only regular key file (mode `0600`) for the
 server's DNS name. Clients verify TLS normally; there is no insecure mode. The

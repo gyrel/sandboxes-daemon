@@ -30,6 +30,7 @@ var credentialNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}
 type Credential struct {
 	Name  string `json:"name"`
 	Role  Role   `json:"role"`
+	Org   string `json:"org,omitempty"`
 	Token string `json:"token"`
 }
 
@@ -43,6 +44,7 @@ type credentialFile struct {
 type CredentialSet struct {
 	hashes [][sha256.Size]byte
 	roles  []Role
+	orgs   []string
 }
 
 // ParseCredentials decodes and validates the protected role file. The file is a
@@ -75,12 +77,16 @@ func NewCredentialSet(credentials []Credential) (*CredentialSet, error) {
 	set := &CredentialSet{
 		hashes: make([][sha256.Size]byte, 0, len(credentials)),
 		roles:  make([]Role, 0, len(credentials)),
+		orgs:   make([]string, 0, len(credentials)),
 	}
 	seenNames := make(map[string]struct{}, len(credentials))
 	seenTokens := make(map[[sha256.Size]byte]struct{}, len(credentials))
 	for _, credential := range credentials {
 		if !credentialNamePattern.MatchString(credential.Name) {
 			return nil, errors.New("credential name is missing or malformed")
+		}
+		if credential.Org != "" && !validOrgID(credential.Org) {
+			return nil, fmt.Errorf("credential %q has an invalid organization", credential.Name)
 		}
 		if !validRole(credential.Role) {
 			return nil, fmt.Errorf("credential %q has an unknown role", credential.Name)
@@ -99,6 +105,7 @@ func NewCredentialSet(credentials []Credential) (*CredentialSet, error) {
 		seenTokens[digest] = struct{}{}
 		set.hashes = append(set.hashes, digest)
 		set.roles = append(set.roles, credential.Role)
+		set.orgs = append(set.orgs, credential.Org)
 	}
 	return set, nil
 }
@@ -107,23 +114,37 @@ func NewCredentialSet(credentials []Credential) (*CredentialSet, error) {
 // the supplied token against every configured digest without short-circuiting,
 // so the comparison time does not depend on the matched entry.
 func (s *CredentialSet) Authenticate(token string) (Role, bool) {
-	if s == nil || token == "" || len(s.hashes) != len(s.roles) {
-		return "", false
+	principal, ok := s.authenticatePrincipal(token)
+	return principal.Role, ok
+}
+
+func (s *CredentialSet) authenticatePrincipal(token string) (Principal, bool) {
+	if s == nil || token == "" || len(s.hashes) != len(s.roles) || len(s.hashes) != len(s.orgs) {
+		return Principal{}, false
 	}
 	provided := sha256.Sum256([]byte(token))
-	var role Role
+	var principal Principal
 	var matched int
 	for index := range s.hashes {
 		equal := subtle.ConstantTimeCompare(provided[:], s.hashes[index][:])
 		if equal == 1 {
-			role = s.roles[index]
+			principal = Principal{Role: s.roles[index], Org: s.orgs[index]}
 		}
 		matched |= equal
 	}
 	if matched != 1 {
-		return "", false
+		return Principal{}, false
 	}
-	return role, true
+	return principal, true
+}
+
+func (s *CredentialSet) hasUnscoped() bool {
+	for _, org := range s.orgs {
+		if org == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func validRole(role Role) bool {
