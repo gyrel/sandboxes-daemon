@@ -181,12 +181,14 @@ func TestRegistryCredentialIndexLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	entry := RegistryCredentialIndex{Registry: "ghcr.io", Username: "alice", Scope: "sandbox", SandboxName: "dev"}
+	entry := RegistryCredentialIndex{Registry: "ghcr.io", Username: "alice", Scope: "sandbox", SandboxName: "dev", Origin: "local"}
 	if err := st.UpsertRegistryCredentialIndex(ctx, entry); err != nil {
 		t.Fatal(err)
 	}
 	items, err := st.ListRegistryCredentialIndex(ctx)
-	if err != nil || len(items) != 1 || items[0] != entry {
+	if err != nil || len(items) != 1 || items[0].Registry != entry.Registry || items[0].Username != entry.Username ||
+		items[0].Scope != entry.Scope || items[0].SandboxName != entry.SandboxName || items[0].Origin != entry.Origin ||
+		items[0].CreatedAt.IsZero() || items[0].UpdatedAt.IsZero() {
 		t.Fatalf("items=%+v err=%v", items, err)
 	}
 	if err := st.DeleteRegistryCredentialIndex(ctx, entry.Registry, entry.Scope, entry.SandboxName); err != nil {
@@ -195,6 +197,41 @@ func TestRegistryCredentialIndexLifecycle(t *testing.T) {
 	items, err = st.ListRegistryCredentialIndex(ctx)
 	if err != nil || len(items) != 0 {
 		t.Fatalf("items after delete=%+v err=%v", items, err)
+	}
+}
+
+func TestServiceSecretIndexMetadataLifecycle(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	created := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	entry := ServiceSecretIndex{
+		Service: "github", Scope: "global", CreatedAt: created, UpdatedAt: created,
+		SourceKind: "reference", Refresh: "55m0s", Refreshable: true, SecretType: "external", Origin: "local",
+	}
+	if err := st.UpsertServiceSecretIndex(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	updated := created.Add(5 * time.Minute)
+	entry.UpdatedAt = updated
+	entry.Refresh = "on-demand"
+	if err := st.UpsertServiceSecretIndex(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	items, err := st.ListServiceSecretIndex(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items=%+v", items)
+	}
+	got := items[0]
+	if !got.CreatedAt.Equal(created) || !got.UpdatedAt.Equal(updated) || got.SourceKind != entry.SourceKind ||
+		got.Refresh != entry.Refresh || !got.Refreshable || got.SecretType != entry.SecretType || got.Origin != entry.Origin {
+		t.Fatalf("item=%+v", got)
 	}
 }
 

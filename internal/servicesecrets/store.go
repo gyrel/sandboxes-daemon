@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	keyring "github.com/zalando/go-keyring"
@@ -34,11 +35,38 @@ var Services = []string{
 	"groq", "mistral", "nebius", "openai", "openrouter", "xai",
 }
 
-// Summary is non-secret metadata.
+// SourceKind describes how a host-side secret is stored. It never identifies
+// the referenced value itself.
+type SourceKind string
+
+const (
+	SourceKindValue     SourceKind = "value"
+	SourceKindReference SourceKind = "reference"
+	SourceKindCommand   SourceKind = "command"
+)
+
+const (
+	// OriginLocal identifies entries written by the local daemon.
+	OriginLocal = "local"
+	// SecretTypeAPIKey is the coarse type for a literal host-vault value.
+	SecretTypeAPIKey = "api_key"
+	// SecretTypeExternal is the coarse type for a dynamic host-side source.
+	SecretTypeExternal = "external"
+)
+
+// Summary is non-secret metadata. It never contains a secret value, reference,
+// command, environment value or other secret material.
 type Summary struct {
 	Service     string
 	Scope       Scope
 	SandboxName string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	SourceKind  SourceKind
+	Refresh     string
+	Refreshable bool
+	SecretType  string
+	Origin      string
 }
 
 // Vault stores and retrieves opaque secret values.
@@ -134,6 +162,9 @@ func (s *Store) Save(ctx context.Context, service string, scope Scope, sandboxNa
 		return Summary{}, errors.New("store service secret in host keychain")
 	}
 	s.resolver().invalidate(account(summary))
+	summary.SourceKind = SourceKindValue
+	summary.SecretType = SecretTypeAPIKey
+	summary.Origin = OriginLocal
 	return summary, nil
 }
 

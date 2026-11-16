@@ -352,10 +352,12 @@ func (s *RegistryCredentialServer) List(ctx context.Context, _ *localv1.Registry
 		return nil, status.Error(codes.Unavailable, "registry credential index is unavailable")
 	}
 	out := make([]*localv1.RegistryCredentialSummary, 0, len(summaries))
-	for _, summary := range summaries {
+	for index := range summaries {
+		summary := &summaries[index]
 		out = append(out, &localv1.RegistryCredentialSummary{
 			Registry: summary.Registry, Username: summary.Username,
 			Scope: string(summary.Scope), SandboxName: summary.SandboxName,
+			CreatedAtUnix: unix(summary.CreatedAt), UpdatedAtUnix: unix(summary.UpdatedAt), Origin: summary.Origin,
 		})
 	}
 	return &localv1.RegistryCredentialServiceListResponse{Credentials: out}, nil

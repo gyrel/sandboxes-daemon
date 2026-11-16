@@ -85,6 +85,58 @@ func TestOpenMigratesLegacySchemaWithBackup(t *testing.T) {
 	}
 }
 
+func TestSchemaUpgradeAddsSecretMetadataColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sandboxes.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE service_secret_index (
+			service TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			sandbox_name TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (service, scope, sandbox_name)
+		)`,
+		`CREATE TABLE registry_credential_index (
+			registry TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			sandbox_name TEXT NOT NULL DEFAULT '',
+			username TEXT NOT NULL,
+			PRIMARY KEY (registry, scope, sandbox_name)
+		)`,
+		`INSERT INTO service_secret_index(service, scope, sandbox_name, updated_at) VALUES ('github','global','',1700000000)`,
+		`PRAGMA user_version = 4`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	items, err := st.ListServiceSecretIndex(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].CreatedAt.Unix() != 1700000000 || items[0].UpdatedAt.Unix() != 1700000000 ||
+		items[0].SourceKind != "" || items[0].Origin != "" {
+		t.Fatalf("migrated service secret index=%+v", items)
+	}
+	credentials, err := st.ListRegistryCredentialIndex(ctx)
+	if err != nil || len(credentials) != 0 {
+		t.Fatalf("migrated registry credential index=%+v err=%v", credentials, err)
+	}
+}
+
 func TestOpenRefusesNewerSchema(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sandboxes.db")
@@ -104,10 +156,10 @@ func TestOpenRefusesNewerSchema(t *testing.T) {
 }
 
 func TestCloneSchemaUpgradeRejectsOlderDaemon(t *testing.T) {
-	if schemaVersion != 4 {
-		t.Fatalf("schema version = %d, want 4 for clone contract", schemaVersion)
+	if schemaVersion != 5 {
+		t.Fatalf("schema version = %d, want 5 for secret metadata", schemaVersion)
 	}
-	if err := schemaVersionCompatibilityError(schemaVersion, 3); !errors.Is(err, ErrSchemaNewer) {
+	if err := schemaVersionCompatibilityError(schemaVersion, 4); !errors.Is(err, ErrSchemaNewer) {
 		t.Fatalf("older daemon compatibility error = %v, want ErrSchemaNewer", err)
 	}
 

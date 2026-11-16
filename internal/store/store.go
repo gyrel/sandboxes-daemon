@@ -39,7 +39,12 @@ var _ operation.Store = (*OperationStore)(nil)
 
 // schemaVersion is the latest SQLite schema understood by this daemon. It is
 // stored in PRAGMA user_version and must only increase.
-const schemaVersion = 4
+const schemaVersion = 5
+
+type columnDefinition struct {
+	name       string
+	definition string
+}
 
 // ErrSchemaNewer reports a database written by a newer daemon. Opening it
 // would risk data loss, so the daemon refuses to start instead.
@@ -315,7 +320,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			service TEXT NOT NULL,
 			scope TEXT NOT NULL,
 			sandbox_name TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL DEFAULT 0,
 			updated_at INTEGER NOT NULL,
+			source_kind TEXT NOT NULL DEFAULT '',
+			refresh TEXT NOT NULL DEFAULT '',
+			refreshable INTEGER NOT NULL DEFAULT 0,
+			secret_type TEXT NOT NULL DEFAULT '',
+			origin TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (service, scope, sandbox_name)
 		)`,
 		`CREATE TABLE IF NOT EXISTS registry_credential_index (
@@ -323,6 +334,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			scope TEXT NOT NULL,
 			sandbox_name TEXT NOT NULL DEFAULT '',
 			username TEXT NOT NULL,
+			created_at INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL DEFAULT 0,
+			origin TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (registry, scope, sandbox_name)
 		)`,
 		`CREATE TABLE IF NOT EXISTS org_policy_bundles (
@@ -343,8 +357,80 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureSandboxResourceColumns(ctx); err != nil {
 		return fmt.Errorf("migrate sandbox resources: %w", err)
 	}
+	if err := s.ensureSecretMetadataColumns(ctx); err != nil {
+		return fmt.Errorf("migrate secret metadata: %w", err)
+	}
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
 		return fmt.Errorf("record schema version: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureSecretMetadataColumns(ctx context.Context) error {
+	for _, table := range []struct {
+		name    string
+		columns []columnDefinition
+	}{
+		{
+			name: "service_secret_index",
+			columns: []columnDefinition{
+				{"created_at", "created_at INTEGER NOT NULL DEFAULT 0"},
+				{"source_kind", "source_kind TEXT NOT NULL DEFAULT ''"},
+				{"refresh", "refresh TEXT NOT NULL DEFAULT ''"},
+				{"refreshable", "refreshable INTEGER NOT NULL DEFAULT 0"},
+				{"secret_type", "secret_type TEXT NOT NULL DEFAULT ''"},
+				{"origin", "origin TEXT NOT NULL DEFAULT ''"},
+			},
+		},
+		{
+			name: "registry_credential_index",
+			columns: []columnDefinition{
+				{"created_at", "created_at INTEGER NOT NULL DEFAULT 0"},
+				{"updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"},
+				{"origin", "origin TEXT NOT NULL DEFAULT ''"},
+			},
+		},
+	} {
+		if err := s.ensureColumns(ctx, table.name, table.columns); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE service_secret_index SET created_at=updated_at WHERE created_at=0`); err != nil {
+		return fmt.Errorf("backfill service secret creation time: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureColumns(ctx context.Context, table string, wanted []columnDefinition) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, column := range wanted {
+		if _, ok := columns[column.name]; ok {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column.definition); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1049,14 +1135,27 @@ type RegistryCredentialIndex struct {
 	Username    string
 	Scope       string
 	SandboxName string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Origin      string
 }
 
 // UpsertRegistryCredentialIndex records a non-secret registry credential summary.
 func (s *Store) UpsertRegistryCredentialIndex(ctx context.Context, entry RegistryCredentialIndex) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO registry_credential_index (registry, scope, sandbox_name, username)
-		VALUES (?,?,?,?)
-		ON CONFLICT(registry, scope, sandbox_name) DO UPDATE SET username=excluded.username`,
-		entry.Registry, entry.Scope, entry.SandboxName, entry.Username)
+	now := time.Now().UTC()
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = now
+	}
+	if entry.UpdatedAt.IsZero() {
+		entry.UpdatedAt = now
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO registry_credential_index
+		(registry, scope, sandbox_name, username, created_at, updated_at, origin)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(registry, scope, sandbox_name) DO UPDATE SET
+			username=excluded.username, updated_at=excluded.updated_at, origin=excluded.origin`,
+		entry.Registry, entry.Scope, entry.SandboxName, entry.Username,
+		toUnix(entry.CreatedAt), toUnix(entry.UpdatedAt), entry.Origin)
 	if err != nil {
 		return fmt.Errorf("record registry credential index: %w", err)
 	}
@@ -1075,7 +1174,8 @@ func (s *Store) DeleteRegistryCredentialIndex(ctx context.Context, registry, sco
 
 // ListRegistryCredentialIndex lists non-secret registry credential summaries.
 func (s *Store) ListRegistryCredentialIndex(ctx context.Context) ([]RegistryCredentialIndex, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT registry, username, scope, sandbox_name FROM registry_credential_index ORDER BY registry, scope, sandbox_name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT registry, username, scope, sandbox_name, created_at, updated_at, origin
+		FROM registry_credential_index ORDER BY registry, scope, sandbox_name`)
 	if err != nil {
 		return nil, fmt.Errorf("list registry credential index: %w", err)
 	}
@@ -1083,9 +1183,12 @@ func (s *Store) ListRegistryCredentialIndex(ctx context.Context) ([]RegistryCred
 	var out []RegistryCredentialIndex
 	for rows.Next() {
 		var entry RegistryCredentialIndex
-		if err := rows.Scan(&entry.Registry, &entry.Username, &entry.Scope, &entry.SandboxName); err != nil {
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&entry.Registry, &entry.Username, &entry.Scope, &entry.SandboxName, &createdAt, &updatedAt, &entry.Origin); err != nil {
 			return nil, fmt.Errorf("scan registry credential index: %w", err)
 		}
+		entry.CreatedAt = fromUnix(createdAt)
+		entry.UpdatedAt = fromUnix(updatedAt)
 		out = append(out, entry)
 	}
 	return out, rows.Err()
@@ -1096,14 +1199,32 @@ type ServiceSecretIndex struct {
 	Service     string
 	Scope       string
 	SandboxName string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	SourceKind  string
+	Refresh     string
+	Refreshable bool
+	SecretType  string
+	Origin      string
 }
 
 // UpsertServiceSecretIndex records a non-secret service secret summary.
 func (s *Store) UpsertServiceSecretIndex(ctx context.Context, entry ServiceSecretIndex) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO service_secret_index (service, scope, sandbox_name, updated_at)
-		VALUES (?,?,?,?)
-		ON CONFLICT(service, scope, sandbox_name) DO UPDATE SET updated_at=excluded.updated_at`,
-		entry.Service, entry.Scope, entry.SandboxName, time.Now().UTC().Unix())
+	now := time.Now().UTC()
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = now
+	}
+	if entry.UpdatedAt.IsZero() {
+		entry.UpdatedAt = now
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO service_secret_index
+		(service, scope, sandbox_name, created_at, updated_at, source_kind, refresh, refreshable, secret_type, origin)
+		VALUES (?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(service, scope, sandbox_name) DO UPDATE SET
+			updated_at=excluded.updated_at, source_kind=excluded.source_kind, refresh=excluded.refresh,
+			refreshable=excluded.refreshable, secret_type=excluded.secret_type, origin=excluded.origin`,
+		entry.Service, entry.Scope, entry.SandboxName, toUnix(entry.CreatedAt), toUnix(entry.UpdatedAt),
+		entry.SourceKind, entry.Refresh, entry.Refreshable, entry.SecretType, entry.Origin)
 	if err != nil {
 		return fmt.Errorf("record service secret index: %w", err)
 	}
@@ -1122,7 +1243,9 @@ func (s *Store) DeleteServiceSecretIndex(ctx context.Context, service, scope, sa
 
 // ListServiceSecretIndex lists non-secret service secret summaries.
 func (s *Store) ListServiceSecretIndex(ctx context.Context) ([]ServiceSecretIndex, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT service, scope, sandbox_name FROM service_secret_index ORDER BY service, scope, sandbox_name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT service, scope, sandbox_name, created_at, updated_at,
+		source_kind, refresh, refreshable, secret_type, origin
+		FROM service_secret_index ORDER BY service, scope, sandbox_name`)
 	if err != nil {
 		return nil, fmt.Errorf("list service secret index: %w", err)
 	}
@@ -1130,9 +1253,13 @@ func (s *Store) ListServiceSecretIndex(ctx context.Context) ([]ServiceSecretInde
 	var out []ServiceSecretIndex
 	for rows.Next() {
 		var entry ServiceSecretIndex
-		if err := rows.Scan(&entry.Service, &entry.Scope, &entry.SandboxName); err != nil {
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&entry.Service, &entry.Scope, &entry.SandboxName, &createdAt, &updatedAt,
+			&entry.SourceKind, &entry.Refresh, &entry.Refreshable, &entry.SecretType, &entry.Origin); err != nil {
 			return nil, fmt.Errorf("scan service secret index: %w", err)
 		}
+		entry.CreatedAt = fromUnix(createdAt)
+		entry.UpdatedAt = fromUnix(updatedAt)
 		out = append(out, entry)
 	}
 	return out, rows.Err()

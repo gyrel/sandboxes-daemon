@@ -45,9 +45,7 @@ func (s *SecretServer) Set(ctx context.Context, req *localv1.SecretServiceSetReq
 	if err != nil {
 		return nil, err
 	}
-	return &localv1.SecretServiceSetResponse{Secret: &localv1.SecretSummary{
-		Service: summary.Service, Scope: string(summary.Scope), SandboxName: summary.SandboxName,
-	}}, nil
+	return &localv1.SecretServiceSetResponse{Secret: secretSummaryToProto(summary)}, nil
 }
 
 // Create stores a secret only when the requested scope is empty.
@@ -77,9 +75,7 @@ func (s *SecretServer) Create(ctx context.Context, req *localv1.SecretServiceCre
 	if err != nil {
 		return nil, err
 	}
-	return &localv1.SecretServiceCreateResponse{Secret: &localv1.SecretSummary{
-		Service: summary.Service, Scope: string(summary.Scope), SandboxName: summary.SandboxName,
-	}}, nil
+	return &localv1.SecretServiceCreateResponse{Secret: secretSummaryToProto(summary)}, nil
 }
 
 // List returns non-secret summaries.
@@ -89,10 +85,21 @@ func (s *SecretServer) List(ctx context.Context, _ *localv1.SecretServiceListReq
 		return nil, err
 	}
 	out := make([]*localv1.SecretSummary, 0, len(items))
-	for _, item := range items {
-		out = append(out, &localv1.SecretSummary{Service: item.Service, Scope: string(item.Scope), SandboxName: item.SandboxName})
+	for index := range items {
+		out = append(out, secretSummaryToProto(items[index]))
 	}
 	return &localv1.SecretServiceListResponse{Secrets: out}, nil
+}
+
+// secretSummaryToProto maps non-secret inventory metadata. It never copies a
+// secret value, reference, command or environment value.
+func secretSummaryToProto(summary servicesecrets.Summary) *localv1.SecretSummary {
+	return &localv1.SecretSummary{
+		Service: summary.Service, Scope: string(summary.Scope), SandboxName: summary.SandboxName,
+		CreatedAtUnix: unix(summary.CreatedAt), UpdatedAtUnix: unix(summary.UpdatedAt),
+		SourceKind: string(summary.SourceKind), Refresh: summary.Refresh, Refreshable: summary.Refreshable,
+		SecretType: summary.SecretType, Origin: summary.Origin,
+	}
 }
 
 // Remove deletes one secret.
