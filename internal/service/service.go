@@ -50,6 +50,8 @@ const (
 	tcp6Protocol          = "tcp6"
 	udp6Protocol          = "udp6"
 	dockerAccountProvider = "docker"
+	policyActionAllow     = "allow"
+	policyActionDeny      = "deny"
 )
 
 // Service coordinates durable sandbox state and operations.
@@ -2128,7 +2130,92 @@ func validateOrgPolicyEnforcement(allow, deny []sandbox.NetworkRule, quicEnabled
 }
 
 func policyRuleKey(rule sandbox.NetworkRule) string {
-	return rule.Protocol + "|" + rule.CIDR + "|" + rule.Domain + "|" + strconv.Itoa(int(rule.Port))
+	protocol := strings.ToLower(strings.TrimSpace(rule.Protocol))
+	if protocol == "" {
+		protocol = tcpProtocol
+	}
+	cidr := strings.TrimSpace(rule.CIDR)
+	if _, network, err := net.ParseCIDR(cidr); err == nil {
+		cidr = network.String()
+	}
+	return protocol + "|" + cidr + "|" + normalizeDomainPattern(rule.Domain) + "|" + strconv.Itoa(int(rule.Port))
+}
+
+// PolicyConflictError reports an opposite-action rule with an identical
+// selector in one policy scope. It names both rules and unwraps to the core
+// conflict category so RPC callers keep their existing classification.
+type PolicyConflictError struct {
+	Scope          string
+	ExistingAction string
+	Existing       sandbox.NetworkRule
+	IncomingAction string
+	Incoming       sandbox.NetworkRule
+}
+
+func (e *PolicyConflictError) Error() string {
+	return fmt.Sprintf(
+		"policy conflict in %s scope: %s rule %q (%s) conflicts with %s rule %q (%s)",
+		e.Scope,
+		e.ExistingAction, policyRuleName(e.Existing), policyRuleSelector(e.Existing),
+		e.IncomingAction, policyRuleName(e.Incoming), policyRuleSelector(e.Incoming),
+	)
+}
+
+// Unwrap classifies the conflict as a core conflict while keeping the typed
+// details available through errors.As.
+func (e *PolicyConflictError) Unwrap() error { return core.ErrConflict }
+
+func policyRuleName(rule sandbox.NetworkRule) string {
+	if rule.RuleID != "" {
+		return rule.RuleID
+	}
+	return policyRuleSelector(rule)
+}
+
+func policyRuleSelector(rule sandbox.NetworkRule) string {
+	selector := rule.Domain
+	if selector == "" {
+		selector = rule.CIDR
+	}
+	if selector == "" {
+		selector = "<empty selector>"
+	}
+	if rule.Port != 0 {
+		selector += ":" + strconv.Itoa(int(rule.Port))
+	}
+	return selector
+}
+
+// checkPolicyRuleConflict refuses an opposite-action duplicate within one
+// scope. Global rules and each sandbox's rules are checked independently.
+func checkPolicyRuleConflict(scope, action string, rule sandbox.NetworkRule, allow, deny []sandbox.NetworkRule) error {
+	switch action {
+	case policyActionAllow:
+		if slices.Contains(allow, rule) {
+			return fmt.Errorf("%w: allow rule already exists", core.ErrConflict)
+		}
+		if existing, ok := findPolicySelector(deny, rule); ok {
+			return &PolicyConflictError{Scope: scope, ExistingAction: policyActionDeny, Existing: existing, IncomingAction: policyActionAllow, Incoming: rule}
+		}
+	case policyActionDeny:
+		if slices.Contains(deny, rule) {
+			return fmt.Errorf("%w: deny rule already exists", core.ErrConflict)
+		}
+		if existing, ok := findPolicySelector(allow, rule); ok {
+			return &PolicyConflictError{Scope: scope, ExistingAction: policyActionAllow, Existing: existing, IncomingAction: policyActionDeny, Incoming: rule}
+		}
+	}
+	return nil
+}
+
+func findPolicySelector(rules []sandbox.NetworkRule, rule sandbox.NetworkRule) (sandbox.NetworkRule, bool) {
+	key := policyRuleKey(rule)
+	for _, candidate := range rules {
+		if policyRuleKey(candidate) == key {
+			return candidate, true
+		}
+	}
+	return sandbox.NetworkRule{}, false
 }
 
 const (
@@ -2177,16 +2264,13 @@ func (s *Service) MutateGlobalPolicy(ctx context.Context, action string, rule sa
 		return nil, nil, fmt.Errorf("%w: invalid policy rule", core.ErrConflict)
 	}
 	rule = normalized[0]
+	if err := checkPolicyRuleConflict("global", action, rule, allow, deny); err != nil {
+		return nil, nil, err
+	}
 	switch action {
-	case "allow":
-		if slices.Contains(allow, rule) {
-			return nil, nil, fmt.Errorf("%w: allow rule already exists", core.ErrConflict)
-		}
+	case policyActionAllow:
 		allow = append(allow, rule)
-	case "deny":
-		if slices.Contains(deny, rule) {
-			return nil, nil, fmt.Errorf("%w: deny rule already exists", core.ErrConflict)
-		}
+	case policyActionDeny:
 		deny = append(deny, rule)
 	case "rm":
 		if !slices.Contains(allow, rule) && !slices.Contains(deny, rule) {
@@ -3233,16 +3317,13 @@ func (s *Service) MutatePolicy(ctx context.Context, id, action string, rule sand
 	}
 	allow := append([]sandbox.NetworkRule(nil), policyAllow(sb.Policy)...)
 	deny := append([]sandbox.NetworkRule(nil), policyDeny(sb.Policy)...)
+	if err := checkPolicyRuleConflict("sandbox:"+id, action, rule, allow, deny); err != nil {
+		return sandbox.Sandbox{}, err
+	}
 	switch action {
-	case "allow":
-		if slices.Contains(allow, rule) {
-			return sandbox.Sandbox{}, fmt.Errorf("%w: allow rule already exists", core.ErrConflict)
-		}
+	case policyActionAllow:
 		allow = append(allow, rule)
-	case "deny":
-		if slices.Contains(deny, rule) {
-			return sandbox.Sandbox{}, fmt.Errorf("%w: deny rule already exists", core.ErrConflict)
-		}
+	case policyActionDeny:
 		deny = append(deny, rule)
 	case "rm":
 		if !slices.Contains(allow, rule) && !slices.Contains(deny, rule) {
