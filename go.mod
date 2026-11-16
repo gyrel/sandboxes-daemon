@@ -9,7 +9,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/rheic/sandboxes-api v0.0.27
 	github.com/rheic/sandboxes-core v0.0.12
-	github.com/rheic/sandboxes-gateway v0.0.18
+	github.com/rheic/sandboxes-gateway v0.0.20
 	github.com/rheic/sandboxes-runtime v0.0.33
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.50.0
