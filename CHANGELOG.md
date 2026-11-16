@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- Release workflows no longer require the M7 external security review
+  environment or an exact-SHA M7 approval variable. Release candidate
+  validation, full CI on the candidate SHA, immutable tag creation, tag
+  ancestry checks and release asset immutability remain mandatory. This follows
+  the owner decision of 2026-11-16 that external review and separate approval
+  are not required for release after fully green mandatory CI.
+
 ## v0.0.61 — 2026-11-16
 
 ### Changed

@@ -10,23 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  m7_gate:
-    runs-on: ubuntu-24.04
-    environment: m7-external-security-review
-    permissions: {}
-    env:
-      M7_EXTERNAL_SECURITY_REVIEW_APPROVED_COMMIT: ${{ vars.M7_EXTERNAL_SECURITY_REVIEW_APPROVED_COMMIT }}
-    steps:
-      - name: Require explicit M7 security review approval
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$M7_EXTERNAL_SECURITY_REVIEW_APPROVED_COMMIT" =~ ^[0-9a-f]{40}$ || "$M7_EXTERNAL_SECURITY_REVIEW_APPROVED_COMMIT" != "$GITHUB_SHA" ]]; then
-            echo "Release blocked: M7 approval must name this exact reviewed commit in the protected environment." >&2
-            exit 1
-          fi
   build:
-    needs: m7_gate
     runs-on: ubuntu-24.04
     container:
       image: docker.io/library/golang:1.27.4-bookworm@sha256:fb7cceb528b47141eccd9b60bf3cbd27d5ef5f8cf5b7d338bec866da495b50dc
