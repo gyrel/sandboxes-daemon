@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.0.58 — 2026-11-16
+
 ### Added
 
 - Return non-secret secret-inventory metadata over the local RPC so JSON
