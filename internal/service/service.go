@@ -2126,6 +2126,25 @@ func (s *Service) loadGlobalRules(ctx context.Context, key string) ([]sandbox.Ne
 	return normalizeRules(rules, s.IPv6Enabled)
 }
 
+const (
+	policyActionAllow = "allow"
+	policyActionDeny  = "deny"
+)
+
+func checkPolicyRuleConflict(action string, rule sandbox.NetworkRule, allow, deny []sandbox.NetworkRule) error {
+	switch action {
+	case policyActionAllow:
+		if slices.Contains(allow, rule) || slices.Contains(deny, rule) {
+			return fmt.Errorf("%w: matching policy rule already exists", core.ErrConflict)
+		}
+	case policyActionDeny:
+		if slices.Contains(deny, rule) || slices.Contains(allow, rule) {
+			return fmt.Errorf("%w: matching policy rule already exists", core.ErrConflict)
+		}
+	}
+	return nil
+}
+
 // MutateGlobalPolicy changes one global rule. Deny wins at connection time.
 func (s *Service) MutateGlobalPolicy(ctx context.Context, action string, rule sandbox.NetworkRule) ([]sandbox.NetworkRule, []sandbox.NetworkRule, error) {
 	s.globalPolicyMu.Lock()
@@ -2139,22 +2158,13 @@ func (s *Service) MutateGlobalPolicy(ctx context.Context, action string, rule sa
 		return nil, nil, fmt.Errorf("%w: invalid policy rule", core.ErrConflict)
 	}
 	rule = normalized[0]
+	if err := checkPolicyRuleConflict(action, rule, allow, deny); err != nil {
+		return nil, nil, err
+	}
 	switch action {
-	case "allow":
-		if slices.Contains(allow, rule) {
-			return nil, nil, fmt.Errorf("%w: allow rule already exists", core.ErrConflict)
-		}
-		if slices.Contains(deny, rule) {
-			return nil, nil, fmt.Errorf("%w: matching deny rule already exists", core.ErrConflict)
-		}
+	case policyActionAllow:
 		allow = append(allow, rule)
-	case "deny":
-		if slices.Contains(deny, rule) {
-			return nil, nil, fmt.Errorf("%w: deny rule already exists", core.ErrConflict)
-		}
-		if slices.Contains(allow, rule) {
-			return nil, nil, fmt.Errorf("%w: matching allow rule already exists", core.ErrConflict)
-		}
+	case policyActionDeny:
 		deny = append(deny, rule)
 	case "rm":
 		if !slices.Contains(allow, rule) && !slices.Contains(deny, rule) {
@@ -3201,22 +3211,13 @@ func (s *Service) MutatePolicy(ctx context.Context, id, action string, rule sand
 	}
 	allow := append([]sandbox.NetworkRule(nil), policyAllow(sb.Policy)...)
 	deny := append([]sandbox.NetworkRule(nil), policyDeny(sb.Policy)...)
+	if err := checkPolicyRuleConflict(action, rule, allow, deny); err != nil {
+		return sandbox.Sandbox{}, err
+	}
 	switch action {
-	case "allow":
-		if slices.Contains(allow, rule) {
-			return sandbox.Sandbox{}, fmt.Errorf("%w: allow rule already exists", core.ErrConflict)
-		}
-		if slices.Contains(deny, rule) {
-			return sandbox.Sandbox{}, fmt.Errorf("%w: matching deny rule already exists", core.ErrConflict)
-		}
+	case policyActionAllow:
 		allow = append(allow, rule)
-	case "deny":
-		if slices.Contains(deny, rule) {
-			return sandbox.Sandbox{}, fmt.Errorf("%w: deny rule already exists", core.ErrConflict)
-		}
-		if slices.Contains(allow, rule) {
-			return sandbox.Sandbox{}, fmt.Errorf("%w: matching allow rule already exists", core.ErrConflict)
-		}
+	case policyActionDeny:
 		deny = append(deny, rule)
 	case "rm":
 		if !slices.Contains(allow, rule) && !slices.Contains(deny, rule) {
