@@ -164,7 +164,7 @@ func parseOptions() options {
 	flag.BoolVar(&opts.ipv6Experimental, "ipv6-experimental", false, "enable the experimental IPv6 guest datapath (acceptance only)")
 	flag.BoolVar(&opts.quicExperimental, "quic-experimental", false, "enable experimental UDP domain policy backed by QUIC classification (acceptance only)")
 	flag.StringVar(&opts.settingsPath, "settings", settings.DefaultPath(), "user settings file")
-	flag.StringVar(&opts.policy, "policy", "", "initialize the global network policy: allow-all, balanced or deny-all")
+	flag.StringVar(&opts.policy, "policy", "", "override the default network policy profile (allow-all, balanced or deny-all); the default is allow-all")
 	flag.BoolVar(&opts.showVersion, "version", false, "print version")
 	flag.Parse()
 	values, err := settings.Load(opts.settingsPath)

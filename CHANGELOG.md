@@ -16,6 +16,18 @@
   typed error naming both rules.
 - A rule whose conditions cannot be evaluated does not match; it never falls
   back to matching everything.
+### Security
+
+- Match the Docker sbx baseline for new sandboxes: the default network policy
+  profile is now `allow-all` (TCP and UDP to `0.0.0.0/0`) instead of `deny-all`.
+  This is an explicit owner decision (2026-11-16) to avoid diverging from sbx
+  defaults "for now". `--policy-profile deny-all`, `--policy deny-all`,
+  `rsbx policy init deny-all` and `default_policy_profile = "deny-all"` still
+  select default-deny. The resolved profile is logged at sandbox creation.
+  Explicit deny rules, organization deny precedence, DNS fail-closed behavior,
+  host-service/registry restrictions and loopback-only published ports are
+  unchanged; an unenforceable organization domain deny still fails creation
+  closed.
 
 ## v0.0.59 — 2026-11-16
 

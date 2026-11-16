@@ -2039,6 +2039,7 @@ func TestCreatePassesAndStoresNetworkRules(t *testing.T) {
 	defer func() { _ = st.Close() }()
 	backend := &fakeRuntime{}
 	svc := New(st, backend)
+	svc.DefaultPolicyProfile = policyProfileDenyAll
 	op, err := svc.Create(ctx, CreateRequest{Name: "ruled",
 		Allow: []sandbox.NetworkRule{{Protocol: "tcp", CIDR: "0.0.0.0/0", Port: 80}},
 		Deny:  []sandbox.NetworkRule{{Protocol: "udp", CIDR: "10.0.0.0/8", Port: 53}},
@@ -2146,6 +2147,7 @@ func TestConcurrentPolicyMutationsPreserveRevocation(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	svc := New(st, nil)
+	svc.DefaultPolicyProfile = policyProfileDenyAll
 	op, err := svc.Create(ctx, CreateRequest{Name: "concurrent-policy"})
 	if err != nil {
 		t.Fatal(err)
@@ -2205,6 +2207,7 @@ func TestUpdatePolicyAppliesLiveAndPersists(t *testing.T) {
 	defer func() { _ = st.Close() }()
 	backend := &fakePolicyRuntime{}
 	svc := New(st, backend)
+	svc.DefaultPolicyProfile = policyProfileDenyAll
 	op, err := svc.Create(ctx, CreateRequest{Name: "policy"})
 	if err != nil {
 		t.Fatal(err)
@@ -2373,8 +2376,11 @@ func TestPolicyProfileGlobalAndMetadata(t *testing.T) {
 	defer func() { _ = st.Close() }()
 	backend := &fakeRuntime{}
 	svc := New(st, backend)
-	if profile, err := svc.GetPolicyProfile(ctx); err != nil || profile != "deny-all" {
+	if profile, err := svc.GetPolicyProfile(ctx); err != nil || profile != "allow-all" {
 		t.Fatalf("default profile=%q err=%v", profile, err)
+	}
+	if profile, err := svc.SetPolicyProfile(ctx, "deny-all"); err != nil || profile != "deny-all" {
+		t.Fatalf("explicit deny-all profile=%q err=%v", profile, err)
 	}
 	if profile, err := svc.SetPolicyProfile(ctx, "balanced"); err != nil || profile != "balanced" {
 		t.Fatalf("set profile=%q err=%v", profile, err)
@@ -2398,6 +2404,78 @@ func TestPolicyProfileGlobalAndMetadata(t *testing.T) {
 	}
 	if _, err := svc.SetPolicyProfile(ctx, "unknown"); err == nil {
 		t.Fatal("unknown profile accepted")
+	}
+}
+
+func TestDefaultPolicyProfileMatchesSBXAndExplicitDenyAllWins(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "default-profile.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeRuntime{}
+	svc := New(st, backend)
+
+	if profile, err := svc.GetPolicyProfile(ctx); err != nil || profile != policyProfileAllowAll {
+		t.Fatalf("default profile=%q err=%v, want allow-all", profile, err)
+	}
+
+	op, err := svc.Create(ctx, CreateRequest{Name: "default-allow-all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := svc.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.Meta == nil || sb.Meta.PolicyProfile != policyProfileAllowAll {
+		t.Fatalf("metadata=%+v, want allow-all profile", sb.Meta)
+	}
+	if len(backend.lastConfig.Allow) != 2 || len(backend.lastConfig.Deny) != 0 {
+		t.Fatalf("runtime allow=%+v deny=%+v, want allow-all profile", backend.lastConfig.Allow, backend.lastConfig.Deny)
+	}
+	for _, rule := range backend.lastConfig.Allow {
+		if rule.CIDR != anyIPv4CIDR || rule.Port != 0 {
+			t.Fatalf("allow-all rule=%+v", rule)
+		}
+	}
+
+	op, err = svc.Create(ctx, CreateRequest{Name: "explicit-deny-all", PolicyProfile: policyProfileDenyAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err = svc.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.Meta == nil || sb.Meta.PolicyProfile != policyProfileDenyAll {
+		t.Fatalf("explicit metadata=%+v, want deny-all profile", sb.Meta)
+	}
+	if len(backend.lastConfig.Allow) != 0 || len(backend.lastConfig.Deny) != 0 {
+		t.Fatalf("explicit deny-all runtime allow=%+v deny=%+v", backend.lastConfig.Allow, backend.lastConfig.Deny)
+	}
+
+	// A host setting that selects deny-all must still override the sbx default.
+	settingsBackend := &fakeRuntime{}
+	settingsSvc := New(st, settingsBackend)
+	settingsSvc.DefaultPolicyProfile = policyProfileDenyAll
+	if profile, err := settingsSvc.GetPolicyProfile(ctx); err != nil || profile != policyProfileDenyAll {
+		t.Fatalf("settings profile=%q err=%v, want deny-all", profile, err)
+	}
+	op, err = settingsSvc.Create(ctx, CreateRequest{Name: "settings-deny-all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err = settingsSvc.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.Meta == nil || sb.Meta.PolicyProfile != policyProfileDenyAll {
+		t.Fatalf("settings metadata=%+v, want deny-all profile", sb.Meta)
+	}
+	if len(settingsBackend.lastConfig.Allow) != 0 || len(settingsBackend.lastConfig.Deny) != 0 {
+		t.Fatalf("settings deny-all runtime allow=%+v deny=%+v", settingsBackend.lastConfig.Allow, settingsBackend.lastConfig.Deny)
 	}
 }
 
@@ -2908,6 +2986,7 @@ func TestGlobalPolicyMergesIntoNewSandboxes(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	svc := New(st, nil)
+	svc.DefaultPolicyProfile = policyProfileDenyAll
 	rule := sandbox.NetworkRule{Protocol: "tcp", Domain: "*.example.com", Port: 443}
 	if _, _, err := svc.MutateGlobalPolicy(ctx, "allow", rule); err != nil {
 		t.Fatal(err)
@@ -3699,8 +3778,8 @@ func TestResetGlobalPolicyClearsRulesAndProfile(t *testing.T) {
 	if len(allow) != 0 || len(deny) != 0 {
 		t.Fatalf("rules not cleared: allow=%+v deny=%+v", allow, deny)
 	}
-	if profile != "deny-all" {
-		t.Fatalf("profile=%q, want deny-all", profile)
+	if profile != "allow-all" {
+		t.Fatalf("profile=%q, want allow-all", profile)
 	}
 	storedAllow, storedDeny, err := svc.GlobalPolicy(ctx)
 	if err != nil || len(storedAllow) != 0 || len(storedDeny) != 0 {

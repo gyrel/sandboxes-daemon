@@ -168,7 +168,7 @@ func TestGRPCLifecycle(t *testing.T) {
 		t.Fatalf("unsupported custom OAuth declaration was not rejected: %v", err)
 	}
 	created, err := sandboxes.Create(ctx, &localv1.CreateRequest{
-		Name: "dev", Deny: []*localv1.NetworkRule{{Protocol: "tcp", Cidr: "192.0.2.0/24", Port: 443}},
+		Name: "dev", PolicyProfile: "deny-all", Deny: []*localv1.NetworkRule{{Protocol: "tcp", Cidr: "192.0.2.0/24", Port: 443}},
 	})
 	if err != nil {
 		t.Fatal(err)

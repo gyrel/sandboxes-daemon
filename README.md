@@ -24,6 +24,34 @@ local API, and supervision of runtime and gateway processes.
 - registry and service secrets use the host OS credential vault and are never written to SQLite;
 - domain egress rules are resolved through the configured upstream and fail closed.
 
+## Security
+
+A new sandbox without an explicit policy profile uses the Docker sbx baseline:
+local `allow-all` egress (`allow-all`, TCP and UDP to `0.0.0.0/0`). This is an
+owner decision (2026-11-16) to keep Rheic aligned with sbx defaults "for now";
+it is not a claim that allow-all is the safest default. The selected profile is
+logged at sandbox creation with `sandbox`, `profile`, `source`, `allow_rules`
+and `deny_rules` fields.
+
+Explicitly selecting `--policy-profile deny-all`, `rsbx policy init deny-all`,
+or `default_policy_profile = "deny-all"` in the host settings still restores
+default-deny for new sandboxes. Existing sandboxes keep the profile recorded at
+creation until they are recreated.
+
+Allow-all does not disable the other egress controls:
+
+- explicit deny rules still win over allow rules in every scope;
+- organization deny rules are prepended to the effective deny list and still
+  outrank the allow-all profile. If a signed domain deny cannot be enforced next
+  to a direct-IP allow, create/start fails closed with
+  `orgpolicy.ErrPolicyConflict` instead of silently dropping the deny;
+- domain egress still requires `--dns-upstream`, resolves only through the
+  configured upstream and fails closed on resolution errors;
+- host-services and registry access keep their exact-host, exact-port and
+  credential-scope restrictions; published ports remain limited to loopback;
+- the gateway remains default-deny for anything not matched by the selected
+  profile or an explicit allow rule.
+
 ## Run
 
 ```sh
@@ -57,7 +85,9 @@ The state directory contains:
 - `daemon.log`: detached-start output.
 
 `daemon start` spawns `sandboxesd --state <dir> --socket <socket>`; `--policy
-allow-all|balanced|deny-all` initializes the global policy profile. `stop`
+allow-all|balanced|deny-all` initializes the global policy profile (the default
+for a new sandbox is `allow-all`, matching sbx; select `deny-all` explicitly for
+default-deny). `stop`
 sends `SIGTERM` on Unix and terminates the process on Windows. `restart` stops
 the proven process before starting a new one. The daemon removes the control
 record on graceful shutdown. The CLI refuses to signal a PID unless the record
@@ -160,8 +190,9 @@ service per sandbox.
 
 Empty `--containerd` keeps the state-only control plane. With a runtime backend,
 create/start/stop/delete call the runtime adapter. With `--gvproxy`, the daemon
-also starts a default-deny gateway and attaches nerdbox network annotations;
-exec/PTY still remain unsupported.
+also starts a default-deny gateway baseline and attaches nerdbox network
+annotations; the selected policy profile (allow-all by default) supplies the
+allow rules on top of that baseline. exec/PTY still remain unsupported.
 
 `RegistryCredentialService` stores registry login entries in macOS Keychain,
 Windows Credential Manager, or Linux Secret Service. It fails closed when the
@@ -213,7 +244,9 @@ independent security review.
 Global network rules are stored as daemon settings, merged with each sandbox's
 explicit rules at gateway start/update, and re-applied to running sandboxes on
 mutation. Deny wins across scopes. Domain rules require `--dns-upstream` and a
-pinned gvproxy build; the gateway rejects domain rules without it.
+pinned gvproxy build; the gateway rejects domain rules without it. Unless the
+profile is explicitly set to `deny-all` or `balanced`, new sandboxes also
+receive the allow-all profile rules described under [Security](#security).
 
 The account RPC runs trusted daemon-configured OAuth only. On Docker Hub device
 login it exchanges the returned access token for a Hub PAT, stores access and
