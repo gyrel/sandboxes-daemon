@@ -1358,3 +1358,54 @@ func TestUnixProxyCAEndpointBindsTokenToRequestedRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthRouteBlocksOtherPathsBeforeCredentialLookup(t *testing.T) {
+	var upstreamCalls, credentialCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	dir, err := os.MkdirTemp("/tmp", "rheic-oauth-path-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "proxy.sock")
+	token := strings.Repeat("a", 64)
+	manager := New()
+	defer func() { _ = manager.Close() }()
+	service := Service{Upstream: upstream.URL, AllowedPathPrefix: "/backend-api/codex/", Header: "Authorization", Prefix: "Bearer ", Credential: func(context.Context) ([]byte, error) { credentialCalls.Add(1); return []byte("synthetic-token"), nil }}
+	if _, err = manager.StartUnixRoutes(context.Background(), "path-test", map[string]RouteConfig{"openai-oauth": {Service: service, Token: token}}, socket); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socket)
+	}}}
+	for _, tc := range []struct {
+		path   string
+		status int
+	}{{"/backend-api/other", http.StatusForbidden}, {"/backend-api/codex/responses", http.StatusNoContent}} {
+		req, err := http.NewRequest(http.MethodGet, "http://upstream.test"+tc.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(ServiceHeader, "openai-oauth")
+		req.Header.Set(TokenHeader, token)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.status {
+			t.Fatalf("path=%q status=%d", tc.path, resp.StatusCode)
+		}
+		if tc.status == http.StatusForbidden && (credentialCalls.Load() != 0 || upstreamCalls.Load() != 0) {
+			t.Fatal("denied request reached credential or upstream")
+		}
+	}
+	if credentialCalls.Load() != 1 || upstreamCalls.Load() != 1 {
+		t.Fatalf("positive control credential=%d upstream=%d", credentialCalls.Load(), upstreamCalls.Load())
+	}
+}

@@ -515,6 +515,14 @@ func newRouteHandlerWithDial(service, serviceHost string, transport http.RoundTr
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			if service != "openai-oauth" || !strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") {
+				http.Error(w, "proxy upgrade unavailable", http.StatusBadGateway)
+				return
+			}
+			relayUpgrade(w, resp)
+			return
+		}
 		for name, values := range resp.Header {
 			for _, value := range values {
 				w.Header().Add(name, value)
@@ -523,6 +531,31 @@ func newRouteHandlerWithDial(service, serviceHost string, transport http.RoundTr
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	})
+}
+
+func relayUpgrade(w http.ResponseWriter, response *http.Response) {
+	upstream, ok := response.Body.(io.ReadWriteCloser)
+	if !ok {
+		http.Error(w, "proxy upgrade unavailable", http.StatusBadGateway)
+		return
+	}
+	client, reader, err := hijackConnectClient(w)
+	if err != nil {
+		return
+	}
+	defer func() { _ = client.Close() }()
+	handshake := &http.Response{StatusCode: http.StatusSwitchingProtocols, ProtoMajor: 1, ProtoMinor: 1,
+		Header: response.Header.Clone(), Body: http.NoBody}
+	if err := handshake.Write(client); err != nil {
+		return
+	}
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(upstream, reader); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	<-done
+	_ = upstream.Close()
+	_ = client.Close()
+	<-done
 }
 
 func allowedConnectTarget(routeHost, target string) bool {
