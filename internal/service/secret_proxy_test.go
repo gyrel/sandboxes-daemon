@@ -428,6 +428,9 @@ func writeStaticProxyHelperFixtureFor(t *testing.T, machine elf.Machine) string 
 }
 
 func TestValidateProxyHelperBinaryArchitectures(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix executable permission bits")
+	}
 	for _, machine := range []elf.Machine{elf.EM_AARCH64, elf.EM_X86_64} {
 		path := writeStaticProxyHelperFixtureFor(t, machine)
 		if err := validateProxyHelperBinary(path); err != nil {
