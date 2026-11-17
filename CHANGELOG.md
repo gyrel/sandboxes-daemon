@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.65 — 2026-11-18
+
+### Fixed
+
+- Accept static Linux AMD64 guest proxy helpers in addition to ARM64. The AMD64
+  helper is published as a release asset, but the validator previously rejected
+  it, so x86_64 hosts could not use the released artifact. Other architectures
+  and dynamically linked helpers remain rejected.
+- Document that downloaded helpers need `chmod +x` and an absolute
+  `--proxy-helper` path.
+
 ## v0.0.64 — 2026-11-18
 
 - Route the OpenAI OAuth broker to the scoped ChatGPT Codex endpoint and support WebSocket upgrades on that route.
