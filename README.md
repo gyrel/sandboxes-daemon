@@ -182,11 +182,15 @@ must use a host-vault reference. See
 [docs/MCP-MIGRATION.md](docs/MCP-MIGRATION.md).
 
 Service proxy references require the matching static guest helper artifact.
-Download the matching `rheic-proxy-helper-linux-*` release asset (verify its checksum), or build it with `make build-proxy-helper`, and pass
-`--proxy-helper ./bin/rheic-proxy-helper-linux-arm64` to `sandboxesd`. The
-daemon accepts only a static Linux ARM64 ELF helper. If the helper is absent,
-`${proxy:service}` fails closed. Proxy-enabled sandboxes currently support one
-service per sandbox.
+Download the `rheic-proxy-helper-linux-arm64` or
+`rheic-proxy-helper-linux-amd64` release asset (verify its checksum), run
+`chmod +x` on it because release downloads do not preserve the executable bit,
+or build it with `make build-proxy-helper`, and pass
+`--proxy-helper /absolute/path/to/rheic-proxy-helper-linux-arm64` to
+`sandboxesd`. The daemon accepts a static Linux ARM64 or AMD64 ELF helper that
+does not require a dynamic linker; the path must be absolute. If the helper is
+absent or not executable, `${proxy:service}` fails closed. Proxy-enabled
+sandboxes currently support one service per sandbox.
 
 Empty `--containerd` keeps the state-only control plane. With a runtime backend,
 create/start/stop/delete call the runtime adapter. With `--gvproxy`, the daemon

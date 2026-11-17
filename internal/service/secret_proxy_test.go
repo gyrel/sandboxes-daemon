@@ -408,16 +408,37 @@ func containsEnv(env []string, expected string) bool {
 
 func writeStaticProxyHelperFixture(t *testing.T) string {
 	t.Helper()
+	return writeStaticProxyHelperFixtureFor(t, elf.EM_AARCH64)
+}
+
+func writeStaticProxyHelperFixtureFor(t *testing.T, machine elf.Machine) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "proxy-helper")
 	data := make([]byte, 64)
 	copy(data[:4], []byte{0x7f, 'E', 'L', 'F'})
 	data[4], data[5], data[6] = byte(elf.ELFCLASS64), byte(elf.ELFDATA2LSB), byte(elf.EV_CURRENT)
 	binary.LittleEndian.PutUint16(data[16:18], uint16(elf.ET_EXEC))
-	binary.LittleEndian.PutUint16(data[18:20], uint16(elf.EM_AARCH64))
+	binary.LittleEndian.PutUint16(data[18:20], uint16(machine))
 	binary.LittleEndian.PutUint32(data[20:24], uint32(elf.EV_CURRENT))
 	binary.LittleEndian.PutUint16(data[52:54], 64)
 	if err := os.WriteFile(path, data, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestValidateProxyHelperBinaryArchitectures(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix executable permission bits")
+	}
+	for _, machine := range []elf.Machine{elf.EM_AARCH64, elf.EM_X86_64} {
+		path := writeStaticProxyHelperFixtureFor(t, machine)
+		if err := validateProxyHelperBinary(path); err != nil {
+			t.Fatalf("machine %v rejected: %v", machine, err)
+		}
+	}
+	unsupported := writeStaticProxyHelperFixtureFor(t, elf.EM_RISCV)
+	if err := validateProxyHelperBinary(unsupported); err == nil || !strings.Contains(err.Error(), "ARM64 or AMD64") {
+		t.Fatalf("unsupported machine error = %v", err)
+	}
 }

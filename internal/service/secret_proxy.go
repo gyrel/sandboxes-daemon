@@ -669,8 +669,11 @@ func validateProxyHelperBinary(path string) error {
 		return errors.New("proxy helper must be a Linux ELF binary")
 	}
 	defer func() { _ = image.Close() }()
-	if image.Machine != elf.EM_AARCH64 || image.Type != elf.ET_EXEC {
-		return errors.New("proxy helper must be a static Linux ARM64 executable")
+	if image.Machine != elf.EM_AARCH64 && image.Machine != elf.EM_X86_64 {
+		return errors.New("proxy helper must be a static Linux ARM64 or AMD64 executable")
+	}
+	if image.Type != elf.ET_EXEC {
+		return errors.New("proxy helper must be a static Linux ARM64 or AMD64 executable")
 	}
 	for _, program := range image.Progs {
 		if program.Type == elf.PT_INTERP {
