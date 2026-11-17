@@ -182,7 +182,7 @@ must use a host-vault reference. See
 [docs/MCP-MIGRATION.md](docs/MCP-MIGRATION.md).
 
 Service proxy references require the matching static guest helper artifact.
-Build it with `make build-proxy-helper` and pass
+Download the matching `rheic-proxy-helper-linux-*` release asset (verify its checksum), or build it with `make build-proxy-helper`, and pass
 `--proxy-helper ./bin/rheic-proxy-helper-linux-arm64` to `sandboxesd`. The
 daemon accepts only a static Linux ARM64 ELF helper. If the helper is absent,
 `${proxy:service}` fails closed. Proxy-enabled sandboxes currently support one

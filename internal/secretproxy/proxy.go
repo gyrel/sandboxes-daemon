@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -28,13 +29,14 @@ import (
 
 // Service describes one supported upstream and its auth header.
 type Service struct {
-	Upstream         string
-	Header           string
-	Prefix           string
-	CredentialScope  string
-	Authorize        func(context.Context) error
-	AuthorizeAddress func(context.Context, netip.Addr) (bool, error)
-	Credential       func(context.Context) ([]byte, error)
+	Upstream          string
+	AllowedPathPrefix string
+	Header            string
+	Prefix            string
+	CredentialScope   string
+	Authorize         func(context.Context) error
+	AuthorizeAddress  func(context.Context, netip.Addr) (bool, error)
+	Credential        func(context.Context) ([]byte, error)
 }
 
 const (
@@ -302,6 +304,15 @@ func (m *Manager) StartUnixRoutes(ctx context.Context, sandbox string, routes ma
 }
 
 func enforceResponseLimit(response *http.Response) error {
+	if response.StatusCode == http.StatusSwitchingProtocols {
+		if response.Request == nil || response.Request.Header.Get("X-Rheic-Secret-Proxy") != "openai-oauth" || !strings.EqualFold(response.Header.Get("Upgrade"), "websocket") {
+			return errors.New("proxy upgrade is not permitted")
+		}
+		if _, ok := response.Body.(io.ReadWriteCloser); !ok {
+			return errors.New("proxy upgrade body is not writable")
+		}
+		return nil
+	}
 	if response.ContentLength > maxResponseBody {
 		return errResponseTooLarge
 	}
@@ -394,6 +405,10 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 		cancel()
 	}()
 	r = r.WithContext(requestCtx)
+	if snapshot.service.AllowedPathPrefix != "" && !allowedServicePath(r.URL, snapshot.service.AllowedPathPrefix) {
+		http.Error(w, "proxy path denied", http.StatusForbidden)
+		return
+	}
 	if snapshot.service.Authorize != nil {
 		if err := snapshot.service.Authorize(r.Context()); err != nil {
 			http.Error(w, "proxy request denied by sandbox policy", http.StatusForbidden)
@@ -430,6 +445,11 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 		return
 	}
 	snapshot.reverse.ServeHTTP(w, r)
+}
+
+func allowedServicePath(target *url.URL, prefix string) bool {
+	return target != nil && target.RawPath == "" && pathpkg.Clean(target.Path) == target.Path &&
+		strings.HasPrefix(target.Path, prefix)
 }
 
 func validProxyToken(received string, expected []byte) bool {

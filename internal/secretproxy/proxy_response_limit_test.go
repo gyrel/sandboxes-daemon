@@ -3,6 +3,7 @@ package secretproxy
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -52,5 +53,29 @@ func TestBoundedResponseBodyRejectsPayloadOverLimit(t *testing.T) {
 	}
 	if string(got) != "abc" {
 		t.Fatalf("response bytes before rejection = %q, want %q", got, "abc")
+	}
+}
+
+func TestEnforceResponseLimitPreservesUpgradeStream(t *testing.T) {
+	local, peer := net.Pipe()
+	defer func() { _ = local.Close(); _ = peer.Close() }()
+	response := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: http.Header{"Upgrade": {"websocket"}}, Request: &http.Request{Header: http.Header{"X-Rheic-Secret-Proxy": {"openai-oauth"}}}}
+	if err := enforceResponseLimit(response); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := response.Body.(io.ReadWriteCloser); !ok {
+		t.Fatal("upgrade lost write capability")
+	}
+	other := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: response.Header, Request: &http.Request{Header: http.Header{"X-Rheic-Secret-Proxy": {"openai"}}}}
+	if err := enforceResponseLimit(other); err == nil {
+		t.Fatal("accepted upgrade for another route")
+	}
+	nonWebSocket := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: http.Header{"Upgrade": {"other"}}, Request: response.Request}
+	if err := enforceResponseLimit(nonWebSocket); err == nil {
+		t.Fatal("accepted non-WebSocket upgrade")
+	}
+	invalid := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: io.NopCloser(strings.NewReader("")), Header: response.Header, Request: response.Request}
+	if err := enforceResponseLimit(invalid); err == nil {
+		t.Fatal("accepted non-writable upgrade")
 	}
 }

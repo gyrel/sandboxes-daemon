@@ -73,7 +73,7 @@ func TestStripProxyCreateEnv(t *testing.T) {
 func TestProxyContractsUseProviderAPIBasePaths(t *testing.T) {
 	for service, want := range map[string]string{
 		"openai":       "http://127.0.0.1:3128/v1",
-		"openai-oauth": "http://127.0.0.1:3128/v1",
+		"openai-oauth": "http://127.0.0.1:3128/backend-api/codex",
 		"mistral":      "http://127.0.0.1:43131/v1",
 		"groq":         "http://127.0.0.1:43130/openai/v1",
 		"openrouter":   "http://127.0.0.1:43132/api/v1",

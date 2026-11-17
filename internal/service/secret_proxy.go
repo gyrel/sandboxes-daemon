@@ -79,6 +79,9 @@ func proxyContract(name string) (proxyEnvContract, bool) {
 		return proxyEnvContract{}, false
 	}
 	contract := proxyEnvContract{serviceName: strings.ToLower(name), credentialService: strings.ToLower(name), upstreamHost: upstream.Host}
+	if isOAuthProxyRoute(name) {
+		contract.upstreamHost = "chatgpt.com"
+	}
 	if configureAgentCredentialContract(&contract) {
 		contract.baseURL = proxyBaseURL(contract.serviceName, contract.guestPort)
 		return contract, true
@@ -169,6 +172,9 @@ func proxyBaseURL(service string, port uint16) string {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	switch service {
 	case openAIServiceName, openAIOAuthRoute, "mistral", "xai":
+		if service == openAIOAuthRoute {
+			return base + "/backend-api/codex"
+		}
 		return base + "/v1"
 	case "groq":
 		return base + "/openai/v1"
@@ -456,6 +462,8 @@ func (s *Service) buildOAuthProxyRoute(ctx context.Context, sb sandbox.Sandbox, 
 		return secretproxy.RouteConfig{}, "", err
 	}
 	service := contractService(openAIServiceName)
+	service.Upstream = "https://chatgpt.com"
+	service.AllowedPathPrefix = "/backend-api/codex/"
 	service.CredentialScope = "global-oauth"
 	service.Credential = func(ctx context.Context) ([]byte, error) {
 		accessToken, err := manager.AccessToken(ctx)
@@ -464,7 +472,6 @@ func (s *Service) buildOAuthProxyRoute(ctx context.Context, sb sandbox.Sandbox, 
 		}
 		return []byte(accessToken), nil
 	}
-	service.Authorize = s.proxyPolicyAuthorizer(sb.ID, contract.upstreamHost)
 	service.AuthorizeAddress = s.proxyAddressAuthorizer(sb.ID, contract.upstreamHost)
 	return secretproxy.RouteConfig{Service: service, Token: token},
 		fmt.Sprintf("%s=%s:%d", openAIOAuthRoute, contract.upstreamHost, contract.guestPort), nil

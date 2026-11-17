@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -302,16 +303,39 @@ func TestOpenAIOAuthProxyUsesHostTokenManager(t *testing.T) {
 		TokenEndpoint: "https://auth.fixture/oauth/token", ClientID: "synthetic-client", Transport: transport,
 	}}})
 	contract, ok := proxyContract("openai-oauth")
-	if !ok || contract.credentialEnv != "OPENAI_API_KEY" || contract.upstreamHost != "api.openai.com" {
+	if !ok || contract.credentialEnv != "OPENAI_API_KEY" || contract.upstreamHost != "chatgpt.com" {
 		t.Fatalf("OAuth proxy contract=%+v ok=%t", contract, ok)
 	}
-	route, runtimeRoute, err := svc.buildOAuthProxyRoute(ctx, sandbox.Sandbox{ID: "sandbox-oauth-proxy", Name: "oauth-proxy"}, contract)
+	op, err := svc.Create(ctx, CreateRequest{Name: "oauth-proxy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := st.Get(ctx, op.SandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, runtimeRoute, err := svc.buildOAuthProxyRoute(ctx, record, contract)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer clear(route.Secret)
-	if runtimeRoute != "openai-oauth=api.openai.com:3128" || route.Service.Credential == nil || route.Service.AuthorizeAddress == nil || route.Secret != nil {
+	if runtimeRoute != "openai-oauth=chatgpt.com:3128" || route.Service.Credential == nil || route.Service.AuthorizeAddress == nil || route.Secret != nil {
 		t.Fatalf("OAuth route=%+v runtime=%q", route, runtimeRoute)
+	}
+	if route.Service.Upstream != "https://chatgpt.com" || route.Service.AllowedPathPrefix != "/backend-api/codex/" {
+		t.Fatalf("OAuth route scope=%+v", route.Service)
+	}
+	address := netip.MustParseAddr("8.8.8.8")
+	allowed, err := route.Service.AuthorizeAddress(ctx, address)
+	if err != nil || !allowed {
+		t.Fatalf("allow positive control: %v %v", allowed, err)
+	}
+	if _, err = svc.MutatePolicy(ctx, op.SandboxID, "deny", sandbox.NetworkRule{Protocol: "tcp", Domain: "chatgpt.com", Port: 443}); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err = route.Service.AuthorizeAddress(ctx, address)
+	if err != nil || allowed {
+		t.Fatalf("deny negative control: %v %v", allowed, err)
 	}
 	credential, err := route.Service.Credential(ctx)
 	if err != nil {
