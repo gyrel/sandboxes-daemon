@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -29,12 +30,13 @@ func TestNativeVaultSyntheticRoundTrip(t *testing.T) {
 			}
 		}
 	})
-	if err := sink.Save(ctx, Tokens{AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh", TokenType: "Bearer", ExpiresIn: 300}); err != nil {
+	access := "synthetic-" + strings.Repeat("a", 9000)
+	if err := sink.Save(ctx, Tokens{AccessToken: access, RefreshToken: "synthetic-refresh", TokenType: "Bearer", ExpiresIn: 300}); err != nil {
 		t.Fatal(err)
 	}
 	owned = true
 	tokens, _, err := sink.Load(ctx)
-	if err != nil || tokens.AccessToken != "synthetic-access" {
+	if err != nil || tokens.AccessToken != access {
 		t.Fatal("native vault roundtrip failed")
 	}
 	if err := sink.Delete(ctx); err != nil {

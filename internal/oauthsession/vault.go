@@ -2,9 +2,12 @@ package oauthsession
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +15,15 @@ import (
 )
 
 const oauthVaultService = "com.rheic.oauth.v1"
+const vaultChunkSize = 1800
+const vaultMaxChunks = 96
+const vaultManifestPrefix = "rheic-keychain-chunks-v1:"
+
+type vaultManifest struct {
+	Nonce  string `json:"nonce"`
+	Count  int    `json:"count"`
+	Digest string `json:"digest"`
+}
 
 var ErrNoTokens = errors.New("OAuth tokens are not stored")
 var ErrNoCredentialFingerprint = errors.New("OAuth credential fingerprint is not stored")
@@ -42,7 +54,8 @@ func NewVaultSink(vault Vault, provider string) (*VaultSink, error) {
 	return &VaultSink{vault: vault, account: provider}, nil
 }
 
-// Save stores a token record as one keychain item.
+// Save stores a token record in the host vault. Large records use bounded
+// keychain items and an integrity-checked manifest committed last.
 func (s *VaultSink) Save(ctx context.Context, tokens Tokens) error {
 	if tokens.AccessToken == "" || !strings.EqualFold(tokens.TokenType, "bearer") || tokens.ExpiresIn < 0 || tokens.ExpiresIn > int64((365*24*time.Hour)/time.Second) {
 		return errors.New("invalid OAuth tokens")
@@ -56,7 +69,7 @@ func (s *VaultSink) Save(ctx context.Context, tokens Tokens) error {
 		return errors.New("encode OAuth tokens failed")
 	}
 	defer clear(payload)
-	if err := s.vault.Set(ctx, oauthVaultService, s.account, string(payload)); err != nil {
+	if err := s.savePayload(ctx, payload); err != nil {
 		return errors.New("store OAuth tokens failed")
 	}
 	return nil
@@ -64,7 +77,7 @@ func (s *VaultSink) Save(ctx context.Context, tokens Tokens) error {
 
 // Load retrieves the exact record from the host vault.
 func (s *VaultSink) Load(ctx context.Context) (Tokens, time.Time, error) {
-	value, err := s.vault.Get(ctx, oauthVaultService, s.account)
+	value, err := s.loadPayload(ctx)
 	if err != nil {
 		if errors.Is(err, registrycredentials.ErrNotFound) {
 			return Tokens{}, time.Time{}, ErrNoTokens
@@ -78,10 +91,10 @@ func (s *VaultSink) Load(ctx context.Context) (Tokens, time.Time, error) {
 	return record.Tokens, record.ExpiresAt, nil
 }
 
-// HasTokens reports only whether a provider token record exists. It never
-// returns or decodes token values.
+// HasTokens reports whether a complete provider token record exists. It never
+// returns token values.
 func (s *VaultSink) HasTokens(ctx context.Context) (bool, error) {
-	_, err := s.vault.Get(ctx, oauthVaultService, s.account)
+	_, err := s.loadPayload(ctx)
 	if errors.Is(err, registrycredentials.ErrNotFound) {
 		return false, nil
 	}
@@ -95,7 +108,7 @@ func (s *VaultSink) HasTokens(ctx context.Context) (bool, error) {
 // refresh token. The decoded payload is cleared before returning; token values
 // never leave this method.
 func (s *VaultSink) HasRefreshToken(ctx context.Context) (bool, error) {
-	value, err := s.vault.Get(ctx, oauthVaultService, s.account)
+	value, err := s.loadPayload(ctx)
 	if errors.Is(err, registrycredentials.ErrNotFound) {
 		return false, nil
 	}
@@ -117,8 +130,142 @@ func (s *VaultSink) HasRefreshToken(ctx context.Context) (bool, error) {
 
 // Delete removes only this provider's vault record.
 func (s *VaultSink) Delete(ctx context.Context) error {
+	value, err := s.vault.Get(ctx, oauthVaultService, s.account)
+	if err != nil && !errors.Is(err, registrycredentials.ErrNotFound) {
+		return errors.New("delete OAuth tokens failed")
+	}
+	if manifest, ok := parseVaultManifest(value); ok {
+		if err := s.deleteChunks(ctx, manifest); err != nil {
+			return errors.New("delete OAuth tokens failed")
+		}
+	} else if strings.HasPrefix(value, vaultManifestPrefix) {
+		return errors.New("delete OAuth tokens failed")
+	}
 	if err := s.vault.Delete(ctx, oauthVaultService, s.account); err != nil {
 		return errors.New("delete OAuth tokens failed")
+	}
+	return nil
+}
+
+func (s *VaultSink) savePayload(ctx context.Context, payload []byte) error {
+	count := (len(payload) + vaultChunkSize - 1) / vaultChunkSize
+	if count > vaultMaxChunks {
+		return errors.New("OAuth record exceeds vault limit")
+	}
+	old, hadOld, err := s.currentManifest(ctx)
+	if err != nil {
+		return err
+	}
+	if len(payload) <= vaultChunkSize {
+		if err := s.vault.Set(ctx, oauthVaultService, s.account, string(payload)); err != nil {
+			return err
+		}
+		if hadOld {
+			return s.deleteChunks(ctx, old)
+		}
+		return nil
+	}
+	return s.saveChunks(ctx, payload, count, old, hadOld)
+}
+
+func (s *VaultSink) currentManifest(ctx context.Context) (vaultManifest, bool, error) {
+	value, err := s.vault.Get(ctx, oauthVaultService, s.account)
+	if errors.Is(err, registrycredentials.ErrNotFound) {
+		return vaultManifest{}, false, nil
+	}
+	if err != nil {
+		return vaultManifest{}, false, err
+	}
+	manifest, ok := parseVaultManifest(value)
+	if !ok && strings.HasPrefix(value, vaultManifestPrefix) {
+		return vaultManifest{}, false, errors.New("invalid OAuth vault manifest")
+	}
+	return manifest, ok, nil
+}
+
+func (s *VaultSink) saveChunks(ctx context.Context, payload []byte, count int, old vaultManifest, hadOld bool) error {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	digest := sha256.Sum256(payload)
+	manifest := vaultManifest{Nonce: hex.EncodeToString(nonce[:]), Count: count, Digest: hex.EncodeToString(digest[:])}
+	for i := 0; i < count; i++ {
+		end := min((i+1)*vaultChunkSize, len(payload))
+		if err := s.vault.Set(ctx, oauthVaultService, s.chunkAccount(manifest, i), string(payload[i*vaultChunkSize:end])); err != nil {
+			_ = s.deleteChunks(ctx, vaultManifest{Nonce: manifest.Nonce, Count: i})
+			return err
+		}
+	}
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		_ = s.deleteChunks(ctx, manifest)
+		return err
+	}
+	if err := s.vault.Set(ctx, oauthVaultService, s.account, vaultManifestPrefix+string(encoded)); err != nil {
+		_ = s.deleteChunks(ctx, manifest)
+		return err
+	}
+	if hadOld {
+		return s.deleteChunks(ctx, old)
+	}
+	return nil
+}
+
+func (s *VaultSink) loadPayload(ctx context.Context) (string, error) {
+	value, err := s.vault.Get(ctx, oauthVaultService, s.account)
+	if err != nil {
+		return "", err
+	}
+	manifest, ok := parseVaultManifest(value)
+	if !ok {
+		if strings.HasPrefix(value, vaultManifestPrefix) {
+			return "", errors.New("invalid OAuth vault manifest")
+		}
+		return value, nil
+	}
+	var b strings.Builder
+	for i := 0; i < manifest.Count; i++ {
+		chunk, err := s.vault.Get(ctx, oauthVaultService, s.chunkAccount(manifest, i))
+		if err != nil || len(chunk) > vaultChunkSize {
+			return "", errors.New("invalid OAuth vault chunk")
+		}
+		b.WriteString(chunk)
+	}
+	value = b.String()
+	digest := sha256.Sum256([]byte(value))
+	if hex.EncodeToString(digest[:]) != manifest.Digest {
+		return "", errors.New("invalid OAuth vault digest")
+	}
+	return value, nil
+}
+
+func parseVaultManifest(value string) (vaultManifest, bool) {
+	if !strings.HasPrefix(value, vaultManifestPrefix) {
+		return vaultManifest{}, false
+	}
+	var m vaultManifest
+	if json.Unmarshal([]byte(strings.TrimPrefix(value, vaultManifestPrefix)), &m) != nil || m.Count < 1 || m.Count > vaultMaxChunks || len(m.Nonce) != 32 || len(m.Digest) != 64 {
+		return vaultManifest{}, false
+	}
+	if _, err := hex.DecodeString(m.Nonce); err != nil {
+		return vaultManifest{}, false
+	}
+	if _, err := hex.DecodeString(m.Digest); err != nil {
+		return vaultManifest{}, false
+	}
+	return m, true
+}
+
+func (s *VaultSink) chunkAccount(m vaultManifest, i int) string {
+	return fmt.Sprintf("%s:chunk:%s:%d", s.account, m.Nonce, i)
+}
+
+func (s *VaultSink) deleteChunks(ctx context.Context, m vaultManifest) error {
+	for i := 0; i < m.Count; i++ {
+		if err := s.vault.Delete(ctx, oauthVaultService, s.chunkAccount(m, i)); err != nil && !errors.Is(err, registrycredentials.ErrNotFound) {
+			return err
+		}
 	}
 	return nil
 }
