@@ -26,6 +26,10 @@ type vaultManifest struct {
 }
 
 var ErrNoTokens = errors.New("OAuth tokens are not stored")
+
+// ErrHostKeychainUnavailable reports that the host credential store could not
+// be reached at all, as opposed to holding no record for the account.
+var ErrHostKeychainUnavailable = errors.New("OAuth host keychain is unavailable")
 var ErrNoCredentialFingerprint = errors.New("OAuth credential fingerprint is not stored")
 
 // Vault is the host credential store. No file fallback is provided here.
@@ -82,7 +86,7 @@ func (s *VaultSink) Load(ctx context.Context) (Tokens, time.Time, error) {
 		if errors.Is(err, registrycredentials.ErrNotFound) {
 			return Tokens{}, time.Time{}, ErrNoTokens
 		}
-		return Tokens{}, time.Time{}, errors.New("read OAuth tokens failed")
+		return Tokens{}, time.Time{}, fmt.Errorf("%w: read OAuth tokens failed", ErrHostKeychainUnavailable)
 	}
 	var record tokenRecord
 	if json.Unmarshal([]byte(value), &record) != nil || record.Tokens.AccessToken == "" || !strings.EqualFold(record.Tokens.TokenType, "bearer") {
@@ -99,7 +103,7 @@ func (s *VaultSink) HasTokens(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, errors.New("inspect OAuth credential presence failed")
+		return false, fmt.Errorf("%w: inspect OAuth credential presence failed", ErrHostKeychainUnavailable)
 	}
 	return true, nil
 }
@@ -113,7 +117,7 @@ func (s *VaultSink) HasRefreshToken(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, errors.New("inspect OAuth credential presence failed")
+		return false, fmt.Errorf("%w: inspect OAuth credential presence failed", ErrHostKeychainUnavailable)
 	}
 	payload := []byte(value)
 	defer clear(payload)
@@ -291,7 +295,7 @@ func (s *VaultSink) DockerHubPATFingerprint(ctx context.Context) (string, error)
 		return "", ErrNoCredentialFingerprint
 	}
 	if err != nil {
-		return "", errors.New("read OAuth credential ownership failed")
+		return "", fmt.Errorf("%w: read OAuth credential ownership failed", ErrHostKeychainUnavailable)
 	}
 	decoded, err := hex.DecodeString(value)
 	if err != nil || len(decoded) != 32 {
@@ -310,7 +314,7 @@ func (s *VaultSink) HasDockerHubPATFingerprint(ctx context.Context) (bool, error
 		return false, nil
 	}
 	if err != nil {
-		return false, errors.New("inspect Docker Hub credential presence failed")
+		return false, fmt.Errorf("%w: inspect Docker Hub credential presence failed", ErrHostKeychainUnavailable)
 	}
 	decoded, err := hex.DecodeString(value)
 	if err != nil || len(decoded) != 32 {

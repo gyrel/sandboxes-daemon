@@ -227,7 +227,13 @@ func accountLoginError(err error) error {
 	if errors.Is(err, service.ErrOAuthPartialLogin) {
 		return status.Error(codes.FailedPrecondition, "OAuth login may have partially completed; run rsbx logout before retrying")
 	}
-	return status.Error(codes.FailedPrecondition, "OAuth login failed; no credentials were returned")
+	if errors.Is(err, service.ErrOAuthCredentialConflict) {
+		return status.Error(codes.FailedPrecondition, "existing Docker credentials are stored on this host; run rsbx logout, then sign in again")
+	}
+	if errors.Is(err, service.ErrOAuthHostKeychain) {
+		return status.Error(codes.FailedPrecondition, "the host keychain is unavailable; unlock the login keychain and retry")
+	}
+	return status.Error(codes.FailedPrecondition, "sign-in could not be completed; run rsbx logout and retry")
 }
 
 func (s *AccountServer) LoginWithPAT(ctx context.Context, req *localv1.AccountServiceLoginWithPATRequest) (*localv1.AccountServiceLoginWithPATResponse, error) {
@@ -242,7 +248,9 @@ func (s *AccountServer) LoginWithPAT(ctx context.Context, req *localv1.AccountSe
 		case errors.Is(err, registrycredentials.ErrInvalidCredential):
 			return nil, status.Error(codes.InvalidArgument, "invalid Docker Hub credentials")
 		case errors.Is(err, service.ErrOAuthCredentialConflict):
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
+			return nil, status.Error(codes.FailedPrecondition, "existing Docker credentials are stored on this host; run rsbx logout, then sign in again")
+		case errors.Is(err, service.ErrOAuthHostKeychain):
+			return nil, status.Error(codes.FailedPrecondition, "the host keychain is unavailable; unlock the login keychain and retry")
 		case errors.Is(err, service.ErrOAuthPartialLogin):
 			return nil, status.Error(codes.FailedPrecondition, "Docker login may have partially completed; run rsbx logout before retrying")
 		default:

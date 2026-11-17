@@ -299,6 +299,8 @@ func (s *Service) checkAccountLoginAvailable(ctx context.Context, name string, s
 	}
 	if _, _, err := sink.Load(ctx); err == nil {
 		return ErrOAuthCredentialConflict
+	} else if errors.Is(err, oauthsession.ErrHostKeychainUnavailable) {
+		return ErrOAuthHostKeychain
 	} else if !errors.Is(err, oauthsession.ErrNoTokens) {
 		return errors.New("inspect existing OAuth account credentials failed")
 	}
@@ -542,6 +544,10 @@ func (s *Service) oauthVault() oauthsession.Vault {
 
 var ErrOAuthProviderUnavailable = errors.New("OAuth provider is not configured")
 var ErrOAuthCredentialConflict = oauthsession.ErrCredentialConflict
+
+// ErrOAuthHostKeychain reports that the host keychain could not be reached, so
+// credential presence could not be established either way.
+var ErrOAuthHostKeychain = oauthsession.ErrHostKeychainUnavailable
 var ErrOAuthPartialLogin = oauthsession.ErrOAuthPartialLogin
 var ErrDockerHubCredentialRejected = oauthsession.ErrDockerHubCredentialRejected
 var ErrOAuthRevocationFailed = errors.New("OAuth provider revocation failed")
@@ -902,11 +908,15 @@ func (s *Service) checkDockerHubLoginAvailable(ctx context.Context, sink *oauths
 	}
 	if _, _, err := sink.Load(ctx); err == nil {
 		return ErrOAuthCredentialConflict
+	} else if errors.Is(err, oauthsession.ErrHostKeychainUnavailable) {
+		return ErrOAuthHostKeychain
 	} else if !errors.Is(err, oauthsession.ErrNoTokens) {
 		return errors.New("inspect existing Docker account credentials failed")
 	}
 	if _, err := sink.DockerHubPATFingerprint(ctx); err == nil {
 		return ErrOAuthCredentialConflict
+	} else if errors.Is(err, oauthsession.ErrHostKeychainUnavailable) {
+		return ErrOAuthHostKeychain
 	} else if !errors.Is(err, oauthsession.ErrNoCredentialFingerprint) {
 		return errors.New("inspect existing Docker account ownership failed")
 	}

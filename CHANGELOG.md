@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- Docker account sign-in no longer collapses every failure into
+  `OAuth login failed; no credentials were returned`. Existing Docker
+  credentials and an unreachable host keychain now produce distinct actionable
+  messages, and the host keychain sentinel (`ErrHostKeychainUnavailable`) is
+  propagated from the vault instead of being reported as "no credentials".
+
 ## v0.0.62 — 2026-11-16
 
 ### Removed
