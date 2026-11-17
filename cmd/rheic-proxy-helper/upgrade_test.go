@@ -63,3 +63,17 @@ func TestRelayUpgradeBidirectional(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRouteUpgradeRejectsOtherServicesAndProtocols(t *testing.T) {
+	for _, tc := range []struct{ service, protocol string }{{"openai", "websocket"}, {"openai-oauth", "other"}} {
+		recorder := httptest.NewRecorder()
+		resp := &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{"Upgrade": {tc.protocol}}}
+		if !handleRouteUpgrade(recorder, resp, tc.service) || recorder.Code != http.StatusBadGateway {
+			t.Fatalf("service=%q protocol=%q status=%d", tc.service, tc.protocol, recorder.Code)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	if handleRouteUpgrade(recorder, &http.Response{StatusCode: http.StatusOK}, "openai-oauth") {
+		t.Fatal("normal response treated as upgrade")
+	}
+}
