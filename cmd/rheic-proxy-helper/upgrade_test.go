@@ -4,13 +4,19 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
 )
 
 func TestRelayUpgradeBidirectional(t *testing.T) {
@@ -75,5 +81,94 @@ func TestRouteUpgradeRejectsOtherServicesAndProtocols(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if handleRouteUpgrade(recorder, &http.Response{StatusCode: http.StatusOK}, "openai-oauth") {
 		t.Fatal("normal response treated as upgrade")
+	}
+}
+
+func TestOAuthWebSocketThroughHelperAndBroker(t *testing.T) {
+	upstreamResult := make(chan error, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" || r.Header.Get("Authorization") != "Bearer synthetic-host-token" {
+			upstreamResult <- fmt.Errorf("unexpected upstream request")
+			http.Error(w, "bad request", 400)
+			return
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			upstreamResult <- fmt.Errorf("upstream cannot hijack")
+			return
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			upstreamResult <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err = fmt.Fprint(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"); err != nil {
+			upstreamResult <- err
+			return
+		}
+		buf := make([]byte, 4)
+		if _, err = io.ReadFull(conn, buf); err != nil {
+			upstreamResult <- err
+			return
+		}
+		if string(buf) != "ping" {
+			upstreamResult <- fmt.Errorf("unexpected request bytes")
+			return
+		}
+		_, err = conn.Write([]byte("pong"))
+		upstreamResult <- err
+	}))
+	defer upstream.Close()
+	dir, err := os.MkdirTemp("/tmp", "rheic-upgrade-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "proxy.sock")
+	manager := secretproxy.New()
+	defer func() { _ = manager.Close() }()
+	token := strings.Repeat("a", 64)
+	route := secretproxy.Service{Upstream: upstream.URL, Header: "Authorization", Prefix: "Bearer ", AllowedPathPrefix: "/backend-api/codex/"}
+	if _, err = manager.StartUnixRoutes(context.Background(), "upgrade-test", map[string]secretproxy.RouteConfig{"openai-oauth": {Service: route, Secret: []byte("synthetic-host-token"), Token: token}}, socket); err != nil {
+		t.Fatal(err)
+	}
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socket)
+	}}
+	defer transport.CloseIdleConnections()
+	helper := httptest.NewServer(newRouteHandler("openai-oauth", "chatgpt.com", transport))
+	defer helper.Close()
+	conn, err := net.Dial("tcp", helper.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+	if _, err = fmt.Fprint(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer rheic-proxy-placeholder\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 101 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if _, err = conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err = io.ReadFull(reader, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "pong" {
+		t.Fatalf("reply=%q", buf)
+	}
+	if err = <-upstreamResult; err != nil {
+		t.Fatal(err)
 	}
 }
