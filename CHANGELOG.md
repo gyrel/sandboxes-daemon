@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.64 — 2026-11-18
 
 - Route the OpenAI OAuth broker to the scoped ChatGPT Codex endpoint and support WebSocket upgrades on that route.
 - Include Linux proxy helper binaries in release assets.
