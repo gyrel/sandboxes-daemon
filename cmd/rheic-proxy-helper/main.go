@@ -515,12 +515,7 @@ func newRouteHandlerWithDial(service, serviceHost string, transport http.RoundTr
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode == http.StatusSwitchingProtocols {
-			if service != "openai-oauth" || !strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") {
-				http.Error(w, "proxy upgrade unavailable", http.StatusBadGateway)
-				return
-			}
-			relayUpgrade(w, resp)
+		if handleRouteUpgrade(w, resp, service) {
 			return
 		}
 		for name, values := range resp.Header {
@@ -531,6 +526,18 @@ func newRouteHandlerWithDial(service, serviceHost string, transport http.RoundTr
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	})
+}
+
+func handleRouteUpgrade(w http.ResponseWriter, response *http.Response, service string) bool {
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		return false
+	}
+	if service != "openai-oauth" || !strings.EqualFold(response.Header.Get("Upgrade"), "websocket") {
+		http.Error(w, "proxy upgrade unavailable", http.StatusBadGateway)
+		return true
+	}
+	relayUpgrade(w, response)
+	return true
 }
 
 func relayUpgrade(w http.ResponseWriter, response *http.Response) {
