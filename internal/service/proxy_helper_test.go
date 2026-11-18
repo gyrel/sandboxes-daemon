@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -74,8 +75,8 @@ func TestResolveProxyHelperPathMissingListsLocations(t *testing.T) {
 	}
 	for _, want := range []string{
 		"proxy helper not found",
-		filepath.Join(directory, name),
-		filepath.Join(directory, "bin", name),
+		strconv.Quote(filepath.Join(directory, name)),
+		strconv.Quote(filepath.Join(directory, "bin", name)),
 		"--proxy-helper",
 	} {
 		if !strings.Contains(err.Error(), want) {
