@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.69 — 2026-11-19
+
+### Security
+
+- Require a trusted host approval provider before storing or executing a
+  persistent secret-source command. The provider receives the exact command,
+  service, scope, and sandbox name; a missing provider or denied approval fails
+  closed before the command runs. `NoVerify` cannot bypass consent.
+- Require explicit runtime artifact verification mode: `--artifact-digests` plus
+  at least one `--runtime-artifact name=absolute-path`, or an explicit
+  `--allow-unmanaged-runtime` opt-in. Verified artifacts are passed to the
+  runtime backend before create/start.
+
+### Tests
+
+- Cover missing, denied, and exact-binding host-command approvals, including a
+  marker-file negative control.
+- Cover the managed/unmanaged runtime verification matrix and Windows absolute
+  paths.
+
 ## v0.0.68 — 2026-11-19
 
 ### Security
