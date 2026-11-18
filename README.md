@@ -185,12 +185,16 @@ Service proxy references require the matching static guest helper artifact.
 Download the `rheic-proxy-helper-linux-arm64` or
 `rheic-proxy-helper-linux-amd64` release asset (verify its checksum), run
 `chmod +x` on it because release downloads do not preserve the executable bit,
-or build it with `make build-proxy-helper`, and pass
-`--proxy-helper /absolute/path/to/rheic-proxy-helper-linux-arm64` to
-`sandboxesd`. The daemon accepts a static Linux ARM64 or AMD64 ELF helper that
-does not require a dynamic linker; the path must be absolute. If the helper is
-absent or not executable, `${proxy:service}` fails closed. Proxy-enabled
-sandboxes currently support one service per sandbox.
+or build it with `make build-proxy-helper`. Either pass
+`--proxy-helper /absolute/path/to/rheic-proxy-helper-linux-arm64`, or place the
+artifact next to the running `sandboxesd` executable as
+`rheic-proxy-helper-linux-<goarch>` or `bin/rheic-proxy-helper-linux-<goarch>`.
+Discovery never searches `PATH`; an explicit flag always wins and must name an
+absolute path. The daemon accepts a static Linux ARM64 or AMD64 ELF helper that
+does not require a dynamic linker. If no configured or discovered helper passes
+validation, `${proxy:service}` fails closed with the searched locations instead
+of silently disabling the proxy. Proxy-enabled sandboxes currently support one
+service per sandbox.
 
 Empty `--containerd` keeps the state-only control plane. With a runtime backend,
 create/start/stop/delete call the runtime adapter. With `--gvproxy`, the daemon
@@ -227,9 +231,10 @@ supported host proxy reference instead. Existing scripts using
 `${secret:service}` must migrate before upgrading; the daemon fails closed and
 does not pass the reference or credential to the guest. The
 `${proxy:service}` Create/Start/exec path is implemented on the current feature
-branches and remains **unreleased and pending verification**. It requires
-`--proxy-helper` and a supported provider credential variable; the guest image
-does not need `/bin/sh`. The guest gets a placeholder and provider base URL; the host broker reads
+branches and remains **unreleased and pending verification**. It requires a
+valid guest proxy helper (configured with `--proxy-helper` or discovered next to
+the daemon executable) and a supported provider credential variable; the guest
+image does not need `/bin/sh`. The guest gets a placeholder and provider base URL; the host broker reads
 the real value from the vault and checks sandbox network policy on each request.
 The broker refuses to replace an existing socket path and requires a private
 parent directory owned by the daemon user. The value is not written to SQLite
