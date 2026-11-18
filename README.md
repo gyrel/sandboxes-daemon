@@ -240,6 +240,17 @@ The broker refuses to replace an existing socket path and requires a private
 parent directory owned by the daemon user. The value is not written to SQLite
 or sandbox metadata.
 
+WebSocket and CONNECT tunnels are hijacked from `net/http` and therefore must be
+tracked explicitly. The broker closes every active upgraded stream owned by a
+sandbox before a policy revision takes effect, and closes them when a credential
+route is revoked or the proxy channel is torn down. A stream created under an old
+policy or credential never outlives that authorization. Only the affected
+sandbox is selected, ordinary HTTP request/response handling is unchanged, and
+route teardown also rejects a hijack that races with shutdown. The synthetic
+Linux harness reports the Codex transport deterministically from test-only
+counters (upgraded stream versus HTTP fallback); it does not add production
+tracing and never logs token values.
+
 Service records can also hold a fixed `op://` or AWS Secrets Manager reference,
 or an explicitly supplied host-shell command. The daemon resolves these sources
 only when the proxy needs a credential, caches successful values according to

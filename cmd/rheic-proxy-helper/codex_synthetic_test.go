@@ -27,13 +27,14 @@ func TestSyntheticCodexThroughHelperAndBroker(t *testing.T) {
 	if os.Getenv("RHEIC_SYNTHETIC_CODEX") != "1" {
 		t.Skip("requires an isolated container with Codex 0.165.0")
 	}
-	var calls, websocketCalls atomic.Int32
+	var calls, websocketCalls, upgradeAttempts atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/codex/responses" || r.Header.Get("Authorization") != "Bearer synthetic-host-token" {
 			http.Error(w, "denied", http.StatusForbidden)
 			return
 		}
 		if r.Method == http.MethodGet {
+			upgradeAttempts.Add(1)
 			if os.Getenv("RHEIC_SYNTHETIC_WS") == "1" {
 				if err := serveSyntheticCodexWebSocket(w, r); err != nil {
 					t.Errorf("synthetic websocket: %v", err)
@@ -95,12 +96,30 @@ func TestSyntheticCodexThroughHelperAndBroker(t *testing.T) {
 	if !strings.Contains(string(output), "RHEIC_SYNTHETIC_OK") {
 		t.Fatalf("output=%s", output)
 	}
+	mode := "http"
 	if os.Getenv("RHEIC_SYNTHETIC_WS") == "1" {
+		mode = "websocket"
 		if websocketCalls.Load() < 1 || calls.Load() != 0 {
 			t.Fatalf("websocket=%d HTTP=%d output=%s", websocketCalls.Load(), calls.Load(), output)
 		}
-	} else if calls.Load() != 1 {
-		t.Fatalf("HTTP calls=%d output=%s", calls.Load(), output)
+	} else if websocketCalls.Load() != 0 || calls.Load() != 1 {
+		t.Fatalf("websocket=%d HTTP=%d output=%s", websocketCalls.Load(), calls.Load(), output)
+	}
+	recordCodexTransportEvidence(t, mode, int(websocketCalls.Load()), int(calls.Load()), int(upgradeAttempts.Load()))
+}
+
+// recordCodexTransportEvidence emits a deterministic, machine-readable record
+// of the transport the actual Codex client used. It runs only in tests and
+// contains counters only: no request bodies, headers, or credentials.
+func recordCodexTransportEvidence(t *testing.T, mode string, upgraded, httpResponses, upgradeAttempts int) {
+	t.Helper()
+	line := fmt.Sprintf("CODEX_TRANSPORT_EVIDENCE transport=%s upgraded_streams=%d http_responses=%d upgrade_attempts=%d\n",
+		mode, upgraded, httpResponses, upgradeAttempts)
+	t.Logf("%s", strings.TrimSpace(line))
+	if path := os.Getenv("RHEIC_CODEX_TRANSPORT_EVIDENCE"); path != "" {
+		if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+			t.Fatalf("write transport evidence: %v", err)
+		}
 	}
 }
 

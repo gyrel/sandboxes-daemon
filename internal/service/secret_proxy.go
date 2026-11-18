@@ -613,6 +613,16 @@ func (s *Service) hasStoredProxy(ctx context.Context, sb sandbox.Sandbox) (bool,
 	return err == nil, err
 }
 
+// revokeSandboxStreams closes hijacked streams authorized under the previous
+// policy revision. It is safe when no proxy manager is configured (for
+// example in unit tests) and never selects another sandbox.
+func (s *Service) revokeSandboxStreams(sandboxName string) {
+	if s.secretProxies == nil {
+		return
+	}
+	s.secretProxies.RevokeSandboxStreams(sandboxName)
+}
+
 func (s *Service) stopProxyChannel(sandboxName, sandboxID string, removeDirectory bool) error {
 	var failures []error
 	if s.secretProxies != nil {

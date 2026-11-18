@@ -3433,6 +3433,12 @@ func (s *Service) updatePolicyLocked(ctx context.Context, id string, allow, deny
 		}
 		handle := s.backend.Handle(sb.Name)
 		handle.Ports = runtimePorts(sb.Ports)
+		// Security contract: a hijacked stream (Codex WebSocket or registry
+		// CONNECT tunnel) was authorized under the rules in force when it was
+		// established. A policy revision must revoke it before the new rules
+		// take effect, otherwise the long-lived stream outlives its grant.
+		// Only this sandbox's streams are closed.
+		s.revokeSandboxStreams(sb.Name)
 		if err := updater.UpdatePolicy(ctx, handle, runtimeRules(allow), runtimeRules(deny), revision); err != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			stopErr := s.backend.Stop(cleanupCtx, handle, 5*time.Second)
