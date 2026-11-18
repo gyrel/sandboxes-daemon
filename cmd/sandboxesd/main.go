@@ -16,6 +16,7 @@ import (
 	gateway "github.com/rheic/sandboxes-gateway"
 	runtime "github.com/rheic/sandboxes-runtime"
 	runtimectr "github.com/rheic/sandboxes-runtime/ctr"
+	"github.com/rheic/slogx"
 
 	daemon "github.com/rheic/sandboxes-daemon"
 	"github.com/rheic/sandboxes-daemon/internal/lifecycle"
@@ -66,6 +67,19 @@ type options struct {
 	showVersion           bool
 }
 
+// controlledHandler keeps the live daemon log level from lifecycle.LevelVar
+// while delegating record formatting and masking to slogx.
+type controlledHandler struct {
+	slog.Handler
+	level slog.Leveler
+}
+
+// Enabled consults the live controller level instead of the handler's startup
+// threshold. The wrapped handler writes records without re-checking Enabled.
+func (h *controlledHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return h.level != nil && level >= h.level.Level()
+}
+
 func main() {
 	os.Exit(run())
 }
@@ -88,7 +102,12 @@ func run() int {
 	if controller, err := lifecycle.OpenLogController(opts.stateDir); err != nil {
 		slog.Warn("log-level control unavailable; using info", "error", err)
 	} else {
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: controller.Leveler()})))
+		logger := slogx.New(
+			slogx.WithOutput(os.Stderr),
+			slogx.WithFormat(slogx.FormatText),
+			slogx.WithLevel(controller.Leveler().Level()),
+		)
+		slog.SetDefault(slog.New(&controlledHandler{Handler: logger.Handler(), level: controller.Leveler()}))
 		go controller.Watch(ctx)
 	}
 	lost := make(chan string, 8)

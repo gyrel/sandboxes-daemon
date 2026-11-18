@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Route the daemon's default text logger through the released
+  `github.com/rheic/slogx` module while preserving live level changes from the
+  lifecycle log controller. Record formatting stays text on stderr; masking and
+  context behavior use slogx defaults. Require Go 1.27.4 and update
+  OpenTelemetry to v1.47.0.
+
+### Tests
+
+- Cover the level-controller adapter: debug records stay hidden at info and
+  appear after the live level changes to debug.
+
 ## v0.0.66 — 2026-11-18
 
 ### Added
