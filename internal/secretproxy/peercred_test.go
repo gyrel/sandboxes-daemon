@@ -105,7 +105,7 @@ func TestPeerCheckingListenerAcceptsSameOwner(t *testing.T) {
 	}
 }
 
-func TestPeerCheckingListenerAcceptsUnverifiablePeer(t *testing.T) {
+func TestPeerCheckingListenerRejectsUnverifiablePeer(t *testing.T) {
 	inner, err := net.Listen("unix", filepath.Join(mustTempDir(t), "peer.sock"))
 	if err != nil {
 		t.Fatal(err)
@@ -128,20 +128,19 @@ func TestPeerCheckingListenerAcceptsUnverifiablePeer(t *testing.T) {
 
 	accepted := make(chan net.Conn, 1)
 	go func() {
-		peer, err := listener.Accept()
-		if err != nil {
-			return
+		peer, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- peer
 		}
-		accepted <- peer
 	}()
 	select {
 	case peer := <-accepted:
 		_ = peer.Close()
+		t.Fatal("unverifiable peer was accepted")
 	case <-time.After(2 * time.Second):
-		t.Fatal("unverifiable peer was not accepted")
 	}
-	if rejected.Load() != 0 {
-		t.Fatalf("rejected=%d want 0", rejected.Load())
+	if rejected.Load() != 1 {
+		t.Fatalf("rejected=%d want 1", rejected.Load())
 	}
 }
 

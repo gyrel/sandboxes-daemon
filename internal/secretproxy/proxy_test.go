@@ -1409,3 +1409,30 @@ func TestOAuthRouteBlocksOtherPathsBeforeCredentialLookup(t *testing.T) {
 		t.Fatalf("positive control credential=%d upstream=%d", credentialCalls.Load(), upstreamCalls.Load())
 	}
 }
+
+func TestStartUnixRoutesUsesPeerCheckingListener(t *testing.T) {
+	m := New()
+	defer func() { _ = m.Close() }()
+	dir, err := os.MkdirTemp("/tmp", "peer-wiring")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "proxy.sock")
+	token := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if _, err := m.StartUnix(context.Background(), "peer-wiring", "openai",
+		Service{Upstream: "https://api.openai.com", Header: "Authorization", Prefix: "Bearer "},
+		[]byte("synthetic-secret"), socket, token); err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.Lock()
+	proxy := m.proxies["peer-wiring/openai"]
+	m.mu.Unlock()
+	if proxy == nil {
+		t.Fatal("proxy was not registered")
+	}
+	if _, ok := proxy.listener.(peerCheckingListener); !ok {
+		t.Fatalf("server listener type = %T, want peerCheckingListener", proxy.listener)
+	}
+}

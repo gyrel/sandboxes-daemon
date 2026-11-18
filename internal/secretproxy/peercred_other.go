@@ -9,5 +9,8 @@ import "net"
 // mandatory. Windows IPC uses named pipes with their own ACL model.
 func peerOwnerUID(net.Conn) (uint64, bool) { return 0, false }
 
+// peerUIDMandatory reports that this transport cannot use POSIX peer UIDs.
+func peerUIDMandatory() bool { return false }
+
 // currentUID reports 0 where no comparable POSIX effective UID exists.
 func currentUID() uint64 { return 0 }
