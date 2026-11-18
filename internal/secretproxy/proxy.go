@@ -3,6 +3,7 @@
 package secretproxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/hex"
@@ -168,6 +169,11 @@ type proxyRoute struct {
 	handler           http.Handler
 	ctx               context.Context
 	cancel            context.CancelFunc
+	// upgrades tracks hijacked connections (WebSocket and CONNECT tunnels) so
+	// route teardown and policy changes can close them deterministically. A
+	// hijacked connection is no longer owned by net/http and would otherwise
+	// outlive the credential or policy that authorized it.
+	upgrades *upgradeTracker
 }
 
 type proxySnapshot struct {
@@ -179,6 +185,125 @@ type proxySnapshot struct {
 	reverse        *httputil.ReverseProxy
 	handler        http.Handler
 	ctx            context.Context
+	upgrades       *upgradeTracker
+}
+
+// upgradeTracker owns the hijacked connections of one route. Closing a route
+// marks the tracker closed so a concurrent hijack cannot leave a live stream
+// behind, while a policy revision advances the generation, closes only the
+// active streams, and keeps the route usable for subsequent authorized
+// requests.
+type upgradeTracker struct {
+	mu     sync.Mutex
+	closed bool
+	// generation advances on every policy revision. A request authorizes
+	// against the generation it observed; a hijack that completes after the
+	// revision is closed instead of joining the new generation.
+	generation uint64
+	conns      map[*trackedConn]struct{}
+}
+
+func newUpgradeTracker() *upgradeTracker {
+	return &upgradeTracker{conns: make(map[*trackedConn]struct{})}
+}
+
+type trackedConn struct {
+	net.Conn
+	tracker *upgradeTracker
+	once    sync.Once
+}
+
+func (c *trackedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { c.tracker.remove(c) })
+	return err
+}
+
+func (t *upgradeTracker) track(conn net.Conn, generation uint64) net.Conn {
+	if t == nil {
+		return conn
+	}
+	tracked := &trackedConn{Conn: conn, tracker: t}
+	t.mu.Lock()
+	if t.closed || t.generation != generation {
+		t.mu.Unlock()
+		// Fail closed: the route was torn down or the policy changed while this
+		// hijack was in flight. Closing the connection prevents a stream from
+		// joining the proxy under an authorization that no longer applies.
+		_ = conn.Close()
+		return tracked
+	}
+	t.conns[tracked] = struct{}{}
+	t.mu.Unlock()
+	return tracked
+}
+
+func (t *upgradeTracker) remove(conn *trackedConn) {
+	t.mu.Lock()
+	delete(t.conns, conn)
+	t.mu.Unlock()
+}
+
+// closeActive invalidates the current generation and closes every tracked
+// connection without disabling the tracker. It is used for policy revisions,
+// where the route may authorize new requests after the caller re-evaluates
+// policy.
+func (t *upgradeTracker) closeActive() int {
+	t.mu.Lock()
+	t.generation++
+	conns := make([]*trackedConn, 0, len(t.conns))
+	for conn := range t.conns {
+		conns = append(conns, conn)
+	}
+	clear(t.conns)
+	t.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Conn.Close()
+	}
+	return len(conns)
+}
+
+// shutdown closes every tracked connection and rejects future hijacks. It is
+// used when the route context is canceled or the proxy is torn down.
+func (t *upgradeTracker) shutdown() int {
+	t.mu.Lock()
+	t.closed = true
+	t.mu.Unlock()
+	return t.closeActive()
+}
+
+func (t *upgradeTracker) currentGeneration() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.generation
+}
+
+func (t *upgradeTracker) count() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.conns)
+}
+
+// upgradeResponseWriter records a successful hijack with the route tracker.
+// Unwrap keeps http.ResponseController based callers working unchanged.
+type upgradeResponseWriter struct {
+	http.ResponseWriter
+	tracker    *upgradeTracker
+	generation uint64
+}
+
+func (w *upgradeResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *upgradeResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	conn, reader, err := hijacker.Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	return w.tracker.track(conn, w.generation), reader, nil
 }
 
 // RouteConfig binds one fixed host service to credentials and an unguessable
@@ -265,7 +390,7 @@ func (m *Manager) StartUnixRoutes(ctx context.Context, sandbox string, routes ma
 		routeCtx, cancel := context.WithCancel(context.Background())
 		preparedRoutes[name] = &proxyRoute{upstream: upstream.String(), service: route.Service, credentialService: route.CredentialService,
 			secret: append([]byte(nil), route.Secret...), token: []byte(route.Token), caCert: append([]byte(nil), route.CACert...), maxRequestBody: route.MaxRequestBody, reverse: reverse,
-			handler: route.Handler, ctx: routeCtx, cancel: cancel}
+			handler: route.Handler, ctx: routeCtx, cancel: cancel, upgrades: newUpgradeTracker()}
 	}
 	key := sandbox + "/" + firstRouteName(preparedRoutes)
 	m.mu.Lock()
@@ -398,6 +523,10 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 		http.Error(w, "proxy channel unauthorized", http.StatusForbidden)
 		return
 	}
+	// Capture the stream generation before policy/credential checks. A policy
+	// revision that lands while this request is being authorized advances the
+	// generation, so a later hijack from this request fails closed.
+	upgradeGeneration := snapshot.upgradeGeneration()
 	requestCtx, cancel := context.WithCancel(r.Context())
 	stopRouteWatch := context.AfterFunc(snapshot.ctx, cancel)
 	defer func() {
@@ -440,6 +569,7 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 		r.Header.Set(snapshot.service.Header, snapshot.service.Prefix+string(credential))
 	}
 	r.Header.Set("X-Rheic-Secret-Proxy", service)
+	w = snapshot.upgradeWriter(w, upgradeGeneration)
 	if snapshot.handler != nil {
 		snapshot.handler.ServeHTTP(w, r)
 		return
@@ -476,7 +606,7 @@ func (p *proxy) snapshot(name string) (proxySnapshot, bool) {
 		return proxySnapshot{}, false
 	}
 	return proxySnapshot{service: route.service, secret: append([]byte(nil), route.secret...),
-		token: append([]byte(nil), route.token...), caCert: append([]byte(nil), route.caCert...), maxRequestBody: route.maxRequestBody, reverse: route.reverse, handler: route.handler, ctx: route.ctx}, true
+		token: append([]byte(nil), route.token...), caCert: append([]byte(nil), route.caCert...), maxRequestBody: route.maxRequestBody, reverse: route.reverse, handler: route.handler, ctx: route.ctx, upgrades: route.upgrades}, true
 }
 
 func (p *proxy) tokenSnapshot(name string) ([]byte, bool) {
@@ -487,6 +617,20 @@ func (p *proxy) tokenSnapshot(name string) ([]byte, bool) {
 		return nil, false
 	}
 	return append([]byte(nil), route.token...), true
+}
+
+func (s proxySnapshot) upgradeGeneration() uint64 {
+	if s.upgrades == nil {
+		return 0
+	}
+	return s.upgrades.currentGeneration()
+}
+
+func (s proxySnapshot) upgradeWriter(w http.ResponseWriter, generation uint64) http.ResponseWriter {
+	if s.upgrades == nil {
+		return w
+	}
+	return &upgradeResponseWriter{ResponseWriter: w, tracker: s.upgrades, generation: generation}
 }
 
 func (p *proxy) updateRoutes(socketPath string, routes map[string]*proxyRoute) (string, error) {
@@ -515,7 +659,16 @@ func (p *proxy) updateRoutes(socketPath string, routes map[string]*proxyRoute) (
 		current.secret = next.secret
 		current.token = next.token
 		current.caCert = next.caCert
+		// current.upgrades is intentionally retained: an in-place credential
+		// rotation must keep tracking streams authorized under this route so a
+		// later revocation can still close them.
 		next.secret, next.token, next.caCert = nil, nil, nil
+		// The prepared route object is not adopted; release its context and
+		// tracker so a rotation cannot accumulate abandoned generations.
+		next.cancel()
+		if next.upgrades != nil {
+			next.upgrades.shutdown()
+		}
 	}
 	return p.url, nil
 }
@@ -571,7 +724,8 @@ func (p *proxy) refreshCredential(service string, credential func(context.Contex
 }
 
 // dropRoute removes one route immediately so no stale credential can serve
-// another request. It closes the channel when the last route is removed.
+// another request. It closes the route's hijacked streams and the channel when
+// the last route is removed.
 func (p *proxy) dropRoute(service string) (bool, error) {
 	p.mu.Lock()
 	route := p.routes[service]
@@ -585,9 +739,13 @@ func (p *proxy) dropRoute(service string) (bool, error) {
 	clear(route.caCert)
 	route.secret, route.token, route.caCert = nil, nil, nil
 	route.service.Authorize = nil
+	upgrades := route.upgrades
 	delete(p.routes, service)
 	last := len(p.routes) == 0
 	p.mu.Unlock()
+	if upgrades != nil {
+		upgrades.shutdown()
+	}
 	if !last {
 		return true, nil
 	}
@@ -596,6 +754,7 @@ func (p *proxy) dropRoute(service string) (bool, error) {
 
 func (p *proxy) clearCredentials() {
 	p.mu.Lock()
+	upgrades := make([]*upgradeTracker, 0, len(p.routes))
 	for _, route := range p.routes {
 		route.cancel()
 		clear(route.secret)
@@ -603,9 +762,15 @@ func (p *proxy) clearCredentials() {
 		clear(route.caCert)
 		route.secret, route.token, route.caCert = nil, nil, nil
 		route.service.Authorize = nil
+		if route.upgrades != nil {
+			upgrades = append(upgrades, route.upgrades)
+		}
 	}
 	p.routes = make(map[string]*proxyRoute)
 	p.mu.Unlock()
+	for _, tracker := range upgrades {
+		tracker.shutdown()
+	}
 }
 
 // routeMatchesCredential reports whether the named route is backed by the
@@ -630,6 +795,84 @@ func (p *proxy) hasRoute(name string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.routes[name] != nil
+}
+
+// closeActiveUpgrades closes every hijacked stream currently tracked by this
+// sandbox proxy without disabling future upgrades. A policy revision calls
+// this after the runtime accepted the new rules: already-established streams
+// were authorized under the previous rules and must not outlive them.
+func (p *proxy) closeActiveUpgrades() int {
+	p.mu.RLock()
+	trackers := make([]*upgradeTracker, 0, len(p.routes))
+	for _, route := range p.routes {
+		if route.upgrades != nil {
+			trackers = append(trackers, route.upgrades)
+		}
+	}
+	p.mu.RUnlock()
+	closed := 0
+	for _, tracker := range trackers {
+		closed += tracker.closeActive()
+	}
+	return closed
+}
+
+func (p *proxy) shutdownUpgrades() int {
+	p.mu.RLock()
+	trackers := make([]*upgradeTracker, 0, len(p.routes))
+	for _, route := range p.routes {
+		if route.upgrades != nil {
+			trackers = append(trackers, route.upgrades)
+		}
+	}
+	p.mu.RUnlock()
+	closed := 0
+	for _, tracker := range trackers {
+		closed += tracker.shutdown()
+	}
+	return closed
+}
+
+// RevokeSandboxStreams closes every active hijacked/upgraded connection owned
+// by one sandbox and returns how many were closed. It is fail-closed: a policy
+// revision or credential revocation must not leave a long-lived stream alive
+// under the old authorization. Other sandboxes are never selected.
+func (m *Manager) RevokeSandboxStreams(sandbox string) int {
+	if sandbox == "" {
+		return 0
+	}
+	m.mu.Lock()
+	selected := make(map[*proxy]struct{})
+	for key, current := range m.proxies {
+		if strings.HasPrefix(key, sandbox+"/") {
+			selected[current] = struct{}{}
+		}
+	}
+	m.mu.Unlock()
+	closed := 0
+	for current := range selected {
+		closed += current.closeActiveUpgrades()
+	}
+	return closed
+}
+
+// ActiveUpgrades reports how many hijacked streams are currently tracked for a
+// sandbox route. It is an audit counter used to prove cleanup; it never exposes
+// stream contents or credentials.
+func (m *Manager) ActiveUpgrades(sandbox, service string) int {
+	m.mu.Lock()
+	current := m.proxies[sandbox+"/"+service]
+	m.mu.Unlock()
+	if current == nil {
+		return 0
+	}
+	current.mu.RLock()
+	route := current.routes[service]
+	current.mu.RUnlock()
+	if route == nil || route.upgrades == nil {
+		return 0
+	}
+	return route.upgrades.count()
 }
 
 func validateRouteConfigs(ctx context.Context, sandbox string, routes map[string]RouteConfig, socketPath string) error {
@@ -695,6 +938,9 @@ func clearPreparedRoutes(routes map[string]*proxyRoute) {
 		clear(route.secret)
 		clear(route.token)
 		route.secret, route.token = nil, nil
+		if route.upgrades != nil {
+			route.upgrades.shutdown()
+		}
 	}
 }
 
@@ -1082,6 +1328,7 @@ func (m *Manager) Close() error {
 }
 
 func closeProxy(p *proxy) error {
+	p.shutdownUpgrades()
 	closeErr := p.server.Close()
 	if err := removeOwnedSocket(p.path); err != nil {
 		return errors.Join(closeErr, err)

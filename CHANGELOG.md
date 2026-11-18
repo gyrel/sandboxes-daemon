@@ -13,6 +13,26 @@
   helper makes proxy-backed create/start/exec fail closed with an actionable
   error that lists the searched locations.
 
+### Security
+
+- Track hijacked/upgraded service-proxy connections explicitly. An active Codex
+  WebSocket or registry CONNECT tunnel is now closed when its sandbox policy
+  revision changes, when the backing credential route is revoked, and when the
+  proxy channel is torn down. This is fail-closed: a long-lived stream can no
+  longer outlive the policy or credential under which it was authorized. Only
+  the affected sandbox is selected, and normal HTTP request/response handling is
+  unchanged.
+- Add a deterministic synthetic Codex transport-evidence harness. Test-only
+  counters report whether the real Codex client used an upgraded WebSocket or
+  HTTP fallback; no production tracing is added and no credential value is
+  recorded.
+
+### Tests
+
+- Cover policy-revision closure of an active upgrade, unaffected normal HTTP
+  responses, hijacked-connection cleanup after peer close and teardown, and
+  sandbox-scoped revocation (no cross-sandbox closure).
+
 ## v0.0.65 — 2026-11-18
 
 ### Fixed
