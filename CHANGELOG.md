@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Discover the static Linux guest proxy helper without consulting `PATH` when
+  `--proxy-helper` is empty. The daemon checks
+  `rheic-proxy-helper-linux-<goarch>` next to the running executable and in a
+  `bin/` subdirectory. An explicit `--proxy-helper` still wins. Every candidate
+  and the explicit path use the existing static-ELF validator; a missing,
+  relative, symlinked, non-executable, wrong-architecture or dynamically linked
+  helper makes proxy-backed create/start/exec fail closed with an actionable
+  error that lists the searched locations.
+
 ## v0.0.65 — 2026-11-18
 
 ### Fixed

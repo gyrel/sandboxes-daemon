@@ -159,7 +159,7 @@ func parseOptions() options {
 	flag.StringVar(&opts.fifoDir, "fifo-dir", "", "runtime FIFO directory")
 	flag.StringVar(&opts.gvproxyPath, "gvproxy", "", "patched gvproxy binary; empty disables networking")
 	flag.StringVar(&opts.runDir, "run-dir", "", "gateway runtime directory")
-	flag.StringVar(&opts.proxyHelperPath, "proxy-helper", "", "static Linux guest proxy helper; empty disables service proxy")
+	flag.StringVar(&opts.proxyHelperPath, "proxy-helper", "", "static Linux guest proxy helper; empty discovers next to the daemon executable")
 	flag.StringVar(&opts.dnsUpstream, "dns-upstream", "", "optional DNS upstream")
 	flag.BoolVar(&opts.ipv6Experimental, "ipv6-experimental", false, "enable the experimental IPv6 guest datapath (acceptance only)")
 	flag.BoolVar(&opts.quicExperimental, "quic-experimental", false, "enable experimental UDP domain policy backed by QUIC classification (acceptance only)")

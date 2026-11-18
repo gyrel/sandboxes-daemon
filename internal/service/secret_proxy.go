@@ -269,8 +269,9 @@ func (s *Service) proxyChannelConfig(ctx context.Context, sb sandbox.Sandbox, se
 	if !validProxyServiceNames(serviceNames) || s.secretProxies == nil || (needsServiceSecret && s.serviceSecrets == nil) {
 		return proxyRuntimeConfig{}, fmt.Errorf("%w: service proxy is unavailable", core.ErrConflict)
 	}
-	if err := validateProxyHelperBinary(s.proxyHelperPath); err != nil {
-		return proxyRuntimeConfig{}, fmt.Errorf("%w: guest service proxy helper is unavailable", core.ErrConflict)
+	helperPath, err := resolveProxyHelperPath(s.proxyHelperPath, "")
+	if err != nil {
+		return proxyRuntimeConfig{}, fmt.Errorf("%w: guest service proxy helper is unavailable: %w", core.ErrConflict, err)
 	}
 	dir := proxySocketDirectory(s.proxyTempDir, sb.ID)
 	socketPath := filepath.Join(dir, "p.sock")
@@ -298,7 +299,7 @@ func (s *Service) proxyChannelConfig(ctx context.Context, sb sandbox.Sandbox, se
 	}
 	clearRouteSecrets(routes)
 	prepared = true
-	config := proxyRuntimeConfig{port: proxySocketPort, socketPath: socketPath, helperPath: s.proxyHelperPath, routes: runtimeRoutes}
+	config := proxyRuntimeConfig{port: proxySocketPort, socketPath: socketPath, helperPath: helperPath, routes: runtimeRoutes}
 	config.guestPort, config.serviceHost = s.singleProxyEndpoint(serviceNames, runtimeRoutes)
 	return config, nil
 }
