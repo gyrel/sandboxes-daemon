@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/rheic/sandboxes-daemon/internal/settings"
+
+	"github.com/rheic/slogx"
 )
 
 func TestApplyPolicyOverride(t *testing.T) {
@@ -119,4 +124,28 @@ func (configurator *testQUICConfigurator) SetQUICEnabled(enabled bool) error {
 	configurator.calls++
 	configurator.enabled = enabled
 	return nil
+}
+
+func TestControlledHandlerFollowsLiveLevel(t *testing.T) {
+	var out bytes.Buffer
+	var level slog.LevelVar
+	level.Set(slog.LevelInfo)
+
+	logger := slogx.New(
+		slogx.WithOutput(&out),
+		slogx.WithFormat(slogx.FormatText),
+		slogx.WithLevel(slog.LevelInfo),
+	)
+	log := slog.New(&controlledHandler{Handler: logger.Handler(), level: &level})
+
+	log.Debug("hidden")
+	if out.Len() != 0 {
+		t.Fatalf("debug record passed the info threshold: %q", out.String())
+	}
+
+	level.Set(slog.LevelDebug)
+	log.Debug("visible")
+	if !strings.Contains(out.String(), "visible") {
+		t.Fatalf("debug record missing after level change: %q", out.String())
+	}
 }
