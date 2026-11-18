@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.68 — 2026-11-19
 
 ### Security
 
