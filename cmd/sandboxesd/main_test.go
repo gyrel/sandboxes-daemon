@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -147,5 +148,34 @@ func TestControlledHandlerFollowsLiveLevel(t *testing.T) {
 	log.Debug("visible")
 	if !strings.Contains(out.String(), "visible") {
 		t.Fatalf("debug record missing after level change: %q", out.String())
+	}
+}
+
+func TestRuntimeVerificationRequiresExplicitMode(t *testing.T) {
+	if _, _, err := runtimeVerification(&options{}); err == nil {
+		t.Fatal("unmanaged runtime was accepted without opt-in")
+	}
+	if _, _, err := runtimeVerification(&options{allowUnmanagedRuntime: true}); err != nil {
+		t.Fatalf("explicit unmanaged runtime rejected: %v", err)
+	}
+	if _, _, err := runtimeVerification(&options{artifactDigests: "digests.yaml"}); err == nil {
+		t.Fatal("digest file without artifacts was accepted")
+	}
+	artifactPath := filepath.Join(t.TempDir(), "gvproxy")
+	if _, _, err := runtimeVerification(&options{runtimeArtifacts: artifactList{"gvproxy=" + artifactPath}}); err == nil {
+		t.Fatal("artifact without digest file was accepted")
+	}
+	if _, _, err := runtimeVerification(&options{runtimeArtifacts: artifactList{"gvproxy=relative"}}); err == nil {
+		t.Fatal("relative artifact path was accepted")
+	}
+	artifacts, digests, err := runtimeVerification(&options{
+		artifactDigests:  filepath.Join(t.TempDir(), "digests.yaml"),
+		runtimeArtifacts: artifactList{"gvproxy=" + artifactPath},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digests == "" || artifacts["gvproxy"] != artifactPath {
+		t.Fatalf("artifacts=%v digests=%q", artifacts, digests)
 	}
 }

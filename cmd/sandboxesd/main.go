@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,6 +33,9 @@ type options struct {
 	socketPath            string
 	stateDir              string
 	containerdPath        string
+	artifactDigests       string
+	runtimeArtifacts      artifactList
+	allowUnmanagedRuntime bool
 	ctrPath               string
 	runtimeName           string
 	snapshotter           string
@@ -171,6 +175,9 @@ func parseOptions() options {
 	flag.StringVar(&opts.stateDir, "state", defaultState, "state directory")
 	flag.StringVar(&opts.socketPath, "socket", filepath.Join(defaultState, "sandboxesd.sock"), "local daemon endpoint")
 	flag.StringVar(&opts.containerdPath, "containerd", "", "containerd socket; empty keeps state-only mode")
+	flag.StringVar(&opts.artifactDigests, "artifact-digests", "", "runtime digests.yaml for managed artifact verification")
+	flag.Var(&opts.runtimeArtifacts, "runtime-artifact", "name=absolute-path of a runtime artifact to verify (repeatable)")
+	flag.BoolVar(&opts.allowUnmanagedRuntime, "allow-unmanaged-runtime", false, "explicitly allow host-provided runtime artifacts without digest verification")
 	flag.StringVar(&opts.ctrPath, "ctr", "ctr", "ctr binary path")
 	flag.StringVar(&opts.runtimeName, "runtime", "io.containerd.nerdbox.v1", "containerd runtime name")
 	flag.StringVar(&opts.snapshotter, "snapshotter", "erofs", "containerd snapshotter")
@@ -308,12 +315,16 @@ func buildBackend(opts *options, gatewayLost chan<- string) (runtime.Backend, fu
 	if err != nil {
 		return nil, nil, err
 	}
+	artifacts, digests, err := runtimeVerification(opts)
+	if err != nil {
+		return nil, nil, err
+	}
 	backend, err := runtimectr.NewBackend(runtimectr.Config{
 		Socket:      opts.containerdPath,
 		CTR:         opts.ctrPath,
 		Runtime:     opts.runtimeName,
 		Snapshotter: opts.snapshotter,
-	}, runtimectr.BackendOptions{Image: opts.image, FIFODir: fifoDir, Network: network})
+	}, runtimectr.BackendOptions{Image: opts.image, FIFODir: fifoDir, Network: network, Artifacts: artifacts, DigestsPath: digests})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create runtime backend: %w", err)
 	}
@@ -328,6 +339,46 @@ func buildBackend(opts *options, gatewayLost chan<- string) (runtime.Backend, fu
 		return nil
 	}
 	return backend, cleanup, nil
+}
+
+// runtimeVerification makes managed versus host-provided runtime artifacts
+// explicit. A managed configuration requires both a digest file and at least
+// one artifact; host-provided mode needs an explicit opt-in.
+func runtimeVerification(opts *options) (map[string]string, string, error) {
+	artifacts := make(map[string]string, len(opts.runtimeArtifacts))
+	for _, value := range opts.runtimeArtifacts {
+		name, path, ok := strings.Cut(value, "=")
+		if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(path) == "" {
+			return nil, "", fmt.Errorf("invalid --runtime-artifact %q: want name=absolute-path", value)
+		}
+		if !filepath.IsAbs(path) {
+			return nil, "", fmt.Errorf("runtime artifact %s path must be absolute", name)
+		}
+		artifacts[name] = path
+	}
+	switch {
+	case opts.artifactDigests == "" && len(artifacts) == 0:
+		if !opts.allowUnmanagedRuntime {
+			return nil, "", errors.New("runtime artifacts are unmanaged: pass --artifact-digests with --runtime-artifact, or --allow-unmanaged-runtime explicitly")
+		}
+		return nil, "", nil
+	case opts.artifactDigests == "" || len(artifacts) == 0:
+		return nil, "", errors.New("managed runtime verification requires both --artifact-digests and at least one --runtime-artifact")
+	default:
+		return artifacts, opts.artifactDigests, nil
+	}
+}
+
+type artifactList []string
+
+func (a *artifactList) String() string { return strings.Join(*a, ",") }
+
+func (a *artifactList) Set(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("runtime artifact must not be empty")
+	}
+	*a = append(*a, value)
+	return nil
 }
 
 func buildNetwork(opts *options, gatewayLost chan<- string) (runtime.Network, *gateway.Manager, error) {

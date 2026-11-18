@@ -736,6 +736,7 @@ func TestDeleteCleanupFailureKeepsRecordAndReconcileFinishes(t *testing.T) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	op, err := svc.Create(ctx, CreateRequest{Name: "dev"})
 	if err != nil {
 		t.Fatal(err)
@@ -809,6 +810,7 @@ func TestDeleteCleanupRetryIsIdempotent(t *testing.T) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	op, err := svc.Create(ctx, CreateRequest{Name: "dev"})
 	if err != nil {
 		t.Fatal(err)
@@ -2795,6 +2797,7 @@ func TestServiceProxyAddressAuthorizerAppliesCIDRDenyRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.SetServiceSecretStore(vault)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	if _, err := svc.SetServiceSecret(ctx, "openai", servicesecrets.ScopeGlobal, "", []byte("synthetic-key")); err != nil {
 		t.Fatal(err)
 	}
@@ -2841,6 +2844,7 @@ func TestDynamicServiceSecretProxyResolvesOnHostAndDoesNotUseSourceAsCredential(
 		t.Fatal(err)
 	}
 	svc.SetServiceSecretStore(vault)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	command := "printf synthetic-proxy-key"
 	if goruntime.GOOS == "windows" {
 		command = "echo synthetic-proxy-key"
@@ -3104,6 +3108,7 @@ func TestSetAndRemoveServiceSecretShareCanonicalCredentialGate(t *testing.T) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	setDone := make(chan error, 1)
 	go func() {
 		_, err := svc.SetServiceSecret(ctx, "openai", servicesecrets.ScopeGlobal, "", []byte("synthetic-key"))
@@ -3161,6 +3166,7 @@ func TestRemoveServiceSecretCleansStaleIndexWithCanonicalScope(t *testing.T) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	var manager *secretproxy.Manager
 	if goruntime.GOOS != "windows" {
 		manager = secretproxy.New()
@@ -3210,6 +3216,7 @@ func TestRemoveServiceSecretRevokesProxyBeforeVaultDelete(t *testing.T) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	manager := secretproxy.New()
 	svc.SetSecretProxyManager(manager)
 	t.Cleanup(func() { _ = manager.Close() })
@@ -3285,6 +3292,7 @@ func TestSetServiceSecretRollbackFailureDeletesCredentialAndRevokesProxy(t *test
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	manager := secretproxy.New()
 	svc.SetSecretProxyManager(manager)
 	t.Cleanup(func() { _ = manager.Close() })
@@ -3343,6 +3351,7 @@ func testSetServiceSecretIndexFailureRollback(t *testing.T, hadPrevious bool) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	if hadPrevious {
 		if _, err := svc.SetServiceSecret(ctx, "openai", servicesecrets.ScopeGlobal, "", []byte("old-synthetic-value")); err != nil {
 			t.Fatal(err)
@@ -3398,6 +3407,7 @@ func TestCreateServiceSecretIsAtomicForConcurrentWriters(t *testing.T) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	const writers = 24
 	var wg sync.WaitGroup
 	var successes atomic.Int32
@@ -3484,6 +3494,7 @@ func TestCreateServiceSecretNormalizesIdentityBeforeAtomicGate(t *testing.T) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	errorsOut := make(chan error, 2)
 	for _, service := range []string{"openai", " OPENAI "} {
 		service := service
@@ -3530,6 +3541,7 @@ func TestServiceSecretNeverPersistsValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	if _, err := svc.SetServiceSecret(ctx, "openai", servicesecrets.ScopeSandbox, "dev", []byte("sk-synthetic-value")); err != nil {
 		t.Fatal(err)
 	}
@@ -3589,6 +3601,7 @@ func TestResolveProxyEnvRequiresConfiguredCredentialVariable(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	if _, err := svc.SetServiceSecret(ctx, "openai", servicesecrets.ScopeGlobal, "", []byte("sk-synthetic-proxy")); err != nil {
 		t.Fatal(err)
 	}
