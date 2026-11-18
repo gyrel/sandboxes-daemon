@@ -31,6 +31,9 @@ func peerOwnerUID(conn net.Conn) (uint64, bool) {
 	return uid, true
 }
 
+// peerUIDMandatory reports that POSIX peer credentials must be available.
+func peerUIDMandatory() bool { return true }
+
 // currentUID returns the daemon's effective UID for peer comparison.
 func currentUID() uint64 {
 	// Effective UIDs are non-negative; clamp instead of wrapping on the

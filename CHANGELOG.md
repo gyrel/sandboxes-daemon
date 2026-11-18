@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- Serve the per-sandbox secret proxy through the peer-checking listener instead
+  of the raw Unix listener, so the same-owner peer check and rejected-peer
+  counter are actually applied.
+- Fail closed when POSIX peer credentials cannot be read on Linux or Darwin;
+  previously an unverifiable peer was accepted. Transports without POSIX peer
+  credentials, such as Windows named pipes, keep their platform ACL model.
+
+### Tests
+
+- Add a wiring test that requires `StartUnixRoutes` to expose the
+  `peerCheckingListener`, and change the unverifiable-peer test to require
+  rejection with a rejected-counter increment.
+
 ## v0.0.67 — 2026-11-18
 
 ### Changed

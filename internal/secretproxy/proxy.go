@@ -143,8 +143,15 @@ func (l peerCheckingListener) Accept() (net.Conn, error) {
 		}
 		uid, ok := l.peerUID(conn)
 		if !ok {
-			// Peer unverifiable on this platform (e.g. Windows named-pipe
-			// transports with their own ACL model); accept.
+			if peerUIDMandatory() {
+				// A failed credential lookup is not proof of a same-owner
+				// peer. Fail closed on platforms with POSIX peer credentials.
+				l.rejected.Add(1)
+				_ = conn.Close()
+				continue
+			}
+			// Other transports (for example Windows named pipes) use their
+			// own ACL model and cannot be checked with a POSIX UID.
 			return conn, nil
 		}
 		if uid == currentUID() {
@@ -424,7 +431,7 @@ func (m *Manager) StartUnixRoutes(ctx context.Context, sandbox string, routes ma
 		m.proxies[sandbox+"/"+name] = p
 	}
 	m.mu.Unlock()
-	go func() { _ = srv.Serve(listener) }()
+	go func() { _ = srv.Serve(p.listener) }()
 	return p.url, nil
 }
 
