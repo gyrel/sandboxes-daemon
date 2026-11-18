@@ -149,3 +149,31 @@ func TestControlledHandlerFollowsLiveLevel(t *testing.T) {
 		t.Fatalf("debug record missing after level change: %q", out.String())
 	}
 }
+
+func TestRuntimeVerificationRequiresExplicitMode(t *testing.T) {
+	if _, _, err := runtimeVerification(&options{}); err == nil {
+		t.Fatal("unmanaged runtime was accepted without opt-in")
+	}
+	if _, _, err := runtimeVerification(&options{allowUnmanagedRuntime: true}); err != nil {
+		t.Fatalf("explicit unmanaged runtime rejected: %v", err)
+	}
+	if _, _, err := runtimeVerification(&options{artifactDigests: "digests.yaml"}); err == nil {
+		t.Fatal("digest file without artifacts was accepted")
+	}
+	if _, _, err := runtimeVerification(&options{runtimeArtifacts: artifactList{"gvproxy=/tmp/gvproxy"}}); err == nil {
+		t.Fatal("artifact without digest file was accepted")
+	}
+	if _, _, err := runtimeVerification(&options{runtimeArtifacts: artifactList{"gvproxy=relative"}}); err == nil {
+		t.Fatal("relative artifact path was accepted")
+	}
+	artifacts, digests, err := runtimeVerification(&options{
+		artifactDigests:  "/tmp/digests.yaml",
+		runtimeArtifacts: artifactList{"gvproxy=/tmp/gvproxy"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digests != "/tmp/digests.yaml" || artifacts["gvproxy"] != "/tmp/gvproxy" {
+		t.Fatalf("artifacts=%v digests=%q", artifacts, digests)
+	}
+}

@@ -143,6 +143,7 @@ func TestProxyEnvironmentUsesHostBrokerAndSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	svc.SetSecretProxyManager(secretproxy.New())
 	t.Cleanup(func() {
 		_ = svc.secretProxies.Close()
@@ -221,6 +222,7 @@ func TestSandboxSupportsMultipleIsolatedServiceSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	manager := secretproxy.New()
 	svc.SetSecretProxyManager(manager)
 	svc.SetSecretProxyRuntime(helperPath, "/tmp")
@@ -296,6 +298,7 @@ func TestAliasProxyRouteBuildsAndCredentialRotationReachesLiveRoute(t *testing.T
 		t.Fatal(err)
 	}
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	manager := secretproxy.New()
 	svc.SetSecretProxyManager(manager)
 	svc.SetSecretProxyRuntime(helperPath, "/tmp")
@@ -372,6 +375,7 @@ func TestAliasProxyRouteUsesSharedDynamicCredential(t *testing.T) {
 	}
 	svc := New(st, nil)
 	svc.SetServiceSecretStore(secretStore)
+	svc.SetHostCommandApprovalProvider(&allowHostCommands{})
 	if _, err := svc.SetServiceSecretSource(ctx, githubCredentialService, servicesecrets.ScopeGlobal, "", servicesecrets.Source{
 		Command: "printf dynamic-github-key", Refresh: "on-demand",
 	}); err != nil {

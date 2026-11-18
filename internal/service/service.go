@@ -98,6 +98,7 @@ type Service struct {
 	mcpMu                    sync.Mutex
 	mcpManager               *mcpmanager.Manager
 	mcpApprover              mcpmanager.ApprovalProvider
+	hostCommandApprover      HostCommandApprovalProvider
 	mcpRemoteHosts           []string
 	registryDockerGrants     map[string][]string
 	registryPrivateGrants    map[string][]string
@@ -106,6 +107,46 @@ type Service struct {
 	privateRegistryRealms    []registryauth.Realm
 	privateRegistryRedirects []string
 	privateRegistryRoots     *x509.CertPool
+}
+
+// HostCommandApprovalRequest is the exact host command scope presented to a
+// trusted approval provider. It never contains a resolved secret value.
+type HostCommandApprovalRequest struct {
+	Command     string
+	Service     string
+	Scope       servicesecrets.Scope
+	SandboxName string
+}
+
+// HostCommandApprovalProvider obtains host consent before a persistent host
+// command source is stored or executed. There is deliberately no RPC/CLI
+// boolean fallback: a nil provider fails closed.
+type HostCommandApprovalProvider interface {
+	ApproveHostCommand(context.Context, HostCommandApprovalRequest) error
+}
+
+// SetHostCommandApprovalProvider installs the trusted host consent mechanism.
+func (s *Service) SetHostCommandApprovalProvider(provider HostCommandApprovalProvider) {
+	s.hostCommandApprover = provider
+}
+
+func (s *Service) approveSecretSource(ctx context.Context, service string, scope servicesecrets.Scope, sandboxName string, source *servicesecrets.Source) error {
+	if source == nil || strings.TrimSpace(source.Command) == "" {
+		return nil
+	}
+	return s.approveHostCommand(ctx, service, scope, sandboxName, source.Command)
+}
+
+func (s *Service) approveHostCommand(ctx context.Context, service string, scope servicesecrets.Scope, sandboxName, command string) error {
+	if s.hostCommandApprover == nil {
+		return errors.New("host command secret sources require trusted host approval; none is configured")
+	}
+	if err := s.hostCommandApprover.ApproveHostCommand(ctx, HostCommandApprovalRequest{
+		Command: command, Service: service, Scope: scope, SandboxName: sandboxName,
+	}); err != nil {
+		return errors.New("host command secret source was denied or approval failed")
+	}
+	return nil
 }
 
 const dockerHubRegistry = "docker.io"
@@ -601,6 +642,9 @@ func (s *Service) storeServiceSecret(ctx context.Context, service string, scope 
 	defer clear(value)
 	if s.serviceSecrets == nil {
 		return servicesecrets.Summary{}, errors.New("service secret store is unavailable")
+	}
+	if err := s.approveSecretSource(ctx, service, scope, sandboxName, source); err != nil {
+		return servicesecrets.Summary{}, err
 	}
 	// The vault canonicalizes these fields when constructing its account key.
 	// Use the same canonical identity for the gate or callers that vary case or
