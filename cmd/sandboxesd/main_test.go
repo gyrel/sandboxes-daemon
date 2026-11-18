@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -160,20 +161,21 @@ func TestRuntimeVerificationRequiresExplicitMode(t *testing.T) {
 	if _, _, err := runtimeVerification(&options{artifactDigests: "digests.yaml"}); err == nil {
 		t.Fatal("digest file without artifacts was accepted")
 	}
-	if _, _, err := runtimeVerification(&options{runtimeArtifacts: artifactList{"gvproxy=/tmp/gvproxy"}}); err == nil {
+	artifactPath := filepath.Join(t.TempDir(), "gvproxy")
+	if _, _, err := runtimeVerification(&options{runtimeArtifacts: artifactList{"gvproxy=" + artifactPath}}); err == nil {
 		t.Fatal("artifact without digest file was accepted")
 	}
 	if _, _, err := runtimeVerification(&options{runtimeArtifacts: artifactList{"gvproxy=relative"}}); err == nil {
 		t.Fatal("relative artifact path was accepted")
 	}
 	artifacts, digests, err := runtimeVerification(&options{
-		artifactDigests:  "/tmp/digests.yaml",
-		runtimeArtifacts: artifactList{"gvproxy=/tmp/gvproxy"},
+		artifactDigests:  filepath.Join(t.TempDir(), "digests.yaml"),
+		runtimeArtifacts: artifactList{"gvproxy=" + artifactPath},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digests != "/tmp/digests.yaml" || artifacts["gvproxy"] != "/tmp/gvproxy" {
+	if digests == "" || artifacts["gvproxy"] != artifactPath {
 		t.Fatalf("artifacts=%v digests=%q", artifacts, digests)
 	}
 }
