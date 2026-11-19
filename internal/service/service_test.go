@@ -1140,12 +1140,81 @@ func TestNormalizeCloneOptionsRequiresOneRealGitWorkspaceAndMountsItReadOnly(t *
 	}{
 		{name: "source missing", clone: &sandbox.CloneOptions{SourceWorkspacePath: filepath.Join(t.TempDir(), "missing")}, workspaces: []sandbox.Workspace{{Path: source}}},
 		{name: "source path not a workspace", clone: &sandbox.CloneOptions{SourceWorkspacePath: other}, workspaces: []sandbox.Workspace{{Path: source}}},
+		{name: "source is not primary", clone: &sandbox.CloneOptions{SourceWorkspacePath: source}, workspaces: []sandbox.Workspace{{Path: other, ReadOnly: true}, {Path: source}}},
 		{name: "unsafe repository slug", clone: &sandbox.CloneOptions{SourceWorkspacePath: source, GuestWorkdir: ptrString("/workspace/unsafe repo")}, workspaces: []sandbox.Workspace{{Path: source}}},
 		{name: "extra workspace", clone: &sandbox.CloneOptions{SourceWorkspacePath: source}, workspaces: []sandbox.Workspace{{Path: source}, {Path: other, GuestPath: "/workspace/cache"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := normalizeCloneOptions(test.clone, test.workspaces); !errors.Is(err, core.ErrConflict) {
 				t.Fatalf("normalizeCloneOptions error=%v, want conflict", err)
+			}
+		})
+	}
+}
+
+func TestCloneAdditionalReadOnlyWorkspace(t *testing.T) {
+	requirePOSIXCloneHost(t)
+	source := makeCloneSourceRepository(t)
+	other := t.TempDir()
+	for _, tc := range []struct {
+		name      string
+		guestPath string
+		readOnly  bool
+		wantError bool
+	}{
+		{name: "separate read-only", readOnly: true},
+		{name: "writable rejected", guestPath: "/reference", wantError: true},
+		{name: "clone source reserved", guestPath: "/run/sandbox/source/child", readOnly: true, wantError: true},
+		{name: "clone auth reserved", guestPath: "/run/sandbox/clone-auth", readOnly: true, wantError: true},
+		{name: "clone export reserved", guestPath: "/run/sandbox/export", readOnly: true, wantError: true},
+		{name: "custom guest path rejected", guestPath: "/reference", readOnly: true, wantError: true},
+		{name: "clone workdir overlap", guestPath: "", readOnly: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			extraPath := other
+			if tc.name == "clone workdir overlap" {
+				extraPath = filepath.Join(source, "nested")
+			}
+			workspaces := []sandbox.Workspace{{Path: source}, {Path: extraPath, GuestPath: tc.guestPath, ReadOnly: tc.readOnly}}
+			_, err := normalizeCloneOptions(&sandbox.CloneOptions{SourceWorkspacePath: source}, workspaces)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("normalizeCloneOptions error=%v, wantError=%v", err, tc.wantError)
+			}
+			if err == nil && (!workspaces[0].ReadOnly || workspaces[0].GuestPath != cloneSourceGuestPath || !workspaces[1].ReadOnly || workspaces[1].GuestPath != tc.guestPath) {
+				t.Fatalf("incorrect workspace mapping: %+v", workspaces)
+			}
+		})
+	}
+}
+
+func TestCreateCloneAdditionalWorkspacePathValidation(t *testing.T) {
+	requirePOSIXCloneHost(t)
+	for _, tc := range []struct {
+		name      string
+		guestPath string
+		wantError bool
+	}{
+		{name: "host path"},
+		{name: "custom guest path rejected", guestPath: "/reference", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := store.Open(ctx, filepath.Join(t.TempDir(), "clone-extra.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = st.Close() }()
+			backend := &fakeCloneRuntime{forwardPorts: []uint16{49152}, guestRealpaths: map[string]string{}}
+			svc := New(st, backend)
+			source := makeCloneSourceRepository(t)
+			_, err = svc.Create(ctx, CreateRequest{Name: "clone-extra-check", Workspaces: []sandbox.Workspace{
+				{Path: source}, {Path: t.TempDir(), GuestPath: tc.guestPath, ReadOnly: true},
+			}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
+			if (err != nil) != tc.wantError {
+				t.Fatalf("Create error=%v wantError=%v", err, tc.wantError)
+			}
+			if tc.wantError && len(backend.forwardCalls) != 0 {
+				t.Fatalf("unsafe clone setup on rejected request: forward=%v", backend.forwardCalls)
 			}
 		})
 	}

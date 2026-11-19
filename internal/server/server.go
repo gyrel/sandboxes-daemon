@@ -423,6 +423,7 @@ func (s *SandboxServer) Create(ctx context.Context, req *localv1.CreateRequest) 
 		PolicyProfile:  req.GetPolicyProfile(),
 		Privileged:     req.GetPrivileged(),
 		Env:            req.GetEnv(),
+		Skills:         fromProtoSkills(req.GetSkills()),
 	})
 	if err != nil {
 		return nil, mapError(err)
@@ -747,6 +748,22 @@ func toProtoWorkspaces(workspaces []sandbox.Workspace) []*localv1.Workspace {
 		out = append(out, &localv1.Workspace{Path: workspaces[i].Path, GuestPath: workspaces[i].GuestPath, ReadOnly: workspaces[i].ReadOnly})
 	}
 	return out
+}
+
+func fromProtoSkills(in *localv1.SkillsOptions) *service.SkillsOptions {
+	if in == nil {
+		return nil
+	}
+	mode := ""
+	switch in.GetMode() {
+	case localv1.SkillsMode_SKILLS_MODE_OFF:
+		mode = "off"
+	case localv1.SkillsMode_SKILLS_MODE_READONLY:
+		mode = "readonly"
+	case localv1.SkillsMode_SKILLS_MODE_READWRITE:
+		mode = "readwrite"
+	}
+	return &service.SkillsOptions{Mode: mode, StorePath: in.GetStorePath()}
 }
 
 func fromProtoWorkspaces(workspaces []*localv1.Workspace) []sandbox.Workspace {

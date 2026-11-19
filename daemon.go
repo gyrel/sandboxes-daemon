@@ -61,8 +61,10 @@ type Config struct {
 	RegistryPrivateRedirects []string
 	RegistryPrivateCA        []byte
 	// GatewayLost reports sandboxes whose gateway exited unexpectedly.
-	GatewayLost     <-chan string
-	ProxyHelperPath string
+	GatewayLost      <-chan string
+	ProxyHelperPath  string
+	SkillsHelperPath string
+	SkillsStorePath  string
 	// PolicySync, when non-nil, enables the opt-in background policy sync. The
 	// runner performs one attempt at startup and then a jittered periodic
 	// attempt until the daemon context is canceled.
@@ -220,6 +222,7 @@ func applyConfig(svc *service.Service, cfg Config) {
 	if cfg.DockerVolumeSize != "" {
 		svc.DockerVolumeSize = cfg.DockerVolumeSize
 	}
+	svc.SetSkillsRuntime(cfg.SkillsHelperPath, cfg.SkillsStorePath)
 	configureOAuth(svc, cfg)
 }
 

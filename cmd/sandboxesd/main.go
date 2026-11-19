@@ -44,6 +44,8 @@ type options struct {
 	gvproxyPath           string
 	runDir                string
 	proxyHelperPath       string
+	skillsHelperPath      string
+	skillsStorePath       string
 	dnsUpstream           string
 	settingsPath          string
 	policy                string
@@ -156,6 +158,8 @@ func run() int {
 		RegistryPrivateCA:        privateCA,
 		GatewayLost:              lost,
 		ProxyHelperPath:          opts.proxyHelperPath,
+		SkillsHelperPath:         opts.skillsHelperPath,
+		SkillsStorePath:          opts.skillsStorePath,
 		PolicySync:               policySync,
 	})
 	if err != nil {
@@ -186,6 +190,8 @@ func parseOptions() options {
 	flag.StringVar(&opts.gvproxyPath, "gvproxy", "", "patched gvproxy binary; empty disables networking")
 	flag.StringVar(&opts.runDir, "run-dir", "", "gateway runtime directory")
 	flag.StringVar(&opts.proxyHelperPath, "proxy-helper", "", "static Linux guest proxy helper; empty discovers next to the daemon executable")
+	flag.StringVar(&opts.skillsHelperPath, "skills-helper", "", "static Linux guest skills helper; empty discovers next to the daemon executable")
+	flag.StringVar(&opts.skillsStorePath, "skills-store", "", "host skills store directory; empty uses the user config directory")
 	flag.StringVar(&opts.dnsUpstream, "dns-upstream", "", "optional DNS upstream")
 	flag.BoolVar(&opts.ipv6Experimental, "ipv6-experimental", false, "enable the experimental IPv6 guest datapath (acceptance only)")
 	flag.BoolVar(&opts.quicExperimental, "quic-experimental", false, "enable experimental UDP domain policy backed by QUIC classification (acceptance only)")
