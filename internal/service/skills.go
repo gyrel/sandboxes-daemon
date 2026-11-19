@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -126,18 +127,28 @@ func (s *Service) installSharedSkills(ctx context.Context, handle runtimeapi.Han
 	if !ok {
 		return errors.New("shared skills require a runtime with native exec support")
 	}
+	var stdout, stderr bytes.Buffer
 	code, err := native.ExecNative(ctx, handle, runtimeapi.ExecRequest{
 		Argv: []string{
 			runtimeapi.SkillsHelperGuestPath, "link-skills",
 			"--agent", agent,
 			"--store", runtimeapi.SkillsStoreGuestPath,
 		},
+		Stdout: &stdout,
+		Stderr: &stderr,
 	})
 	if err != nil {
 		return fmt.Errorf("link shared skills: %w", err)
 	}
 	if code != 0 {
-		return fmt.Errorf("link shared skills: helper exited with status %d", code)
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		if len(detail) > 2048 {
+			detail = detail[:2048]
+		}
+		return fmt.Errorf("link shared skills: helper exited with status %d: %s", code, detail)
 	}
 	return nil
 }
