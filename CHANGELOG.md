@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.0.71 — 2026-11-19
+
+### Added
+
+- Accept the shared skills options on create, validate the fixed host store and
+  a static Linux guest helper, and pass a read-only mount to the runtime.
+- Run the guest linker as the sandbox user after start and replay it on later
+  starts from the persisted mode.
+- Allow additional read-only clone reference workspaces mounted by host path.
+
+### Security
+
+- Custom guest paths for additional clone workspaces are rejected before any
+  mount because an image symlink can only be observed after the mount exists.
+- Read-write shared skills remain fail closed.
+
+
 ## v0.0.70 — 2026-11-19
 
 ### Security
