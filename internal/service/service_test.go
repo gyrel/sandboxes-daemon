@@ -1153,6 +1153,7 @@ func TestNormalizeCloneOptionsRequiresOneRealGitWorkspaceAndMountsItReadOnly(t *
 }
 
 func TestCloneAdditionalReadOnlyWorkspace(t *testing.T) {
+	requirePOSIXCloneHost(t)
 	source := makeCloneSourceRepository(t)
 	other := t.TempDir()
 	for _, tc := range []struct {
