@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.73 — 2026-11-19
+
+### Fixed
+
+- Consume runtime v0.0.40, which preserves and cleans the shared-skills pin
+  across a daemon restart. A restarted daemon can now reattach the pin after
+  the sandbox is moved out of `unknown` state, and delete removes the pin.
+
+
 ## v0.0.72 — 2026-11-19
 
 ### Fixed
