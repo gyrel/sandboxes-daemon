@@ -55,12 +55,15 @@ var errCloneForwardUnavailable = errors.New("clone Git forward is unavailable")
 // normalizeCloneOptions validates a non-nil clone request. Callers must skip
 // this function when no clone options were supplied.
 func normalizeCloneOptions(clone *sandbox.CloneOptions, workspaces []sandbox.Workspace) (*sandbox.CloneOptions, error) {
-	if len(workspaces) != 1 {
-		return nil, fmt.Errorf("%w: clone mode requires exactly one workspace", core.ErrConflict)
+	if len(workspaces) == 0 {
+		return nil, fmt.Errorf("%w: clone mode requires a workspace", core.ErrConflict)
 	}
 	source, match, err := findCloneSourceWorkspace(clone.SourceWorkspacePath, workspaces)
 	if err != nil {
 		return nil, err
+	}
+	if match != 0 {
+		return nil, fmt.Errorf("%w: clone source must be the primary workspace", core.ErrConflict)
 	}
 	if err := validateCloneGuestWorkdir(clone.GuestWorkdir); err != nil {
 		return nil, err
@@ -68,6 +71,13 @@ func normalizeCloneOptions(clone *sandbox.CloneOptions, workspaces []sandbox.Wor
 	workspaces[match].ReadOnly = true
 	workspaces[match].GuestPath = cloneSourceGuestPath
 	if err := validateCloneWorkspaceOverlaps(workspaces, match); err != nil {
+		return nil, err
+	}
+	workdir, err := resolveCloneWorkdir(clone)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCloneWorkdirAgainstWorkspaces(workdir, workspaces); err != nil {
 		return nil, err
 	}
 	if _, err := normalizeWorkspaces(CreateRequest{Workspaces: workspaces}); err != nil {
@@ -115,12 +125,15 @@ func validateCloneWorkspaceOverlaps(workspaces []sandbox.Workspace, sourceIndex 
 		if i == sourceIndex {
 			continue
 		}
+		if !workspaces[i].ReadOnly {
+			return fmt.Errorf("%w: additional clone workspaces must be read-only", core.ErrConflict)
+		}
 		destination := workspaces[i].GuestPath
 		if destination == "" {
 			destination = workspaces[i].Path
 		}
-		if posixPathsOverlap(destination, cloneSourceGuestPath) {
-			return fmt.Errorf("%w: another workspace overlaps the clone source mount", core.ErrConflict)
+		if posixPathsOverlap(destination, "/run/sandbox") {
+			return fmt.Errorf("%w: another workspace overlaps a reserved clone path", core.ErrConflict)
 		}
 	}
 	return nil
@@ -235,6 +248,18 @@ func (s *Service) requireCloneCapabilities(ctx context.Context) error {
 func (s *Service) bootstrapClone(ctx context.Context, handle runtime.Handle, name string, clone *sandbox.CloneOptions, sb *sandbox.Sandbox) error {
 	if err := s.requireCloneTooling(ctx, handle); err != nil {
 		return err
+	}
+	if len(sb.Workspaces) == 0 {
+		return fmt.Errorf("%w: clone source workspace is missing", core.ErrConflict)
+	}
+	for _, workspace := range sb.Workspaces[1:] {
+		destination := workspace.GuestPath
+		if destination == "" {
+			destination = filepath.ToSlash(workspace.Path)
+		}
+		if err := s.requireClonePathResolution(ctx, handle, destination, "-e"); err != nil {
+			return fmt.Errorf("%w: validate additional clone workspace destination: %w", core.ErrConflict, err)
+		}
 	}
 	workdir, err := resolveCloneWorkdir(clone)
 	if err != nil {
