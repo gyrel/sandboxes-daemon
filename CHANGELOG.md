@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.72 — 2026-11-19
+
+### Fixed
+
+- Include bounded guest-helper stderr/stdout in shared-skills startup errors so
+  a failed linker is actionable instead of a bare exit status.
+- Consume runtime v0.0.39, which exports the fd-pinned store through a private
+  bind mount. This fixes `open /run/rheic/agent-skills: input/output error` on a
+  real Linux KVM host.
+
+
 ## v0.0.71 — 2026-11-19
 
 ### Added
