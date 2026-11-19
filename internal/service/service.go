@@ -66,6 +66,8 @@ type Service struct {
 	secretProxies       *secretproxy.Manager
 	proxyHelperPath     string
 	proxyTempDir        string
+	skillsHelperPath    string
+	skillsStoreOverride string
 	oauthProviders      map[string]OAuthProvider
 	oauthVaultStore     oauthsession.Vault
 	oauthRefresh        *oauthsession.RefreshCoordinator
@@ -1190,6 +1192,8 @@ type CreateRequest struct {
 	Privileged    bool
 	// Env is baked into the sandbox runtime; it is never written to SQLite.
 	Env map[string]string
+	// Skills selects create-time shared skills delivery.
+	Skills *SkillsOptions
 }
 
 // Create creates a stopped sandbox and a completed create operation.
@@ -1343,6 +1347,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 			return operation.Operation{}, abort(err)
 		}
 	}
+	skillsMount, err := s.resolveSkillsMount(req)
+	if err != nil {
+		return operation.Operation{}, abort(err)
+	}
 	if s.backend != nil {
 		effectiveAllow, effectiveDeny, policyErr := s.effectiveRules(ctx, allow, deny)
 		if policyErr != nil {
@@ -1363,6 +1371,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 			Privileged:   req.Privileged,
 			ProxyPort:    proxyConfig.port,
 			ProxySocket:  proxyConfig.socketPath,
+			Skills:       skillsMount,
 		}
 		handle, err = s.createRuntimeSandbox(ctx, &runtimeConfig, proxyServiceNames, proxyConfig)
 		if err != nil {
@@ -1373,6 +1382,14 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 			return operation.Operation{}, abort(errors.Join(err, errors.New("docker profile startup failed")))
 		}
 		state = sandbox.Running
+	}
+	if err := s.installSharedSkillsIfNeeded(ctx, handle, skillsMount, req.Agent); err != nil {
+		return operation.Operation{}, abort(err)
+	}
+	if skillsMount != nil {
+		if err := s.recordSkillsMode(ctx, sbID, skillsModeReadOnly); err != nil {
+			return operation.Operation{}, abort(err)
+		}
 	}
 	if cloneOptions != nil {
 		if err := s.bootstrapClone(ctx, handle, name, cloneOptions, &sb); err != nil {
@@ -3297,6 +3314,11 @@ func (s *Service) prepareSandboxForStart(ctx context.Context, sb *sandbox.Sandbo
 	}
 	if err := s.startRuntimeSandbox(ctx, *sb); err != nil {
 		return err
+	}
+	if s.backend != nil {
+		if err := s.replaySharedSkills(ctx, *sb); err != nil {
+			return fmt.Errorf("replay shared skills: %w", err)
+		}
 	}
 	if sb.Meta.Clone == nil {
 		return nil

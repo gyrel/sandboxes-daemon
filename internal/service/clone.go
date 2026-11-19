@@ -128,10 +128,13 @@ func validateCloneWorkspaceOverlaps(workspaces []sandbox.Workspace, sourceIndex 
 		if !workspaces[i].ReadOnly {
 			return fmt.Errorf("%w: additional clone workspaces must be read-only", core.ErrConflict)
 		}
-		destination := workspaces[i].GuestPath
-		if destination == "" {
-			destination = workspaces[i].Path
+		// A custom guest path can resolve to a reserved clone path through an
+		// image symlink, and that can only be observed after the mount exists.
+		// Use the host path, exactly like the primary workspace.
+		if workspaces[i].GuestPath != "" {
+			return fmt.Errorf("%w: additional clone workspaces cannot set a guest path", core.ErrConflict)
 		}
+		destination := workspaces[i].Path
 		if posixPathsOverlap(destination, "/run/sandbox") {
 			return fmt.Errorf("%w: another workspace overlaps a reserved clone path", core.ErrConflict)
 		}
@@ -252,15 +255,8 @@ func (s *Service) bootstrapClone(ctx context.Context, handle runtime.Handle, nam
 	if len(sb.Workspaces) == 0 {
 		return fmt.Errorf("%w: clone source workspace is missing", core.ErrConflict)
 	}
-	for _, workspace := range sb.Workspaces[1:] {
-		destination := workspace.GuestPath
-		if destination == "" {
-			destination = filepath.ToSlash(workspace.Path)
-		}
-		if err := s.requireClonePathResolution(ctx, handle, destination, "-e"); err != nil {
-			return fmt.Errorf("%w: validate additional clone workspace destination: %w", core.ErrConflict, err)
-		}
-	}
+	// Additional clone workspaces are validated before the runtime creates any
+	// mount; never treat a post-mount guest path check as the security boundary.
 	workdir, err := resolveCloneWorkdir(clone)
 	if err != nil {
 		return err

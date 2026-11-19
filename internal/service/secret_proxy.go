@@ -665,30 +665,36 @@ func proxySocketDirectory(root, sandboxID string) string {
 }
 
 func validateProxyHelperBinary(path string) error {
+	return validateStaticLinuxExecutable(path)
+}
+
+// validateStaticLinuxExecutable accepts only a regular, non-symlinked static
+// Linux ARM64/AMD64 ELF executable. Callers add their own path/context errors.
+func validateStaticLinuxExecutable(path string) error {
 	if path == "" || !filepath.IsAbs(path) {
-		return errors.New("proxy helper path must be absolute")
+		return errors.New("helper path must be absolute")
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o111 == 0 {
-		return errors.New("proxy helper must be a regular executable file")
+		return errors.New("helper must be a regular executable file")
 	}
 	image, err := elf.Open(path)
 	if err != nil {
-		return errors.New("proxy helper must be a Linux ELF binary")
+		return errors.New("helper must be a Linux ELF binary")
 	}
 	defer func() { _ = image.Close() }()
 	if image.Machine != elf.EM_AARCH64 && image.Machine != elf.EM_X86_64 {
-		return errors.New("proxy helper must be a static Linux ARM64 or AMD64 executable")
+		return errors.New("helper must be a static Linux ARM64 or AMD64 executable")
 	}
 	if image.Type != elf.ET_EXEC {
-		return errors.New("proxy helper must be a static Linux ARM64 or AMD64 executable")
+		return errors.New("helper must be a static Linux ARM64 or AMD64 executable")
 	}
 	for _, program := range image.Progs {
 		if program.Type == elf.PT_INTERP {
-			return errors.New("proxy helper must not require a dynamic linker")
+			return errors.New("helper must not require a dynamic linker")
 		}
 	}
 	return nil

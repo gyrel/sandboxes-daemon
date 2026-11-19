@@ -1161,15 +1161,20 @@ func TestCloneAdditionalReadOnlyWorkspace(t *testing.T) {
 		readOnly  bool
 		wantError bool
 	}{
-		{name: "separate read-only", guestPath: "/reference", readOnly: true},
+		{name: "separate read-only", readOnly: true},
 		{name: "writable rejected", guestPath: "/reference", wantError: true},
 		{name: "clone source reserved", guestPath: "/run/sandbox/source/child", readOnly: true, wantError: true},
 		{name: "clone auth reserved", guestPath: "/run/sandbox/clone-auth", readOnly: true, wantError: true},
 		{name: "clone export reserved", guestPath: "/run/sandbox/export", readOnly: true, wantError: true},
-		{name: "clone workdir overlap", guestPath: filepath.ToSlash(source), readOnly: true, wantError: true},
+		{name: "custom guest path rejected", guestPath: "/reference", readOnly: true, wantError: true},
+		{name: "clone workdir overlap", guestPath: "", readOnly: true, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			workspaces := []sandbox.Workspace{{Path: source}, {Path: other, GuestPath: tc.guestPath, ReadOnly: tc.readOnly}}
+			extraPath := other
+			if tc.name == "clone workdir overlap" {
+				extraPath = filepath.Join(source, "nested")
+			}
+			workspaces := []sandbox.Workspace{{Path: source}, {Path: extraPath, GuestPath: tc.guestPath, ReadOnly: tc.readOnly}}
 			_, err := normalizeCloneOptions(&sandbox.CloneOptions{SourceWorkspacePath: source}, workspaces)
 			if (err != nil) != tc.wantError {
 				t.Fatalf("normalizeCloneOptions error=%v, wantError=%v", err, tc.wantError)
@@ -1185,11 +1190,11 @@ func TestCreateCloneAdditionalWorkspacePathValidation(t *testing.T) {
 	requirePOSIXCloneHost(t)
 	for _, tc := range []struct {
 		name      string
-		resolved  string
+		guestPath string
 		wantError bool
 	}{
-		{name: "unaliased"},
-		{name: "aliased to reserved path", resolved: "/run/sandbox/clone-auth", wantError: true},
+		{name: "host path"},
+		{name: "custom guest path rejected", guestPath: "/reference", wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -1199,19 +1204,16 @@ func TestCreateCloneAdditionalWorkspacePathValidation(t *testing.T) {
 			}
 			defer func() { _ = st.Close() }()
 			backend := &fakeCloneRuntime{forwardPorts: []uint16{49152}, guestRealpaths: map[string]string{}}
-			if tc.resolved != "" {
-				backend.guestRealpaths["/reference"] = tc.resolved
-			}
 			svc := New(st, backend)
 			source := makeCloneSourceRepository(t)
 			_, err = svc.Create(ctx, CreateRequest{Name: "clone-extra-check", Workspaces: []sandbox.Workspace{
-				{Path: source}, {Path: t.TempDir(), GuestPath: "/reference", ReadOnly: true},
+				{Path: source}, {Path: t.TempDir(), GuestPath: tc.guestPath, ReadOnly: true},
 			}, Clone: &sandbox.CloneOptions{SourceWorkspacePath: source}})
 			if (err != nil) != tc.wantError {
 				t.Fatalf("Create error=%v wantError=%v", err, tc.wantError)
 			}
-			if tc.wantError && (backend.deleted != 1 || len(backend.forwardCalls) != 0) {
-				t.Fatalf("unsafe cleanup: deleted=%d forward=%v", backend.deleted, backend.forwardCalls)
+			if tc.wantError && len(backend.forwardCalls) != 0 {
+				t.Fatalf("unsafe clone setup on rejected request: forward=%v", backend.forwardCalls)
 			}
 		})
 	}
