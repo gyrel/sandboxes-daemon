@@ -398,6 +398,11 @@ func (s *RegistryCredentialServer) Logout(ctx context.Context, req *localv1.Regi
 
 // Create creates a sandbox.
 func (s *SandboxServer) Create(ctx context.Context, req *localv1.CreateRequest) (*localv1.CreateResponse, error) {
+	if req.GetSkills() != nil {
+		// The current runtime resolves bind sources by path in another process.
+		// Refuse all modes until a source identity can be pinned across startup.
+		return nil, status.Error(codes.FailedPrecondition, "shared skills require race-safe source binding and are not enabled by this daemon")
+	}
 	if len(req.GetOauthCredentials()) != 0 {
 		return nil, status.Error(codes.FailedPrecondition, "custom kit OAuth interception is not enabled by this daemon")
 	}
