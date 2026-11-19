@@ -105,8 +105,8 @@ github.com/rheic/sandboxes-core v0.0.13 h1:WfVmkbDR0iO7wmK+YSWM90FYV4v0jNC2xIstW
 github.com/rheic/sandboxes-core v0.0.13/go.mod h1:ue8m6n4U0yiuQfJ2DVSIOgalrai/LX+CsapbHLIOT+k=
 github.com/rheic/sandboxes-gateway v0.0.21 h1:wfvfkHvvMLoRpNZQrQgSlW8ybKf+fToM3HP8RFzI254=
 github.com/rheic/sandboxes-gateway v0.0.21/go.mod h1:NnIYUqBIx0IkVhiOtb+dr7fwHCjYnQwkqWN3jN88GjA=
-github.com/rheic/sandboxes-runtime v0.0.40 h1:R0Wc5rbFcsL8FkfsKfHiwoEkvFD/T2jcyNIZVZgdjzQ=
-github.com/rheic/sandboxes-runtime v0.0.40/go.mod h1:tA+TeYzcdpMceFw+RXglueIHoCFXPFLqgzut4bRt3UA=
+github.com/rheic/sandboxes-runtime v0.0.41 h1:lqvmb/K3du2xk4GoJaKIHJXovhLDspT8wPOp3FIRuu8=
+github.com/rheic/sandboxes-runtime v0.0.41/go.mod h1:tA+TeYzcdpMceFw+RXglueIHoCFXPFLqgzut4bRt3UA=
 github.com/rheic/slogx v0.1.0 h1:c4QpKu547M4kN/RelGISVtuAzuGmc1TDYsmaU2O3RKg=
 github.com/rheic/slogx v0.1.0/go.mod h1:K8pWPJtcBkyMvgbzh4BlnhlJJ9UPsMer9U7aoZJSM9g=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=

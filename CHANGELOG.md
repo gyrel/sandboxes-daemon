@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.74 — 2026-11-19
+
+### Fixed
+
+- Consume runtime v0.0.41 so a restarted daemon can reattach and clean a
+  macOS private shared-skills snapshot as well as the Linux bind pin.
+
+
 ## v0.0.73 — 2026-11-19
 
 ### Fixed
