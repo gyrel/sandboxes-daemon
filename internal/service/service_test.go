@@ -3921,3 +3921,27 @@ func TestSingleProxyEndpointSelectsPrivateRegistry(t *testing.T) {
 		t.Fatalf("endpoint = %d %q", port, host)
 	}
 }
+
+func TestValidSandboxNameMatchesSbxRules(t *testing.T) {
+	cases := map[string]bool{
+		"dev":                   true,
+		"1a":                    true,
+		"a.b-c":                 true,
+		"a":                     false, // at least two characters
+		"":                      false,
+		".":                     false,
+		"..":                    false,
+		"-dev":                  false, // must start with a letter or number
+		".dev":                  false,
+		"my_dev":                false, // underscores are not allowed
+		"default":               false, // reserved
+		"DEFAULT":               true,  // the reserved word is exact-match
+		strings.Repeat("a", 63): true,
+		strings.Repeat("a", 64): false,
+	}
+	for name, want := range cases {
+		if got := validSandboxName(name); got != want {
+			t.Fatalf("validSandboxName(%q) = %t, want %t", name, got, want)
+		}
+	}
+}

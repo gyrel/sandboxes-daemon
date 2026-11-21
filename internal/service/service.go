@@ -155,6 +155,9 @@ func (s *Service) approveHostCommand(ctx context.Context, service string, scope 
 
 const dockerHubRegistry = "docker.io"
 
+// reservedSandboxName mirrors the sbx reserved sandbox name.
+const reservedSandboxName = "default"
+
 // OAuthProvider contains trusted, daemon-side OAuth configuration. Never
 // populate it from an RPC request, guest, workspace, or sandbox metadata.
 type OAuthProvider struct {
@@ -1914,18 +1917,31 @@ func workspacesEqual(a, b []sandbox.Workspace) bool {
 	return true
 }
 
+// validSandboxName enforces the sbx naming contract: at least two
+// characters, starting with a letter or number, letters/numbers/hyphens and
+// periods only, and the reserved name "default". Validation runs at creation
+// time; already-stored names keep loading so existing state stays reachable.
 func validSandboxName(name string) bool {
-	if name == "" || len(name) > 63 || name == "." || name == ".." {
+	if len(name) < 2 || len(name) > 63 || name == reservedSandboxName {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') &&
-			(c < '0' || c > '9') && c != '-' && c != '_' && c != '.' {
+	if !isNameStartByte(name[0]) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if !isNameByte(name[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func isNameStartByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+func isNameByte(c byte) bool {
+	return isNameStartByte(c) || c == '-' || c == '.'
 }
 
 func (s *Service) abortCreate(ctx context.Context, sb *sandbox.Sandbox, handle runtime.Handle, runtimeCreated bool, createErr error) error {
