@@ -537,7 +537,7 @@ func (s *SandboxServer) sendChanges(ctx context.Context, req *localv1.WatchReque
 		if err != nil {
 			return mapError(err)
 		}
-		return sendSandbox(stream, seen, sb, req.GetAfterRevision())
+		return s.sendSandbox(stream, seen, sb, req.GetAfterRevision())
 	}
 	token := ""
 	for {
@@ -546,7 +546,7 @@ func (s *SandboxServer) sendChanges(ctx context.Context, req *localv1.WatchReque
 			return mapError(err)
 		}
 		for i := range items {
-			if err := sendSandbox(stream, seen, items[i], req.GetAfterRevision()); err != nil {
+			if err := s.sendSandbox(stream, seen, items[i], req.GetAfterRevision()); err != nil {
 				return err
 			}
 		}
@@ -557,17 +557,43 @@ func (s *SandboxServer) sendChanges(ctx context.Context, req *localv1.WatchReque
 	}
 }
 
-func sendSandbox(stream grpc.ServerStreamingServer[localv1.WatchResponse], seen map[string]string, sb sandbox.Sandbox, after int64) error {
+func (s *SandboxServer) sendSandbox(stream grpc.ServerStreamingServer[localv1.WatchResponse], seen map[string]string, sb sandbox.Sandbox, after int64) error {
+	snapshot, hasProgress := s.svc.CreateProgress(sb.ID)
 	key := fmt.Sprintf("%d/%s/%s", sb.Generation, sb.State, sb.Error)
+	if hasProgress {
+		key += fmt.Sprintf("|%s/%d/%d", snapshot.Phase, snapshot.Completed, snapshot.Total)
+	}
 	if seen[sb.ID] == key || sb.Generation <= after {
 		return nil
 	}
 	seen[sb.ID] = key
-	return stream.Send(&localv1.WatchResponse{
+	if err := stream.Send(&localv1.WatchResponse{
 		Type:     "sandbox",
 		Sandbox:  toProtoSandbox(sb),
 		Revision: sb.Generation,
-	})
+	}); err != nil {
+		return err
+	}
+	// While a create blocks, layer progress travels as an operation event so
+	// consumers keep lifecycle on the sandbox record and display on the
+	// advisory Operation.progress field (contract 0.0.29).
+	if hasProgress && sb.State == sandbox.Creating {
+		return stream.Send(&localv1.WatchResponse{
+			Type:      "operation",
+			Operation: createProgressOperation(sb.ID, snapshot),
+			Revision:  sb.Generation,
+		})
+	}
+	return nil
+}
+
+func createProgressOperation(sandboxID string, p service.CreateProgressSnapshot) *localv1.Operation {
+	return &localv1.Operation{
+		SandboxId: sandboxID,
+		Kind:      localv1.OperationKind_OPERATION_KIND_CREATE,
+		State:     localv1.OperationState_OPERATION_STATE_RUNNING,
+		Progress:  &localv1.Progress{Phase: p.Phase, Completed: p.Completed, Total: p.Total},
+	}
 }
 
 // Get returns an operation.

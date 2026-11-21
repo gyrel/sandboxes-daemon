@@ -94,6 +94,8 @@ type Service struct {
 	createGates              [64]chan struct{}
 	lifecycleGates           [64]chan struct{}
 	credentialGates          [64]chan struct{}
+	createProgressMu         sync.Mutex
+	createProgress           map[string]CreateProgressSnapshot
 	execMu                   sync.Mutex
 	execSessions             map[string]map[*execSession]struct{}
 	globalPolicyMu           sync.Mutex
@@ -1320,6 +1322,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	if err := s.store.Create(ctx, sb); err != nil {
 		return operation.Operation{}, err
 	}
+	// Transient pull progress exists only while this call blocks; the row is
+	// already durable so Watch callers can correlate it by id.
+	s.setCreateProgress(sbID, CreateProgressSnapshot{Phase: "preparing"})
+	defer s.clearCreateProgress(sbID)
 	var handle runtime.Handle
 	runtimeCreated := false
 	abort := func(cause error) error {
@@ -1372,6 +1378,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 			ProxyPort:    proxyConfig.port,
 			ProxySocket:  proxyConfig.socketPath,
 			Skills:       skillsMount,
+			OnProgress: func(u runtime.ProgressUpdate) {
+				s.setCreateProgress(sbID, CreateProgressSnapshot{Phase: u.Phase, Completed: u.Completed, Total: u.Total})
+			},
 		}
 		handle, err = s.createRuntimeSandbox(ctx, &runtimeConfig, proxyServiceNames, proxyConfig)
 		if err != nil {
