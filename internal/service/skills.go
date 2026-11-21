@@ -49,6 +49,17 @@ func (s *Service) resolveSkillsMount(req CreateRequest) (*runtimeapi.SkillsMount
 	if req.Skills.Mode == skillsModeOff {
 		return nil, nil //nolint:nilnil // Explicit off mode has no runtime mount.
 	}
+	// sbx parity: an agent without a guest skills directory (e.g. shell)
+	// treats a shared-skills request as a no-op, for both the settings
+	// default and an explicit flag, matching live `sbx run shell` behavior.
+	// No mount means nothing is exposed, so this stays fail-closed; readwrite
+	// is rejected above regardless of agent.
+	if !skillsAgents[req.Agent] {
+		return nil, nil //nolint:nilnil // No skills target exists in this guest; skip the mount.
+	}
+	if s.backend == nil {
+		return nil, fmt.Errorf("%w: shared skills require a VM runtime", core.ErrConflict)
+	}
 	return s.resolveReadOnlySkillsMount(req)
 }
 
@@ -62,14 +73,8 @@ func (s *Service) validateSkillsRequest(req CreateRequest) error {
 		}
 		return nil
 	}
-	if s.backend == nil {
-		return fmt.Errorf("%w: shared skills require a VM runtime", core.ErrConflict)
-	}
 	if req.Skills.Mode != skillsModeReadOnly {
 		return fmt.Errorf("%w: shared skills mode %q is not supported", core.ErrConflict, req.Skills.Mode)
-	}
-	if !skillsAgents[req.Agent] {
-		return fmt.Errorf("%w: shared skills are not available for agent %q", core.ErrConflict, req.Agent)
 	}
 	return nil
 }

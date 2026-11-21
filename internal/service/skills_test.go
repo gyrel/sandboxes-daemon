@@ -57,7 +57,7 @@ func TestResolveSkillsMountRejectsUnsafeRequests(t *testing.T) {
 	}{
 		{name: "unspecified", req: CreateRequest{Agent: "codex", Skills: &SkillsOptions{}}, want: "mode is invalid"},
 		{name: "readwrite", req: CreateRequest{Agent: "codex", Skills: &SkillsOptions{Mode: skillsModeReadWrite, StorePath: store}}, want: "not supported"},
-		{name: "unknown-agent", req: CreateRequest{Agent: "shell", Skills: &SkillsOptions{Mode: skillsModeReadOnly, StorePath: store}}, want: "not available for agent"},
+		{name: "readwrite-unsupported-agent", req: CreateRequest{Agent: "shell", Skills: &SkillsOptions{Mode: skillsModeReadWrite, StorePath: store}}, want: "not supported"},
 		{name: "off-with-path", req: CreateRequest{Agent: "codex", Skills: &SkillsOptions{Mode: skillsModeOff, StorePath: store}}, want: "off mode requires an empty store path"},
 		{name: "wrong-store", req: CreateRequest{Agent: "codex", Skills: &SkillsOptions{Mode: skillsModeReadOnly, StorePath: t.TempDir()}}, want: "must equal the daemon store"},
 	}
@@ -68,6 +68,23 @@ func TestResolveSkillsMountRejectsUnsafeRequests(t *testing.T) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestResolveSkillsMountUnsupportedAgentNoOp verifies sbx parity: an agent
+// without a guest skills directory (shell, unknown) turns a readonly request
+// into a no-op (nil mount, nil error) for both the settings default and an
+// explicit flag, matching live `sbx run shell` behavior. readwrite on the same
+// agent stays rejected above, so the path remains fail closed.
+func TestResolveSkillsMountUnsupportedAgentNoOp(t *testing.T) {
+	store := t.TempDir()
+	svc := newSkillsTestService(t, &fakeRuntime{})
+	svc.SetSkillsRuntime(skillsHelperFixture(t), store)
+	for _, agent := range []string{"shell", "brand-new-agent"} {
+		mount, err := svc.resolveSkillsMount(CreateRequest{Agent: agent, Skills: &SkillsOptions{Mode: skillsModeReadOnly, StorePath: store}})
+		if err != nil || mount != nil {
+			t.Fatalf("agent %q: mount=%+v, err=%v", agent, mount, err)
+		}
 	}
 }
 
