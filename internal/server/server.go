@@ -306,11 +306,18 @@ func (s *AccountServer) Status(ctx context.Context, req *localv1.AccountServiceS
 		}
 		return nil, status.Error(codes.Unavailable, "OAuth host credential status is unavailable")
 	}
+	username, err := s.svc.AccountUsername(ctx, provider)
+	if err != nil {
+		// Presence reporting must not fail on a display-label read; an
+		// unavailable label degrades to empty like older daemons.
+		username = ""
+	}
 	return &localv1.AccountServiceStatusResponse{
 		Provider:           provider,
 		CredentialPresent:  present,
 		RefreshPresent:     refreshPresent,
 		RefreshCoordinated: refreshCoordinated,
+		Username:           username,
 	}, nil
 }
 
