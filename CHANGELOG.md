@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.78 — 2026-11-22
+
+### Changed
+
+- Release notes tooling only: the extractor requires a section named for the
+  tag being cut. v0.0.75 and v0.0.76 shipped tags without matching sections
+  and their GitHub Releases could not be published; v0.0.78 carries the
+  same daemon tree as v0.0.77 plus this notes fix and publishes normally.
+  No functional change relative to v0.0.77.
+
 ## v0.0.76 — 2026-11-22
 
 ### Added
