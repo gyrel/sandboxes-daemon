@@ -253,7 +253,7 @@ func TestOrgPolicyDenyBlocksMatchingAllow(t *testing.T) {
 	}
 
 	// The check path must use the same organization deny.
-	policyDecision, err := svc.CheckPolicy(ctx, op.SandboxID, "tcp", "203.0.113.7", "", 443)
+	policyDecision, err := svc.CheckPolicy(ctx, op.SandboxID, "tcp", "203.0.113.7", "", 443, "", "")
 	if err != nil || policyDecision.Allowed || policyDecision.RuleID != "rule-001" {
 		t.Fatalf("CheckPolicy = %+v, %v", policyDecision, err)
 	}

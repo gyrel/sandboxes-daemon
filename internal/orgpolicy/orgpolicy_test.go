@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -305,10 +306,10 @@ func TestApplyDenyPrecedenceMatrix(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			allow, deny := Apply(test.local, test.organization)
-			if !slices.Equal(allow, test.wantAllow) {
+			if !sameRules(allow, test.wantAllow) {
 				t.Fatalf("allow = %+v; want %+v", allow, test.wantAllow)
 			}
-			if !slices.Equal(deny, test.wantDeny) {
+			if !sameRules(deny, test.wantDeny) {
 				t.Fatalf("deny = %+v; want %+v", deny, test.wantDeny)
 			}
 			if test.request == nil {
@@ -342,8 +343,8 @@ func TestApplyDoesNotMutateInputs(t *testing.T) {
 	organizationBefore := Policy{Allow: slices.Clone(organization.Allow), Deny: slices.Clone(organization.Deny)}
 
 	allow, deny := Apply(local, organization)
-	if !slices.Equal(local.Allow, localBefore.Allow) || !slices.Equal(local.Deny, localBefore.Deny) ||
-		!slices.Equal(organization.Allow, organizationBefore.Allow) || !slices.Equal(organization.Deny, organizationBefore.Deny) {
+	if !sameRules(local.Allow, localBefore.Allow) || !sameRules(local.Deny, localBefore.Deny) ||
+		!sameRules(organization.Allow, organizationBefore.Allow) || !sameRules(organization.Deny, organizationBefore.Deny) {
 		t.Fatal("Apply mutated its inputs")
 	}
 	if len(allow) != 1 || len(deny) != 2 {
@@ -393,4 +394,16 @@ func TestParseNetworkResource(t *testing.T) {
 			}
 		})
 	}
+}
+
+func sameRules(a, b []sandbox.NetworkRule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !reflect.DeepEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
