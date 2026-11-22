@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.79 — 2026-11-22
+
+### Added
+
+- Local `TemplateService` (ADR-0008): save records a template from a
+  stopped or running sandbox (stopped sandboxes are booted only for the
+  capture and restored to stopped afterwards; running sandboxes are
+  captured in place; transient states are refused), load imports OCI or
+  docker-save archives with digest recording, remove is guarded against
+  sandbox references even with force, list/inspect read the stored
+  records and merge the live boot document (env names only, presence
+  contract). Templates DDL ships in schema v6 with the standard pre-
+  migration backup.
+
+### Compatibility
+
+- Requires runtime v0.0.49 (public `runtime.TemplateBackend`); the
+  service refuses template operations with a conflict error on
+  backends without the capability.
+
 ## v0.0.78 — 2026-11-22
 
 ### Changed

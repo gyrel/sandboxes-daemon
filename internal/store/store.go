@@ -39,7 +39,7 @@ var _ operation.Store = (*OperationStore)(nil)
 
 // schemaVersion is the latest SQLite schema understood by this daemon. It is
 // stored in PRAGMA user_version and must only increase.
-const schemaVersion = 5
+const schemaVersion = 6
 
 type columnDefinition struct {
 	name       string
@@ -272,7 +272,26 @@ func (s *Store) FinalizeMCPRegistryMigration(ctx context.Context) error {
 func (s *Store) Operations() *OperationStore { return s.ops }
 
 func (s *Store) migrate(ctx context.Context) error {
-	statements := []string{
+	for _, stmt := range schemaStatements() {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+	}
+	if err := s.ensureSandboxResourceColumns(ctx); err != nil {
+		return fmt.Errorf("migrate sandbox resources: %w", err)
+	}
+	if err := s.ensureSecretMetadataColumns(ctx); err != nil {
+		return fmt.Errorf("migrate secret metadata: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+		return fmt.Errorf("record schema version: %w", err)
+	}
+	return nil
+}
+
+// schemaStatements is the ordered forward-only DDL list.
+func schemaStatements() []string {
+	return []string{
 		`CREATE TABLE IF NOT EXISTS sandboxes (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE,
@@ -339,6 +358,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			origin TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (registry, scope, sandbox_name)
 		)`,
+		`CREATE TABLE IF NOT EXISTS templates (
+			name TEXT PRIMARY KEY,
+			digest TEXT NOT NULL,
+			size_bytes INTEGER NOT NULL DEFAULT 0,
+			base_image TEXT NOT NULL DEFAULT '',
+			flavor TEXT NOT NULL DEFAULT '',
+			layers INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS org_policy_bundles (
 			org_id TEXT PRIMARY KEY,
 			revision INTEGER NOT NULL,
@@ -349,21 +377,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			synced_at INTEGER NOT NULL
 		)`,
 	}
-	for _, stmt := range statements {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("migrate: %w", err)
-		}
-	}
-	if err := s.ensureSandboxResourceColumns(ctx); err != nil {
-		return fmt.Errorf("migrate sandbox resources: %w", err)
-	}
-	if err := s.ensureSecretMetadataColumns(ctx); err != nil {
-		return fmt.Errorf("migrate secret metadata: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
-		return fmt.Errorf("record schema version: %w", err)
-	}
-	return nil
 }
 
 func (s *Store) ensureSecretMetadataColumns(ctx context.Context) error {

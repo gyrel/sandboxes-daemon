@@ -248,6 +248,7 @@ func registerLocalServices(grpcServer *grpc.Server, svc *service.Service) {
 	localv1.RegisterRegistryCredentialServiceServer(grpcServer, server.NewRegistryCredential(svc))
 	localv1.RegisterAccountServiceServer(grpcServer, server.NewAccount(svc))
 	localv1.RegisterSecretServiceServer(grpcServer, server.NewSecret(svc))
+	localv1.RegisterTemplateServiceServer(grpcServer, server.NewTemplate(svc))
 }
 
 //nolint:gocritic // Config is a value object assembled by the caller.
