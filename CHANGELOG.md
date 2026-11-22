@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.82 — 2026-11-23
+
+### Fixed
+
+- Consume runtime v0.0.51: the template capture index no longer rejects
+  guest paths containing `x` or `0`, so `template save` can complete
+  against a live guest (the v0.0.81 capture finished the tar but the
+  index step refused ordinary paths).
+
 ## v0.0.81 — 2026-11-22
 
 ### Fixed
