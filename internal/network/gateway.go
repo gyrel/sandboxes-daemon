@@ -104,7 +104,18 @@ var _ runtime.GitDaemonForwarder = (*Adapter)(nil)
 func toPolicyRules(rules []runtime.Rule, action policy.Action) []policy.Rule {
 	out := make([]policy.Rule, 0, len(rules))
 	for i := range rules {
-		out = append(out, policy.Rule{ID: rules[i].ID, Action: action, Protocol: rules[i].Protocol, CIDR: rules[i].CIDR, Port: rules[i].Port, Domain: rules[i].Domain})
+		out = append(out, policy.Rule{ID: rules[i].ID, Action: action, Protocol: rules[i].Protocol, CIDR: rules[i].CIDR, Port: rules[i].Port, Domain: rules[i].Domain, Methods: rules[i].Methods, Path: rules[i].Path, Query: policyQueryConditions(rules[i].Query)})
+	}
+	return out
+}
+
+func policyQueryConditions(conditions []runtime.QueryCondition) []policy.QueryParam {
+	if len(conditions) == 0 {
+		return nil
+	}
+	out := make([]policy.QueryParam, 0, len(conditions))
+	for _, c := range conditions {
+		out = append(out, policy.QueryParam{Name: c.Name, Value: c.Value})
 	}
 	return out
 }

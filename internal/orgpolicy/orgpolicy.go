@@ -107,7 +107,8 @@ func mergeRules(groups ...[]sandbox.NetworkRule) []sandbox.NetworkRule {
 	out := make([]sandbox.NetworkRule, 0, total)
 	seen := make(map[string]struct{}, total)
 	for _, group := range groups {
-		for _, rule := range group {
+		for i := range group {
+			rule := group[i]
 			key := ruleKey(rule)
 			if _, exists := seen[key]; exists {
 				continue

@@ -491,7 +491,7 @@ func newProxyToken() (string, error) {
 
 func (s *Service) proxyPolicyAuthorizer(sandboxID, host string) func(context.Context) error {
 	return func(ctx context.Context) error {
-		decision, err := s.CheckPolicy(ctx, sandboxID, tcpProtocol, "", host, 443)
+		decision, err := s.CheckPolicy(ctx, sandboxID, tcpProtocol, "", host, 443, "", "")
 		if err != nil {
 			return err
 		}

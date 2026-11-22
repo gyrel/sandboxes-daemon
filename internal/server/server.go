@@ -867,7 +867,29 @@ func fromProtoPorts(ports []*localv1.Port) []sandbox.Port {
 func toProtoRules(rules []sandbox.NetworkRule) []*localv1.NetworkRule {
 	out := make([]*localv1.NetworkRule, 0, len(rules))
 	for i := range rules {
-		out = append(out, &localv1.NetworkRule{Protocol: rules[i].Protocol, Cidr: rules[i].CIDR, Port: uint32(rules[i].Port), Domain: rules[i].Domain, RuleId: rules[i].RuleID, Origin: localRuleOrigin})
+		out = append(out, &localv1.NetworkRule{Protocol: rules[i].Protocol, Cidr: rules[i].CIDR, Port: uint32(rules[i].Port), Domain: rules[i].Domain, RuleId: rules[i].RuleID, Origin: localRuleOrigin, Methods: rules[i].Methods, Path: rules[i].Path, Query: toProtoQueryConditions(rules[i].Query)})
+	}
+	return out
+}
+
+func toProtoQueryConditions(conditions []sandbox.QueryCondition) []*localv1.HTTPQueryCondition {
+	if len(conditions) == 0 {
+		return nil
+	}
+	out := make([]*localv1.HTTPQueryCondition, 0, len(conditions))
+	for _, c := range conditions {
+		out = append(out, &localv1.HTTPQueryCondition{Name: c.Name, Value: c.Value})
+	}
+	return out
+}
+
+func fromProtoQueryConditions(conditions []*localv1.HTTPQueryCondition) []sandbox.QueryCondition {
+	var out []sandbox.QueryCondition
+	for _, c := range conditions {
+		if c == nil {
+			continue
+		}
+		out = append(out, sandbox.QueryCondition{Name: c.GetName(), Value: c.GetValue()})
 	}
 	return out
 }
@@ -878,7 +900,7 @@ func fromProtoRules(rules []*localv1.NetworkRule) []sandbox.NetworkRule {
 		if rule == nil || rule.GetPort() > 65535 {
 			continue
 		}
-		out = append(out, sandbox.NetworkRule{Protocol: rule.GetProtocol(), CIDR: rule.GetCidr(), Port: uint16(rule.GetPort()), Domain: rule.GetDomain(), RuleID: rule.GetRuleId()}) //nolint:gosec // port is bounded to 65535 above.
+		out = append(out, sandbox.NetworkRule{Protocol: rule.GetProtocol(), CIDR: rule.GetCidr(), Port: uint16(rule.GetPort()), Domain: rule.GetDomain(), RuleID: rule.GetRuleId(), Methods: rule.GetMethods(), Path: rule.GetPath(), Query: fromProtoQueryConditions(rule.GetQuery())}) //nolint:gosec // port is bounded to 65535 above.
 	}
 	return out
 }
@@ -952,7 +974,7 @@ func (s *SandboxServer) CheckPolicy(ctx context.Context, req *localv1.CheckPolic
 	if req.GetPort() > 65535 {
 		return nil, status.Error(codes.InvalidArgument, "port must be 0..65535")
 	}
-	decision, err := s.svc.CheckPolicy(ctx, req.GetSandboxId(), req.GetProtocol(), req.GetAddress(), req.GetDomain(), uint16(req.GetPort())) //nolint:gosec // bounded above.
+	decision, err := s.svc.CheckPolicy(ctx, req.GetSandboxId(), req.GetProtocol(), req.GetAddress(), req.GetDomain(), uint16(req.GetPort()), req.GetUrl(), req.GetMethod()) //nolint:gosec // bounded above.
 	if err != nil {
 		return nil, err
 	}

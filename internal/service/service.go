@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	posixpath "path"
@@ -849,13 +850,15 @@ type PolicyDecision struct {
 
 // CheckPolicy evaluates stored/global rules with the same deny precedence and
 // matcher used by the gateway. It does not resolve DNS; domain checks operate
-// on the supplied hostname and CIDR checks on the supplied IP.
-func (s *Service) CheckPolicy(ctx context.Context, id, protocol, address, domain string, port uint16) (PolicyDecision, error) {
-	if protocol != tcpProtocol && protocol != udpProtocol {
-		return PolicyDecision{}, fmt.Errorf("%w: protocol must be tcp or udp", core.ErrConflict)
-	}
-	if (address == "") == (domain == "") {
-		return PolicyDecision{}, fmt.Errorf("%w: exactly one of address or domain is required", core.ErrConflict)
+// on the supplied hostname and CIDR checks on the supplied IP. When targetURL
+// is set the request is evaluated as an HTTP target: the URL supplies host,
+// port, path and query, HTTP-conditioned rules are consulted, and method names
+// the specific verb to evaluate. Credentials, fragments and non-HTTP schemes
+// are refused; the query string never reaches logs or decisions' reasons.
+func (s *Service) CheckPolicy(ctx context.Context, id, protocol, address, domain string, port uint16, targetURL, method string) (PolicyDecision, error) {
+	req, err := policyCheckRequest(protocol, address, domain, port, targetURL, method)
+	if err != nil {
+		return PolicyDecision{}, err
 	}
 	allow, deny, err := s.checkPolicyRules(ctx, id)
 	if err != nil {
@@ -864,14 +867,131 @@ func (s *Service) CheckPolicy(ctx context.Context, id, protocol, address, domain
 	toRules := func(rules []sandbox.NetworkRule, action gatewaypolicy.Action) []gatewaypolicy.Rule {
 		out := make([]gatewaypolicy.Rule, 0, len(rules))
 		for i := range rules {
-			out = append(out, gatewaypolicy.Rule{ID: rules[i].RuleID, Action: action, Protocol: rules[i].Protocol, Domain: rules[i].Domain, CIDR: rules[i].CIDR, Port: rules[i].Port})
+			out = append(out, gatewaypolicy.Rule{ID: rules[i].RuleID, Action: action, Protocol: rules[i].Protocol, Domain: rules[i].Domain, CIDR: rules[i].CIDR, Port: rules[i].Port, Methods: rules[i].Methods, Path: rules[i].Path, Query: checkQueryConditions(rules[i].Query)})
 		}
 		return out
 	}
-	decision := gatewaypolicy.Check(toRules(allow, gatewaypolicy.Allow), toRules(deny, gatewaypolicy.Deny), gatewaypolicy.Request{
-		Protocol: protocol, Address: address, Domain: domain, Port: port,
-	})
+	decision := gatewaypolicy.Check(toRules(allow, gatewaypolicy.Allow), toRules(deny, gatewaypolicy.Deny), req)
 	return PolicyDecision{Allowed: decision.Allow, RuleID: decision.RuleID, Reason: decision.Reason}, nil
+}
+
+func checkQueryConditions(conditions []sandbox.QueryCondition) []gatewaypolicy.QueryParam {
+	if len(conditions) == 0 {
+		return nil
+	}
+	out := make([]gatewaypolicy.QueryParam, 0, len(conditions))
+	for _, c := range conditions {
+		out = append(out, gatewaypolicy.QueryParam{Name: c.Name, Value: c.Value})
+	}
+	return out
+}
+
+// policyCheckRequest builds the gateway evaluation request from the L4 fields
+// or an absolute HTTP(S) URL target.
+func policyCheckRequest(protocol, address, domain string, port uint16, targetURL, method string) (gatewaypolicy.Request, error) {
+	normalized := strings.ToLower(strings.TrimSpace(protocol))
+	if normalized != "" && normalized != tcpProtocol && normalized != udpProtocol {
+		return gatewaypolicy.Request{}, fmt.Errorf("%w: protocol must be tcp or udp", core.ErrConflict)
+	}
+	req := gatewaypolicy.Request{Protocol: normalized, Address: address, Domain: domain, Port: port}
+	if targetURL == "" {
+		if (address == "") == (domain == "") {
+			return gatewaypolicy.Request{}, fmt.Errorf("%w: exactly one of address or domain is required", core.ErrConflict)
+		}
+		return req, nil
+	}
+	if address != "" {
+		return gatewaypolicy.Request{}, fmt.Errorf("%w: url and address cannot be combined", core.ErrConflict)
+	}
+	if normalized == udpProtocol {
+		return gatewaypolicy.Request{}, fmt.Errorf("%w: url targets are tcp only", core.ErrConflict)
+	}
+	parsed, err := parsePolicyCheckURL(targetURL)
+	if err != nil {
+		return gatewaypolicy.Request{}, err
+	}
+	if err := applyURLTarget(&req, parsed); err != nil {
+		return gatewaypolicy.Request{}, err
+	}
+	if err := applyCheckMethod(&req, method); err != nil {
+		return gatewaypolicy.Request{}, err
+	}
+	return req, nil
+}
+
+// parsePolicyCheckURL enforces the URL grammar documented on
+// CheckPolicyRequest: absolute http(s) without credentials or fragment and
+// with a host. The query string is kept in the parsed form only and never
+// copied into errors.
+func parsePolicyCheckURL(raw string) (*neturl.URL, error) {
+	parsed, err := neturl.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%w: check URL is invalid", core.ErrConflict)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return nil, fmt.Errorf("%w: check URL scheme must be http or https", core.ErrConflict)
+	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("%w: check URL must not contain credentials", core.ErrConflict)
+	}
+	if parsed.Fragment != "" {
+		return nil, fmt.Errorf("%w: check URL must not contain a fragment", core.ErrConflict)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("%w: check URL must contain a host", core.ErrConflict)
+	}
+	return parsed, nil
+}
+
+func applyURLTarget(req *gatewaypolicy.Request, parsed *neturl.URL) error {
+	host := parsed.Host
+	urlPort := uint16(80)
+	if strings.EqualFold(parsed.Scheme, "https") {
+		urlPort = 443
+	}
+	if h, p, splitErr := net.SplitHostPort(parsed.Host); splitErr == nil {
+		host = h
+		n, convErr := strconv.Atoi(p)
+		if convErr != nil || n <= 0 || n > 65535 {
+			return fmt.Errorf("%w: check URL port is invalid", core.ErrConflict)
+		}
+		urlPort = uint16(n)
+	}
+	req.Domain = normalizeDomainPattern(host)
+	req.Address = ""
+	if isIPLiteral(req.Domain) {
+		req.Address, req.Domain = req.Domain, ""
+	}
+	if req.Domain == "" && req.Address == "" {
+		return fmt.Errorf("%w: check URL must contain a host", core.ErrConflict)
+	}
+	req.Port = urlPort
+	req.Protocol = tcpProtocol
+	req.Path = parsed.Path
+	if req.Path == "" {
+		req.Path = "/"
+	}
+	req.RawQuery = parsed.RawQuery
+	req.Query = parsed.Query()
+	return nil
+}
+
+func applyCheckMethod(req *gatewaypolicy.Request, method string) error {
+	trimmedMethod := strings.ToUpper(strings.TrimSpace(method))
+	if trimmedMethod == "" {
+		return nil
+	}
+	methods, err := gatewaypolicy.ParseMethods(trimmedMethod)
+	if err != nil {
+		return fmt.Errorf("%w: %w", core.ErrConflict, err)
+	}
+	if len(methods) != 1 {
+		return fmt.Errorf("%w: check method must name one method", core.ErrConflict)
+	}
+	req.Method = methods[0]
+	return nil
 }
 
 // checkPolicyRules returns the effective allow/deny rules for a sandbox ID,
@@ -1757,7 +1877,8 @@ func normalizeRules(rules []sandbox.NetworkRule, ipv6Enabled bool) ([]sandbox.Ne
 	}
 	out := make([]sandbox.NetworkRule, 0, len(rules))
 	seen := make(map[string]struct{}, len(rules))
-	for _, rule := range rules {
+	for i := range rules {
+		rule := rules[i]
 		if rule.Protocol == "" {
 			rule.Protocol = tcpProtocol
 		}
@@ -1777,7 +1898,10 @@ func normalizeRules(rules []sandbox.NetworkRule, ipv6Enabled bool) ([]sandbox.Ne
 				return nil, err
 			}
 		}
-		key := rule.Protocol + "|" + rule.CIDR + "|" + rule.Domain + "|" + strconv.Itoa(int(rule.Port))
+		if err := normalizeHTTPConditions(&rule); err != nil {
+			return nil, err
+		}
+		key := policyRuleKey(rule)
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -1786,6 +1910,67 @@ func normalizeRules(rules []sandbox.NetworkRule, ipv6Enabled bool) ([]sandbox.Ne
 		out = append(out, rule)
 	}
 	return out, nil
+}
+
+// normalizeHTTPConditions canonicalizes the HTTP L7 selector of a rule using
+// the same grammar the gateway matcher evaluates: methods are upper-cased,
+// sorted and de-duplicated (ANY collapses the list to its sentinel), the path
+// glob is validated and an HTTP-conditioned rule without an explicit path
+// takes the all-paths marker. Rules without any HTTP input stay unconditioned
+// so plain L4 traffic keeps matching as before. Validation errors surface as
+// conflicts; a rule that cannot be evaluated is refused at mutation time
+// rather than stored and silently ignored (fail closed).
+func normalizeHTTPConditions(rule *sandbox.NetworkRule) error {
+	if len(rule.Methods) == 0 && rule.Path == "" && len(rule.Query) == 0 {
+		return nil
+	}
+	methods, err := gatewaypolicy.ParseMethods(strings.Join(rule.Methods, ","))
+	if err != nil {
+		return fmt.Errorf("%w: %w", core.ErrConflict, err)
+	}
+	rule.Methods = methods
+	path, err := gatewaypolicy.ParsePath(rule.Path)
+	if err != nil {
+		return fmt.Errorf("%w: %w", core.ErrConflict, err)
+	}
+	rule.Path = path
+	if len(rule.Query) == 0 {
+		return nil
+	}
+	raw := make([]string, 0, len(rule.Query))
+	for _, q := range rule.Query {
+		// Structured input must survive the name=value round trip through the
+		// gateway parser unchanged; a name containing '=' or glob/escape
+		// characters cannot, so it is refused with the same message shape.
+		if q.Name == "" || strings.ContainsAny(q.Name, "=[?\\") {
+			return fmt.Errorf("%w: query condition name %q must be exact", core.ErrConflict, q.Name)
+		}
+		raw = append(raw, q.Name+"="+q.Value)
+	}
+	conditions, err := gatewaypolicy.ParseQueryList(raw)
+	if err != nil {
+		return fmt.Errorf("%w: %w", core.ErrConflict, err)
+	}
+	out := make([]sandbox.QueryCondition, 0, len(conditions))
+	for _, c := range conditions {
+		out = append(out, sandbox.QueryCondition{Name: c.Name, Value: c.Value})
+	}
+	rule.Query = out
+	return nil
+}
+
+// ruleHTTPSelector renders the canonical HTTP conditions for duplicate
+// suppression. It is only consulted after normalization, so two spellings of
+// the same selector collapse to one rule.
+func ruleHTTPSelector(rule sandbox.NetworkRule) string {
+	if len(rule.Methods) == 0 && rule.Path == "" && len(rule.Query) == 0 {
+		return ""
+	}
+	sb := strings.Join(rule.Methods, ",") + "|" + rule.Path
+	for _, q := range rule.Query {
+		sb += "|" + q.Name + "=" + q.Value
+	}
+	return "http:" + sb
 }
 
 func validateRuleCIDR(cidr string, ipv6Enabled bool) error {
@@ -1848,7 +2033,13 @@ func validateDomainPattern(pattern string) error {
 }
 
 func networkRuleID(rule sandbox.NetworkRule) string {
-	sum := sha256.Sum256([]byte(rule.Protocol + "\x00" + rule.CIDR + "\x00" + rule.Domain + "\x00" + strconv.Itoa(int(rule.Port))))
+	base := rule.Protocol + "\x00" + rule.CIDR + "\x00" + rule.Domain + "\x00" + strconv.Itoa(int(rule.Port))
+	if selector := ruleHTTPSelector(rule); selector != "" {
+		// Content-derived IDs must change with the HTTP conditions; L4-only
+		// rules keep their historical hashes.
+		base += "\x00" + selector
+	}
+	sum := sha256.Sum256([]byte(base))
 	return "rul_" + hex.EncodeToString(sum[:8])
 }
 
@@ -1876,7 +2067,18 @@ func policyDeny(policy *sandbox.NetworkPolicy) []sandbox.NetworkRule {
 func runtimeRules(rules []sandbox.NetworkRule) []runtime.Rule {
 	out := make([]runtime.Rule, 0, len(rules))
 	for i := range rules {
-		out = append(out, runtime.Rule{ID: rules[i].RuleID, Protocol: rules[i].Protocol, CIDR: rules[i].CIDR, Port: rules[i].Port, Domain: rules[i].Domain})
+		out = append(out, runtime.Rule{ID: rules[i].RuleID, Protocol: rules[i].Protocol, CIDR: rules[i].CIDR, Port: rules[i].Port, Domain: rules[i].Domain, Methods: rules[i].Methods, Path: rules[i].Path, Query: runtimeQueryConditions(rules[i].Query)})
+	}
+	return out
+}
+
+func runtimeQueryConditions(conditions []sandbox.QueryCondition) []runtime.QueryCondition {
+	if len(conditions) == 0 {
+		return nil
+	}
+	out := make([]runtime.QueryCondition, 0, len(conditions))
+	for _, c := range conditions {
+		out = append(out, runtime.QueryCondition{Name: c.Name, Value: c.Value})
 	}
 	return out
 }
@@ -1886,7 +2088,7 @@ func rulesEqual(a, b []sandbox.NetworkRule) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if !samePolicyRule(a[i], b[i]) {
 			return false
 		}
 	}
@@ -2210,10 +2412,10 @@ func (s *Service) normalizeOrgDeny(deny []sandbox.NetworkRule) ([]sandbox.Networ
 		return nil, nil
 	}
 	ids := make(map[string]string, len(deny))
-	for _, rule := range deny {
-		key := policyRuleKey(rule)
+	for i := range deny {
+		key := policyRuleKey(deny[i])
 		if _, exists := ids[key]; !exists {
-			ids[key] = rule.RuleID
+			ids[key] = deny[i].RuleID
 		}
 	}
 	normalized, err := normalizeRules(deny, s.IPv6Enabled)
@@ -2252,7 +2454,23 @@ func policyRuleKey(rule sandbox.NetworkRule) string {
 	if _, network, err := net.ParseCIDR(cidr); err == nil {
 		cidr = network.String()
 	}
-	return protocol + "|" + cidr + "|" + normalizeDomainPattern(rule.Domain) + "|" + strconv.Itoa(int(rule.Port))
+	return protocol + "|" + cidr + "|" + normalizeDomainPattern(rule.Domain) + "|" + strconv.Itoa(int(rule.Port)) + "|" + ruleHTTPSelector(rule)
+}
+
+// samePolicyRule compares two rules by their canonical selector. Rule IDs
+// are content-derived, so selector equality is the identity relation for
+// stored and mutated rules.
+func samePolicyRule(a, b sandbox.NetworkRule) bool {
+	return policyRuleKey(a) == policyRuleKey(b)
+}
+
+func containsPolicyRule(rules []sandbox.NetworkRule, rule sandbox.NetworkRule) bool {
+	for i := range rules {
+		if samePolicyRule(rules[i], rule) {
+			return true
+		}
+	}
+	return false
 }
 
 // PolicyConflictError reports an opposite-action rule with an identical
@@ -2305,14 +2523,14 @@ func policyRuleSelector(rule sandbox.NetworkRule) string {
 func checkPolicyRuleConflict(scope, action string, rule sandbox.NetworkRule, allow, deny []sandbox.NetworkRule) error {
 	switch action {
 	case policyActionAllow:
-		if slices.Contains(allow, rule) {
+		if containsPolicyRule(allow, rule) {
 			return fmt.Errorf("%w: allow rule already exists", core.ErrConflict)
 		}
 		if existing, ok := findPolicySelector(deny, rule); ok {
 			return &PolicyConflictError{Scope: scope, ExistingAction: policyActionDeny, Existing: existing, IncomingAction: policyActionAllow, Incoming: rule}
 		}
 	case policyActionDeny:
-		if slices.Contains(deny, rule) {
+		if containsPolicyRule(deny, rule) {
 			return fmt.Errorf("%w: deny rule already exists", core.ErrConflict)
 		}
 		if existing, ok := findPolicySelector(allow, rule); ok {
@@ -2324,9 +2542,9 @@ func checkPolicyRuleConflict(scope, action string, rule sandbox.NetworkRule, all
 
 func findPolicySelector(rules []sandbox.NetworkRule, rule sandbox.NetworkRule) (sandbox.NetworkRule, bool) {
 	key := policyRuleKey(rule)
-	for _, candidate := range rules {
-		if policyRuleKey(candidate) == key {
-			return candidate, true
+	for i := range rules {
+		if policyRuleKey(rules[i]) == key {
+			return rules[i], true
 		}
 	}
 	return sandbox.NetworkRule{}, false
@@ -2387,11 +2605,11 @@ func (s *Service) MutateGlobalPolicy(ctx context.Context, action string, rule sa
 	case policyActionDeny:
 		deny = append(deny, rule)
 	case "rm":
-		if !slices.Contains(allow, rule) && !slices.Contains(deny, rule) {
+		if !containsPolicyRule(allow, rule) && !containsPolicyRule(deny, rule) {
 			return nil, nil, fmt.Errorf("%w: policy rule not found", core.ErrConflict)
 		}
-		allow = slices.DeleteFunc(allow, func(r sandbox.NetworkRule) bool { return r == rule })
-		deny = slices.DeleteFunc(deny, func(r sandbox.NetworkRule) bool { return r == rule })
+		allow = slices.DeleteFunc(allow, func(r sandbox.NetworkRule) bool { return samePolicyRule(r, rule) })
+		deny = slices.DeleteFunc(deny, func(r sandbox.NetworkRule) bool { return samePolicyRule(r, rule) })
 	default:
 		return nil, nil, fmt.Errorf("%w: invalid policy action", core.ErrConflict)
 	}
@@ -2580,16 +2798,17 @@ func allowAllProfileRules() []sandbox.NetworkRule {
 
 func mergePolicyRules(profile, explicit []sandbox.NetworkRule) []sandbox.NetworkRule {
 	out := append([]sandbox.NetworkRule(nil), profile...)
-	seen := make(map[sandbox.NetworkRule]struct{}, len(out))
-	for _, rule := range out {
-		seen[rule] = struct{}{}
+	seen := make(map[string]struct{}, len(out))
+	for i := range out {
+		seen[policyRuleKey(out[i])] = struct{}{}
 	}
-	for _, rule := range explicit {
-		if _, exists := seen[rule]; exists {
+	for i := range explicit {
+		key := policyRuleKey(explicit[i])
+		if _, exists := seen[key]; exists {
 			continue
 		}
-		seen[rule] = struct{}{}
-		out = append(out, rule)
+		seen[key] = struct{}{}
+		out = append(out, explicit[i])
 	}
 	return out
 }
@@ -3453,11 +3672,11 @@ func (s *Service) MutatePolicy(ctx context.Context, id, action string, rule sand
 	case policyActionDeny:
 		deny = append(deny, rule)
 	case "rm":
-		if !slices.Contains(allow, rule) && !slices.Contains(deny, rule) {
+		if !containsPolicyRule(allow, rule) && !containsPolicyRule(deny, rule) {
 			return sandbox.Sandbox{}, fmt.Errorf("%w: policy rule not found", core.ErrConflict)
 		}
-		allow = slices.DeleteFunc(allow, func(r sandbox.NetworkRule) bool { return r == rule })
-		deny = slices.DeleteFunc(deny, func(r sandbox.NetworkRule) bool { return r == rule })
+		allow = slices.DeleteFunc(allow, func(r sandbox.NetworkRule) bool { return samePolicyRule(r, rule) })
+		deny = slices.DeleteFunc(deny, func(r sandbox.NetworkRule) bool { return samePolicyRule(r, rule) })
 	default:
 		return sandbox.Sandbox{}, fmt.Errorf("%w: invalid policy action", core.ErrConflict)
 	}
@@ -3877,3 +4096,6 @@ func newID(prefix string) (string, error) {
 	}
 	return prefix + "_" + hex.EncodeToString(raw[:]), nil
 }
+
+// isIPLiteral reports whether s parses as an IP address rather than a name.
+func isIPLiteral(s string) bool { return net.ParseIP(s) != nil }

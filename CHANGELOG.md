@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- HTTP L7 policy conditions end to end (contracts 0.0.31/0.0.32): stored and
+  live rules carry canonical `Methods`, `Path` and `Query` selectors
+  validated by the gateway grammar; content-derived rule IDs change with
+  conditions while L4-only IDs keep their historical hashes; `CheckPolicy`
+  accepts absolute HTTP(S) URL targets with an optional method (credentials,
+  fragments and non-HTTP schemes are refused, the query string never
+  reaches logs or reasons). Registry proxy decisions evaluate the same
+  conditions.
+
+## v0.0.75 — 2026-11-22
+
+### Added
+
+- Transient create pull progress published through `Watch` as advisory
+  `operation` events (never persisted; cleared on success and abort).
+- Docker account identity (`signed in as <user>`) resolved from the
+  global-scoped Docker Hub index entry; presence-only, no token material.
+- sbx sandbox naming rules enforced at creation.
+- Skills requests for agents without a guest directory become a no-op mount
+  instead of a conflict; readwrite/empty-mode/off-with-path still rejected
+  before the agent check (fail closed preserved).
+
+### Compatibility
+
+- Watch consumers must ignore unknown event types; daemons pair with CLI
+  companions at or above this release for skills default parity.
+
 ## v0.0.74 — 2026-11-19
 
 ### Fixed

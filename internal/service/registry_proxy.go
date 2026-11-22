@@ -141,9 +141,11 @@ func (s *Service) checkResolvedEgress(ctx context.Context, sandboxID, host strin
 	}
 	convert := func(rules []sandbox.NetworkRule, action gatewaypolicy.Action) []gatewaypolicy.Rule {
 		converted := make([]gatewaypolicy.Rule, 0, len(rules))
-		for _, rule := range rules {
+		for i := range rules {
+			rule := &rules[i]
 			converted = append(converted, gatewaypolicy.Rule{ID: rule.RuleID, Action: action,
-				Protocol: rule.Protocol, Domain: rule.Domain, CIDR: rule.CIDR, Port: rule.Port})
+				Protocol: rule.Protocol, Domain: rule.Domain, CIDR: rule.CIDR, Port: rule.Port,
+				Methods: rule.Methods, Path: rule.Path, Query: checkQueryConditions(rule.Query)})
 		}
 		return converted
 	}
