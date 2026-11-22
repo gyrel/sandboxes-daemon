@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.0.81 — 2026-11-22
+
+### Fixed
+
+- Shared skills for an agent without a guest skills directory (e.g.
+  `shell`) are now a no-op instead of a `conflict` error, matching live
+  `sbx run shell` behavior with the sbx-default `skills.defaultMode`
+  readonly. Nothing is mounted, so the path stays fail closed; readwrite,
+  empty-mode and off-with-path requests are still rejected before the
+  agent check. This completes the skills default-mode pairing with CLI
+  v0.0.65+ (`prepareSkillsOption`), whose catalog-default resolution made
+  `rsbx run shell` fail against daemons without this fix.
+- Consume runtime v0.0.50: template capture now excludes guest virtual
+  filesystems (`proc`, `sys`, `dev`, `run/bundles`) and reports bounded
+  tar diagnostics, fixing the live `template save` exit-2 failure.
+
 ## v0.0.80 — 2026-11-22
 
 ### Added
