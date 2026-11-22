@@ -615,3 +615,17 @@ func (v *testVault) Set(_ context.Context, _, _, secret string) error {
 
 func (v *testVault) Get(context.Context, string, string) (string, error) { return v.secret, nil }
 func (*testVault) Delete(context.Context, string, string) error          { return nil }
+
+func TestCreateProgressOperationRendering(t *testing.T) {
+	op := createProgressOperation("sb_1", service.CreateProgressSnapshot{Phase: "pulling", Completed: 5, Total: 7})
+	if op.GetId() != "" || op.GetSandboxId() != "sb_1" {
+		t.Fatalf("identity=%q/%q", op.GetId(), op.GetSandboxId())
+	}
+	if op.GetKind() != localv1.OperationKind_OPERATION_KIND_CREATE || op.GetState() != localv1.OperationState_OPERATION_STATE_RUNNING {
+		t.Fatalf("kind/state=%v/%v", op.GetKind(), op.GetState())
+	}
+	progress := op.GetProgress()
+	if progress == nil || progress.GetPhase() != "pulling" || progress.GetCompleted() != 5 || progress.GetTotal() != 7 {
+		t.Fatalf("progress=%+v", progress)
+	}
+}
