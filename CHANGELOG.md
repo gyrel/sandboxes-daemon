@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.83 — 2026-11-23
+
+### Fixed
+
+- Consume runtime v0.0.52: template base resolution now follows
+  multi-platform OCI indexes (registry images ship per-arch manifests
+  plus attestation entries), so `template save` can read the base image
+  of any registry-pulled sandbox; ambiguous indexes still fail closed.
+
 ## v0.0.82 — 2026-11-23
 
 ### Fixed
