@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -96,6 +97,39 @@ func TestTemplateServerSaveListInspect(t *testing.T) {
 	if inspected.GetWorkingDir() != "/workspace" || len(inspected.GetEnvNames()) != 1 || inspected.GetUser() != "agent" {
 		t.Fatalf("inspected=%+v", inspected)
 	}
+}
+
+func TestTemplateServerExport(t *testing.T) {
+	ctx := context.Background()
+	ts, _, _ := newTemplateServerFixture(t)
+	if _, err := ts.Export(ctx, &localv1.TemplateServiceExportRequest{Name: "docker.io/library/nope:v9", TarPath: "/tmp/x.tar"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("unrecorded export: %v", err)
+	}
+	if _, err := ts.Export(ctx, nil); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("nil export request: %v", err)
+	}
+	// Successful export stats the written archive: seed a template record
+	// and a file at the destination via the service's stub backend export.
+	if _, err := ts.Save(ctx, &localv1.TemplateServiceSaveRequest{SandboxId: "sb-1", Tag: "exp:v1"}); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "exp.tar")
+	if err := writeExportStub(dest); err != nil {
+		t.Fatal(err)
+	}
+	// templateStubBackend.ExportTemplate is a no-op; pre-create the file so
+	// the server-side stat succeeds, then assert size passthrough.
+	resp, err := ts.Export(ctx, &localv1.TemplateServiceExportRequest{Name: "docker.io/library/exp:v1", TarPath: dest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetSizeBytes() <= 0 {
+		t.Fatalf("size=%d", resp.GetSizeBytes())
+	}
+}
+
+func writeExportStub(path string) error {
+	return os.WriteFile(path, []byte("stub docker-save archive bytes"), 0o644)
 }
 
 func TestTemplateServerValidationAndMissing(t *testing.T) {

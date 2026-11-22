@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"math"
+	"os"
 	"strings"
 
 	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
@@ -90,6 +91,20 @@ func (s *TemplateServer) Inspect(ctx context.Context, req *localv1.TemplateServi
 		WorkingDir: doc.WorkingDir,
 		User:       doc.User,
 	}, nil
+}
+
+func (s *TemplateServer) Export(ctx context.Context, req *localv1.TemplateServiceExportRequest) (*localv1.TemplateServiceExportResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "template export request is required")
+	}
+	if err := s.svc.TemplateExport(ctx, req.GetName(), req.GetTarPath()); err != nil {
+		return nil, mapError(err)
+	}
+	info, err := os.Stat(req.GetTarPath())
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, status.Error(codes.Internal, "template export completed but the archive could not be verified")
+	}
+	return &localv1.TemplateServiceExportResponse{SizeBytes: info.Size()}, nil
 }
 
 func recordProto(r store.TemplateRecord) *localv1.Template {

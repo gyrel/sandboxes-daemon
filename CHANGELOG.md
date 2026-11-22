@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.80 — 2026-11-22
+
+### Added
+
+- `TemplateService.Export` handler: exports a recorded template to a
+  docker-save archive via the daemon service (exclusive-create) and
+  reports the written size; unrecorded names map to NotFound. api pinned
+  to v0.0.35 (contract 0.0.35).
+
 ## v0.0.79 — 2026-11-22
 
 ### Added
