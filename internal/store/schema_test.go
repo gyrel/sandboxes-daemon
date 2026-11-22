@@ -156,8 +156,8 @@ func TestOpenRefusesNewerSchema(t *testing.T) {
 }
 
 func TestCloneSchemaUpgradeRejectsOlderDaemon(t *testing.T) {
-	if schemaVersion != 5 {
-		t.Fatalf("schema version = %d, want 5 for secret metadata", schemaVersion)
+	if schemaVersion != 6 {
+		t.Fatalf("schema version = %d, want 6 for template records", schemaVersion)
 	}
 	if err := schemaVersionCompatibilityError(schemaVersion, 4); !errors.Is(err, ErrSchemaNewer) {
 		t.Fatalf("older daemon compatibility error = %v, want ErrSchemaNewer", err)
