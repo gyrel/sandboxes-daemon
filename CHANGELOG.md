@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.87 — 2026-11-23
+
+### Fixed
+
+- Consume runtime v0.0.56: capture indexing skips the archive root
+  marker (`./`), fixing the live `template save` failure
+  `plan references 1 entries absent from capture (first: [])`.
+
 ## v0.0.86 — 2026-11-23
 
 ### Fixed
