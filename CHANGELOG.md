@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.84 — 2026-11-23
+
+### Fixed
+
+- Consume runtime v0.0.53: template base listing now decodes compressed
+  registry layer blobs (tar+gzip/tar+zstd), fixing the
+  `archive/tar: invalid tar header` failure of `template save` against
+  every real Docker Hub base image.
+
 ## v0.0.83 — 2026-11-23
 
 ### Fixed
