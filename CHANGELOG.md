@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.89 — 2026-11-23
+
+### Fixed
+
+- Consume runtime v0.0.58: template assembly keeps the base config
+  `rootfs.diff_ids` instead of rebuilding them from layer descriptors,
+  so `ctr images import` no longer rejects registry-shaped layers with
+  `wrong diff id calculated on extraction` during `template save`.
+
 ## v0.0.88 — 2026-11-23
 
 ### Fixed
