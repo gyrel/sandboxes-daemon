@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.86 — 2026-11-23
+
+### Fixed
+
+- Consume runtime v0.0.55: hardlink targets are canonicalized across
+  capture/base/stream and diff layers are guaranteed self-contained
+  (emitted hardlinks drag their target; dangling, virtual or
+  excluded-directory targets fail closed), fixing the live
+  `bad hardlink target on usr/bin/perl5.40.1` save failure.
+
 ## v0.0.85 — 2026-11-23
 
 ### Fixed
