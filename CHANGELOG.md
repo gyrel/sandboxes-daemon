@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.88 — 2026-11-23
+
+### Fixed
+
+- Consume runtime v0.0.57: `ctr images import` passes the configured
+  platform and snapshotter like the pull path, so template save can
+  record the image against the managed containerd (which defines no
+  default unpack platforms).
+
 ## v0.0.87 — 2026-11-23
 
 ### Fixed
