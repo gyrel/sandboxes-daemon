@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.85 — 2026-11-23
+
+### Fixed
+
+- Consume runtime v0.0.54: template diff planning skips unchanged links
+  and directories and no longer attaches payload readers to non-regular
+  entries, fixing the `entry "bin" of type "symlink" must not carry a
+  reader` failure of `template save` against alpine-family bases.
+
 ## v0.0.84 — 2026-11-23
 
 ### Fixed
