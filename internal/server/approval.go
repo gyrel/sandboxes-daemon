@@ -85,44 +85,20 @@ func (s *ApprovalServer) Respond(ctx context.Context, req *localv1.ApprovalServi
 	return &localv1.ApprovalServiceRespondResponse{Approval: approvalToProto(entry), PersistedRuleId: persistedRuleID}, nil
 }
 
-//nolint:gocritic // entry-sized disclosure parameter
 func approvalToProto(entry approvals.Entry) *localv1.Approval {
-	sandboxID := entry.SandboxID
-	if sandboxID == "" {
-		sandboxID = entry.SandboxId
-	}
-	if sandboxID == "" {
-		sandboxID = entry.Sandbox
-	}
-	envNames := entry.EnvNames
-	if len(envNames) == 0 {
-		envNames = entry.Env
-	}
-	cwd := entry.CwdSummary
-	if cwd == "" {
-		cwd = entry.Cwd
-	}
-	createdAt := entry.CreatedAtUnix
-	if createdAt == 0 && !entry.CreatedAt.IsZero() {
-		createdAt = entry.CreatedAt.Unix()
-	}
-	headers := entry.Headers
-	if len(headers) == 0 {
-		headers = entry.Header
-	}
 	return &localv1.Approval{
 		Id:                entry.ID,
 		Kind:              entry.Kind,
 		State:             entry.State,
-		SandboxId:         sandboxID,
+		SandboxId:         entry.SandboxID,
 		ActionSummary:     entry.ActionSummary,
 		DestinationHost:   entry.DestinationHost,
 		DestinationPath:   entry.DestinationPath,
-		Headers:           headers,
-		EnvNames:          envNames,
-		EnvNamesTruncated: entry.EnvNamesTruncated || entry.EnvTruncated,
-		CwdSummary:        cwd,
-		CreatedAtUnix:     createdAt,
+		Headers:           entry.Headers,
+		EnvNames:          entry.EnvNames,
+		EnvNamesTruncated: entry.EnvNamesTruncated,
+		CwdSummary:        entry.CwdSummary,
+		CreatedAtUnix:     entry.CreatedAtUnix,
 	}
 }
 

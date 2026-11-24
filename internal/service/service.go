@@ -110,7 +110,7 @@ type Service struct {
 	mcpApprover              mcpmanager.ApprovalProvider
 	hostCommandApprover      HostCommandApprovalProvider
 	approvals                *approvals.Store
-	approvalProvider         any
+	approvalProvider         ApprovalProvider
 	mcpRemoteHosts           []string
 	registryDockerGrants     map[string][]string
 	registryPrivateGrants    map[string][]string
@@ -148,16 +148,13 @@ func (s *Service) SetApprovalStore(approvalStore *approvals.Store) {
 	s.approvals = approvalStore
 }
 
-// SetApprovalProvider installs a trusted host-side consent mechanism for
+// SetApprovalProvider installs the trusted host-side consent mechanism for
 // ApprovalService.Respond. There is deliberately no RPC/CLI boolean fallback:
-// a nil provider fails closed. The provider is never invoked with caller
-// identity or a challenge ID as consent; only the stored approval entry is
-// presented to it.
-func (s *Service) SetApprovalProvider(provider any) {
+// a nil provider keeps APPROVE and EXACT persist failing closed. The provider
+// is never invoked with caller identity or a challenge ID as consent; only the
+// stored disclosure-safe approval entry is presented to it.
+func (s *Service) SetApprovalProvider(provider ApprovalProvider) {
 	s.approvalProvider = provider
-	if s.approvals != nil {
-		s.approvals.SetApprovalProvider(provider)
-	}
 }
 
 func (s *Service) approveSecretSource(ctx context.Context, service string, scope servicesecrets.Scope, sandboxName string, source *servicesecrets.Source) error {
@@ -1325,7 +1322,7 @@ func New(st *store.Store, backend runtime.Backend) *Service {
 	cpus, memoryMiB := hostResourceDefaults()
 	s := &Service{
 		store:               st,
-		approvals:           approvals.New(),
+		approvals:           approvals.New(approvals.Config{}),
 		journal:             operation.NewJournal(st.Operations()),
 		backend:             backend,
 		registryPullLimiter: registrycredentials.NewPullLimiter(),

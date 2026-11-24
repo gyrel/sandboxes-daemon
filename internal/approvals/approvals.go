@@ -1,11 +1,12 @@
-// Package approvals owns the daemon's pending-approval store. Entries are
+// Package approvals owns the daemon's pending-approval queue. Entries are
 // memory-only consent-gathering state: listing or inspecting one never grants
-// it. The store keeps only the contract's disclosure fields; secret material
-// cannot be represented in an entry.
+// it. The store keeps only the contract's disclosure fields (api 0.0.36): no
+// header values, environment values or secret material can be represented in an
+// entry. Gating on a trusted provider is the caller's (service layer's)
+// responsibility; the store is a pure bounded queue.
 package approvals
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -20,78 +21,66 @@ import (
 )
 
 const (
-	// DefaultRetentionCount is the number of resolved approvals retained for
-	// inspection. Pending approvals are retained until resolved.
-	DefaultRetentionCount = 100
-	// DefaultRetentionWindow is the maximum age of a resolved approval that can
-	// still be inspected.
-	DefaultRetentionWindow = 24 * time.Hour
-	// MaxEnvNames is the maximum number of environment variable names returned.
-	MaxEnvNames = 64
-	// MaxEnvNameBytes is the maximum size of one environment variable name.
-	MaxEnvNameBytes = 128
-	// MaxCwdSummaryBytes is the maximum size of a redacted working directory.
-	MaxCwdSummaryBytes = 256
+	// DefaultCapacity bounds retained resolved approvals available to Inspect.
+	DefaultCapacity = 100
+	// DefaultWindow is the maximum age of a resolved approval that can still
+	// be inspected.
+	DefaultWindow = 24 * time.Hour
+	// maxPendingBounds the pending queue against flooding.
+	maxPending = 1000
+	// maxEnvNames bounds disclosed environment variable names.
+	maxEnvNames = 64
+	// maxEnvNameBytes bounds one environment variable name.
+	maxEnvNameBytes = 128
+	// maxCwdSummaryBytes bounds the redacted working-directory summary.
+	maxCwdSummaryBytes = 256
 )
 
 // ErrNotFound reports that no approval matches the requested ID.
 var ErrNotFound = errors.New("approval not found")
 
-// Header is an alias for the contract header disclosure message.
-type Header = localv1.ApprovalHeader
-
-// Kind is an alias for the contract approval kind.
-type Kind = localv1.ApprovalKind
-
-// State is an alias for the contract approval state.
-type State = localv1.ApprovalState
-
 // Entry is one pending or recently resolved approval. It mirrors the contract
-// message and contains no secret material.
+// message and carries no secret material by construction.
 type Entry struct {
 	ID                string
 	Kind              localv1.ApprovalKind
 	State             localv1.ApprovalState
 	SandboxID         string
-	SandboxId         string //nolint:revive // mirrors contract field name
-	Sandbox           string
 	ActionSummary     string
 	DestinationHost   string
 	DestinationPath   string
-	Destination       string
 	Headers           []*localv1.ApprovalHeader
-	Header            []*localv1.ApprovalHeader
 	EnvNames          []string
-	Env               []string
 	EnvNamesTruncated bool
-	EnvTruncated      bool
 	CwdSummary        string
-	Cwd               string
-	CreatedAt         time.Time
 	CreatedAtUnix     int64
 
+	createdAt  time.Time
 	resolvedAt time.Time
 }
 
-// CreateRequest describes one approval. It has no field that can carry a secret
-// value; IDs and timestamps are assigned by the store.
+// CreateRequest describes a new approval. IDs and timestamps are assigned by
+// the store; no field can carry a secret value.
 type CreateRequest struct {
 	Kind              localv1.ApprovalKind
 	SandboxID         string
-	SandboxId         string //nolint:revive // mirrors contract field name
-	Sandbox           string
 	ActionSummary     string
 	DestinationHost   string
 	DestinationPath   string
-	Destination       string
 	Headers           []*localv1.ApprovalHeader
-	Header            []*localv1.ApprovalHeader
 	EnvNames          []string
-	Env               []string
 	EnvNamesTruncated bool
-	EnvTruncated      bool
 	CwdSummary        string
-	Cwd               string
+}
+
+// Config tunes the store; the zero value uses defaults.
+type Config struct {
+	// Now is the clock, injectable for tests.
+	Now func() time.Time
+	// Capacity bounds retained resolved approvals (default DefaultCapacity).
+	Capacity int
+	// Window bounds resolved-approval age for inspection (default DefaultWindow).
+	Window time.Duration
 }
 
 // Store is a memory-only approval queue with bounded retention.
@@ -102,248 +91,126 @@ type Store struct {
 	now      func() time.Time
 	window   time.Duration
 	capacity int
-	provider any
 }
 
-// New creates a store. Optional arguments may be a clock function or a
-// retention count; all are optional and order independent.
-func New(args ...any) *Store {
+// New builds a store from cfg.
+func New(cfg Config) *Store {
 	s := &Store{
 		entries:  make(map[string]Entry),
-		now:      time.Now,
-		window:   DefaultRetentionWindow,
-		capacity: DefaultRetentionCount,
+		now:      cfg.Now,
+		window:   cfg.Window,
+		capacity: cfg.Capacity,
 	}
-	for _, arg := range args {
-		switch v := arg.(type) {
-		case func() time.Time:
-			s.now = v
-		case time.Time:
-		case int:
-			if v > 0 {
-				s.capacity = v
-			}
-		case time.Duration:
-			if v > 0 {
-				s.window = v
-			}
-		}
+	if s.now == nil {
+		s.now = time.Now
+	}
+	if s.window <= 0 {
+		s.window = DefaultWindow
+	}
+	if s.capacity <= 0 {
+		s.capacity = DefaultCapacity
 	}
 	return s
 }
 
-// NewStore is an alias for New.
-func NewStore(args ...any) *Store { return New(args...) }
-
-// NewWithClock creates a store with an injectable clock.
-func NewWithClock(now func() time.Time) *Store { return New(now) }
-
-// NewWithRetention creates a store with a retention count.
-func NewWithRetention(capacity int) *Store { return New(capacity) }
-
-// SetApprovalProvider installs a trusted provider. It is a consent mechanism,
-// not a value; a nil provider keeps the store fail-closed.
-func (s *Store) SetApprovalProvider(provider any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.provider = provider
-}
-
-// ApprovalProvider returns the installed provider, if any.
-func (s *Store) ApprovalProvider() any {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.provider
-}
-
 func (s *Store) nowTime() time.Time { return s.now().UTC() }
 
-// Create adds one pending approval and returns it.
-func (s *Store) Create(args ...any) (Entry, error) {
-	req, ctx := parseCreateArgs(args)
-	_ = ctx
-	return s.create(req)
-}
-
-// Aliases for Create.
-func (s *Store) CreatePending(args ...any) (Entry, error) { return s.Create(args...) }
-func (s *Store) Add(args ...any) (Entry, error)           { return s.Create(args...) }
-func (s *Store) AddPending(args ...any) (Entry, error)    { return s.Create(args...) }
-func (s *Store) NewEntry(args ...any) (Entry, error)      { return s.Create(args...) }
-func (s *Store) Register(args ...any) (Entry, error)      { return s.Create(args...) }
-func (s *Store) Enqueue(args ...any) (Entry, error)       { return s.Create(args...) }
-func (s *Store) Challenge(args ...any) (Entry, error)     { return s.Create(args...) }
-
-func parseCreateArgs(args []any) (CreateRequest, context.Context) {
-	ctx := context.Background()
-	var req CreateRequest
-	for _, arg := range args {
-		switch v := arg.(type) {
-		case context.Context:
-			ctx = v
-		case CreateRequest:
-			req = mergeCreateRequest(req, v)
-		case *CreateRequest:
-			if v != nil {
-				req = mergeCreateRequest(req, *v)
-			}
-		case *localv1.Approval:
-			if v != nil {
-				req = mergeApproval(req, v)
-			}
-		}
-	}
-	return req, ctx
-}
-
-//nolint:gocyclo,cyclop,gocritic // bounded disclosure-field merge
-func mergeCreateRequest(dst, src CreateRequest) CreateRequest {
-	if src.Kind != 0 {
-		dst.Kind = src.Kind
-	}
-	if src.SandboxID != "" {
-		dst.SandboxID = src.SandboxID
-	}
-	if src.SandboxId != "" {
-		dst.SandboxId = src.SandboxId
-	}
-	if src.Sandbox != "" {
-		dst.Sandbox = src.Sandbox
-	}
-	if src.ActionSummary != "" {
-		dst.ActionSummary = src.ActionSummary
-	}
-	if src.DestinationHost != "" {
-		dst.DestinationHost = src.DestinationHost
-	}
-	if src.DestinationPath != "" {
-		dst.DestinationPath = src.DestinationPath
-	}
-	if src.Destination != "" {
-		dst.Destination = src.Destination
-	}
-	if len(src.Headers) > 0 {
-		dst.Headers = src.Headers
-	}
-	if len(src.Header) > 0 {
-		dst.Header = src.Header
-	}
-	if len(src.EnvNames) > 0 {
-		dst.EnvNames = src.EnvNames
-	}
-	if len(src.Env) > 0 {
-		dst.Env = src.Env
-	}
-	if src.EnvNamesTruncated {
-		dst.EnvNamesTruncated = true
-	}
-	if src.EnvTruncated {
-		dst.EnvTruncated = true
-	}
-	if src.CwdSummary != "" {
-		dst.CwdSummary = src.CwdSummary
-	}
-	if src.Cwd != "" {
-		dst.Cwd = src.Cwd
-	}
-	return dst
-}
-
-//nolint:gocritic // entry-sized disclosure parameter
-func mergeApproval(dst CreateRequest, a *localv1.Approval) CreateRequest {
-	if a == nil {
-		return dst
-	}
-	if a.Kind != 0 {
-		dst.Kind = a.Kind
-	}
-	if a.SandboxId != "" {
-		dst.SandboxID = a.SandboxId
-	}
-	if a.ActionSummary != "" {
-		dst.ActionSummary = a.ActionSummary
-	}
-	if a.DestinationHost != "" {
-		dst.DestinationHost = a.DestinationHost
-	}
-	if a.DestinationPath != "" {
-		dst.DestinationPath = a.DestinationPath
-	}
-	if len(a.Headers) > 0 {
-		dst.Headers = a.Headers
-	}
-	if len(a.EnvNames) > 0 {
-		dst.EnvNames = a.EnvNames
-	}
-	if a.EnvNamesTruncated {
-		dst.EnvNamesTruncated = true
-	}
-	if a.CwdSummary != "" {
-		dst.CwdSummary = a.CwdSummary
-	}
-	return dst
-}
-
-//nolint:gocritic // entry-sized request parameter
-func (s *Store) create(req CreateRequest) (Entry, error) {
+// Create adds one pending approval and returns the stored entry.
+func (s *Store) Create(req CreateRequest) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evictLocked()
-
-	sandboxID := firstNonEmpty(req.SandboxID, req.SandboxId, req.Sandbox)
-	action := strings.TrimSpace(req.ActionSummary)
-	host, path := normalizeDestination(firstNonEmpty(req.DestinationHost, req.Destination), firstNonEmpty(req.DestinationPath, req.Destination))
-	headers := req.Headers
-	if len(headers) == 0 {
-		headers = req.Header
-	}
-	envSource := req.EnvNames
-	if len(envSource) == 0 {
-		envSource = req.Env
-	}
-	envNames, truncated := normalizeEnvNames(envSource)
-	if req.EnvNamesTruncated || req.EnvTruncated {
-		truncated = true
-	}
-	cwd := strings.TrimSpace(firstNonEmpty(req.CwdSummary, req.Cwd))
-	if len(cwd) > MaxCwdSummaryBytes {
-		cwd = cwd[:MaxCwdSummaryBytes]
-	}
-	// Truncate cwd independently; do not alter env flag.
-	cwd = truncateBytes(cwd, MaxCwdSummaryBytes)
 
 	id, err := newID()
 	if err != nil {
 		return Entry{}, err
 	}
+	headers := cloneHeaders(req.Headers)
+	envNames, truncated := normalizeEnvNames(req.EnvNames)
+	if req.EnvNamesTruncated {
+		truncated = true
+	}
+	host, path := normalizeDestination(req.DestinationHost, req.DestinationPath)
 	now := s.nowTime()
 	entry := Entry{
 		ID:                id,
 		Kind:              req.Kind,
 		State:             localv1.ApprovalState_APPROVAL_STATE_PENDING,
-		SandboxID:         sandboxID,
-		SandboxId:         sandboxID,
-		Sandbox:           sandboxID,
-		ActionSummary:     action,
+		SandboxID:         strings.TrimSpace(req.SandboxID),
+		ActionSummary:     strings.TrimSpace(req.ActionSummary),
 		DestinationHost:   host,
 		DestinationPath:   path,
-		Destination:       host,
-		Headers:           cloneHeaders(headers),
-		Header:            cloneHeaders(headers),
+		Headers:           headers,
 		EnvNames:          envNames,
-		Env:               append([]string(nil), envNames...),
 		EnvNamesTruncated: truncated,
-		EnvTruncated:      truncated,
-		CwdSummary:        cwd,
-		Cwd:               cwd,
-		CreatedAt:         now,
+		CwdSummary:        truncateBytes(strings.TrimSpace(req.CwdSummary), maxCwdSummaryBytes),
 		CreatedAtUnix:     now.Unix(),
+		createdAt:         now,
 	}
 	s.entries[id] = entry
 	s.order = append(s.order, id)
 	s.evictLocked()
 	slog.Info("approval created", "approval_id", id, "kind", entry.Kind)
 	return entry, nil
+}
+
+// Get returns one approval (pending or retained resolved) by ID.
+func (s *Store) Get(id string) (Entry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictLocked()
+	e, ok := s.entries[id]
+	return e, ok
+}
+
+// ListPending returns pending approvals oldest-first, optionally filtered by
+// sandbox ID. The contract lists pending only.
+func (s *Store) ListPending(sandboxID string) []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictLocked()
+	return s.listLocked(sandboxID, func(e Entry) bool {
+		return e.State == localv1.ApprovalState_APPROVAL_STATE_PENDING
+	})
+}
+
+// Resolve records a decision for a pending approval. UNSPECIFIED decisions
+// never change state (callers map them to INVALID_ARGUMENT).
+func (s *Store) Resolve(id string, decision localv1.ApprovalDecision, persist localv1.ApprovalPersistScope) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictLocked()
+	e, ok := s.entries[id]
+	if !ok {
+		return Entry{}, ErrNotFound
+	}
+	switch decision {
+	case localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE:
+		e.State = localv1.ApprovalState_APPROVAL_STATE_APPROVED
+	case localv1.ApprovalDecision_APPROVAL_DECISION_DENY:
+		e.State = localv1.ApprovalState_APPROVAL_STATE_DENIED
+	case localv1.ApprovalDecision_APPROVAL_DECISION_UNSPECIFIED:
+		return e, nil
+	}
+	e.resolvedAt = s.nowTime()
+	s.entries[id] = e
+	slog.Info("approval resolved", "approval_id", id, "kind", e.Kind, "decision", decision, "persist_scope", persist)
+	return e, nil
+}
+
+func (s *Store) listLocked(sandboxID string, keep func(Entry) bool) []Entry {
+	out := make([]Entry, 0, len(s.order))
+	for _, id := range s.order {
+		e, ok := s.entries[id]
+		if !ok || !keep(e) {
+			continue
+		}
+		if sandboxID != "" && e.SandboxID != sandboxID {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func newID() (string, error) {
@@ -354,15 +221,6 @@ func newID() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
 func truncateBytes(value string, limit int) string {
 	if len(value) <= limit {
 		return value
@@ -370,17 +228,19 @@ func truncateBytes(value string, limit int) string {
 	return value[:limit]
 }
 
+// normalizeEnvNames enforces the disclosure bounds (64 names, 128 bytes each)
+// and reports whether anything was cut.
 func normalizeEnvNames(names []string) ([]string, bool) {
 	truncated := false
-	if len(names) > MaxEnvNames {
-		names = names[:MaxEnvNames]
+	if len(names) > maxEnvNames {
+		names = names[:maxEnvNames]
 		truncated = true
 	}
 	out := make([]string, 0, len(names))
 	for _, name := range names {
 		name = strings.TrimSpace(name)
-		if len(name) > MaxEnvNameBytes {
-			name = name[:MaxEnvNameBytes]
+		if len(name) > maxEnvNameBytes {
+			name = name[:maxEnvNameBytes]
 			truncated = true
 		}
 		out = append(out, name)
@@ -388,33 +248,45 @@ func normalizeEnvNames(names []string) ([]string, bool) {
 	return out, truncated
 }
 
+// normalizeDestination keeps host and path free of query, userinfo and
+// fragment per the disclosure contract.
 func normalizeDestination(host, path string) (string, string) {
 	host = strings.TrimSpace(host)
 	path = strings.TrimSpace(path)
 	if host == "" {
-		return "", path
+		return "", stripQueryFragment(path)
 	}
-	if strings.Contains(host, "://") || strings.Contains(host, "/") {
-		parsed, err := url.Parse(host)
-		if err == nil && parsed.Host != "" {
-			host = parsed.Host
-			if path == "" {
-				path = parsed.EscapedPath()
-			}
+	if strings.ContainsAny(host, "/@?#") || strings.Contains(host, "://") {
+		host, path = parseURLHost(host, path)
+		if idx := strings.LastIndex(host, "@"); idx >= 0 {
+			host = host[idx+1:]
 		}
 	}
-	// Strip userinfo/query/fragment if a full URL slipped through.
-	if strings.Contains(host, "@") {
-		parts := strings.Split(host, "@")
-		host = parts[len(parts)-1]
-	}
-	if idx := strings.IndexAny(host, "?#"); idx >= 0 {
+	host = strings.TrimPrefix(host, "//")
+	if idx := strings.IndexAny(host, "/?#"); idx >= 0 {
 		host = host[:idx]
 	}
-	if idx := strings.IndexAny(path, "?#"); idx >= 0 {
-		path = path[:idx]
+	return strings.ToLower(host), stripQueryFragment(path)
+}
+
+// parseURLHost replaces a URL-shaped host with its authority and adopts the
+// embedded path when the caller supplied none.
+func parseURLHost(host, path string) (string, string) {
+	parsed, err := url.Parse(host)
+	if err != nil || parsed.Host == "" {
+		return host, path
 	}
-	return strings.ToLower(host), path
+	if path == "" {
+		path = parsed.EscapedPath()
+	}
+	return parsed.Host, path
+}
+
+func stripQueryFragment(path string) string {
+	if idx := strings.IndexAny(path, "?#"); idx >= 0 {
+		return path[:idx]
+	}
+	return path
 }
 
 func cloneHeaders(headers []*localv1.ApprovalHeader) []*localv1.ApprovalHeader {
@@ -432,128 +304,6 @@ func cloneHeaders(headers []*localv1.ApprovalHeader) []*localv1.ApprovalHeader {
 	return out
 }
 
-// Get returns one approval by ID.
-func (s *Store) Get(args ...any) (Entry, bool) {
-	id := ""
-	for _, arg := range args {
-		if v, ok := arg.(string); ok && id == "" {
-			id = v
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.evictLocked()
-	e, ok := s.entries[id]
-	return e, ok
-}
-
-// Inspect is an alias for Get.
-func (s *Store) Inspect(args ...any) (Entry, bool) { return s.Get(args...) }
-func (s *Store) Lookup(args ...any) (Entry, bool)  { return s.Get(args...) }
-
-// List returns approvals, optionally filtered by sandbox ID.
-func (s *Store) List(args ...any) []Entry {
-	sandboxID := ""
-	for _, arg := range args {
-		if v, ok := arg.(string); ok && sandboxID == "" {
-			sandboxID = v
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.evictLocked()
-	out := make([]Entry, 0)
-	for _, id := range s.order {
-		e, ok := s.entries[id]
-		if !ok {
-			continue
-		}
-		if sandboxID != "" && firstNonEmpty(e.SandboxID, e.SandboxId, e.Sandbox) != sandboxID {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
-// Aliases.
-func (s *Store) ListApprovals(sandboxID string) []Entry { return s.List(sandboxID) }
-func (s *Store) All() []Entry                           { return s.List("") }
-func (s *Store) Pending(sandboxID string) []Entry {
-	filtered := s.List(sandboxID)
-	out := make([]Entry, 0)
-	for i := range filtered {
-		e := filtered[i]
-		if e.State == localv1.ApprovalState_APPROVAL_STATE_PENDING {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-// Resolve records a decision for a pending or resolved approval.
-func (s *Store) Resolve(args ...any) (Entry, error) {
-	id, decision, persist, ctx := parseResolveArgs(args)
-	_ = ctx
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.evictLocked()
-	e, ok := s.entries[id]
-	if !ok {
-		return Entry{}, ErrNotFound
-	}
-	// UNSPECIFIED is handled by callers; the store does not change state.
-	switch decision {
-	case localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE:
-		e.State = localv1.ApprovalState_APPROVAL_STATE_APPROVED
-	case localv1.ApprovalDecision_APPROVAL_DECISION_DENY:
-		e.State = localv1.ApprovalState_APPROVAL_STATE_DENIED
-	}
-	if decision != localv1.ApprovalDecision_APPROVAL_DECISION_UNSPECIFIED {
-		e.resolvedAt = s.nowTime()
-	}
-	s.entries[id] = e
-	slog.Info("approval resolved", "approval_id", id, "kind", e.Kind, "decision", decision, "persist_scope", persist)
-	return e, nil
-}
-
-// Aliases.
-func (s *Store) Respond(args ...any) (Entry, error) { return s.Resolve(args...) }
-func (s *Store) Update(args ...any) (Entry, error)  { return s.Resolve(args...) }
-func (s *Store) SetState(args ...any) (Entry, error) {
-	return s.Resolve(args...)
-}
-
-func parseResolveArgs(args []any) (string, localv1.ApprovalDecision, localv1.ApprovalPersistScope, context.Context) {
-	ctx := context.Background()
-	id := ""
-	decision := localv1.ApprovalDecision_APPROVAL_DECISION_UNSPECIFIED
-	persist := localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_UNSPECIFIED
-	for _, arg := range args {
-		switch v := arg.(type) {
-		case context.Context:
-			ctx = v
-		case string:
-			if id == "" {
-				id = v
-			}
-		case localv1.ApprovalDecision:
-			decision = v
-		case localv1.ApprovalPersistScope:
-			persist = v
-		case int:
-			decision = localv1.ApprovalDecision(v) // #nosec G115 -- bounded enum conversion from trusted caller
-		case int32:
-			decision = localv1.ApprovalDecision(v) // #nosec G115 -- bounded enum conversion from trusted caller
-		}
-	}
-	if persist == localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_UNSPECIFIED {
-		persist = localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE
-	}
-	// If caller passed persist as int in second position? handled above.
-	return id, decision, persist, ctx
-}
-
 func (s *Store) evictLocked() {
 	s.evictExpiredResolved()
 	s.evictResolvedOverflow()
@@ -569,7 +319,7 @@ func (s *Store) evictExpiredResolved() {
 			continue
 		}
 		if e.resolvedAt.IsZero() {
-			e.resolvedAt = e.CreatedAt
+			e.resolvedAt = e.createdAt
 			s.entries[id] = e
 		}
 		if now.Sub(e.resolvedAt) > s.window {
@@ -585,49 +335,35 @@ func (s *Store) evictExpiredResolved() {
 func (s *Store) evictResolvedOverflow() {
 	resolved := make([]string, 0)
 	for _, id := range s.order {
-		e, ok := s.entries[id]
-		if !ok || e.State == localv1.ApprovalState_APPROVAL_STATE_PENDING {
-			continue
+		if e, ok := s.entries[id]; ok && e.State != localv1.ApprovalState_APPROVAL_STATE_PENDING {
+			resolved = append(resolved, id)
 		}
-		resolved = append(resolved, id)
 	}
-	if len(resolved) <= s.capacity {
-		return
-	}
-	excess := len(resolved) - s.capacity
-	for i := 0; i < excess && i < len(resolved); i++ {
-		delete(s.entries, resolved[i])
-		s.removeFromOrder(resolved[i])
+	for _, id := range resolved[:max(0, len(resolved)-s.capacity)] {
+		delete(s.entries, id)
+		s.removeFromOrder(id)
 	}
 }
 
 func (s *Store) evictPendingOverflow() {
 	pending := make([]string, 0)
 	for _, id := range s.order {
-		e, ok := s.entries[id]
-		if !ok || e.State != localv1.ApprovalState_APPROVAL_STATE_PENDING {
-			continue
+		if e, ok := s.entries[id]; ok && e.State == localv1.ApprovalState_APPROVAL_STATE_PENDING {
+			pending = append(pending, id)
 		}
-		pending = append(pending, id)
 	}
-	const maxPending = 1000
-	if len(pending) <= maxPending {
-		return
-	}
-	excess := len(pending) - maxPending
-	for i := 0; i < excess && i < len(pending); i++ {
-		delete(s.entries, pending[i])
-		s.removeFromOrder(pending[i])
+	for _, id := range pending[:max(0, len(pending)-maxPending)] {
+		delete(s.entries, id)
+		s.removeFromOrder(id)
 	}
 }
 
 func (s *Store) removeFromOrder(id string) {
-	out := s.order[:0]
+	out := make([]string, 0, len(s.order))
 	for _, existing := range s.order {
 		if existing != id {
 			out = append(out, existing)
 		}
 	}
-	// Reallocate to avoid aliasing.
-	s.order = append([]string(nil), out...)
+	s.order = out
 }
