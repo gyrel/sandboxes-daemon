@@ -36,6 +36,7 @@ import (
 	gatewaypolicy "github.com/rheic/sandboxes-gateway/policy"
 	"github.com/rheic/sandboxes-gateway/registryauth"
 	runtime "github.com/rheic/sandboxes-runtime"
+	"github.com/rheic/sandboxes-runtime/ctr"
 
 	"github.com/rheic/sandboxes-daemon/internal/approvals"
 	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
@@ -4156,3 +4157,20 @@ func newID(prefix string) (string, error) {
 
 // isIPLiteral reports whether s parses as an IP address rather than a name.
 func isIPLiteral(s string) bool { return net.ParseIP(s) != nil }
+
+// RecoverRuntimeJournal reconciles create journals after abrupt daemon loss
+// (ADR-0009). Backends without the capability are a no-op. Systemic errors
+// are returned for startup logging; individual LEAVE decisions arrive as
+// findings (ids/reasons only) and never block startup.
+func (s *Service) RecoverRuntimeJournal(ctx context.Context) ([]string, error) {
+	rec, ok := s.backend.(ctr.JournalRecoverer)
+	if !ok {
+		return nil, nil
+	}
+	findings, err := rec.Recover(ctx)
+	summaries := make([]string, 0, len(findings))
+	for _, f := range findings {
+		summaries = append(summaries, f.String())
+	}
+	return summaries, err
+}

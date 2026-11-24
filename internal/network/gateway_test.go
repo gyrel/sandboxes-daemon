@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -100,5 +101,42 @@ func TestAdapterStop(t *testing.T) {
 	}
 	if manager.stopped != "dev" {
 		t.Fatalf("stopped = %s", manager.stopped)
+	}
+}
+
+func TestAdapterAttachmentState(t *testing.T) {
+	adapter := New(&fakeManager{}, t.TempDir())
+	ctx := context.Background()
+	state, err := adapter.AttachmentState(ctx, "sandbox", "token")
+	if err != nil || state != runtime.AttachmentForeign {
+		t.Fatalf("unknown: %v, %v", state, err)
+	}
+	if _, err = adapter.StartOwned(ctx, "sandbox", "", nil, nil, nil); !errors.Is(err, runtime.ErrOwnershipUnsupported) {
+		t.Fatalf("empty token: %v", err)
+	}
+	if _, err = adapter.StartOwned(ctx, "sandbox", "token", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	state, err = adapter.AttachmentState(ctx, "sandbox", "token")
+	if err != nil || state != runtime.AttachmentOwned {
+		t.Fatalf("owned: %v, %v", state, err)
+	}
+	state, err = adapter.AttachmentState(ctx, "sandbox", "other")
+	if err != nil || state != runtime.AttachmentForeign {
+		t.Fatalf("foreign: %v, %v", state, err)
+	}
+	if err = adapter.Stop(ctx, "sandbox"); err != nil {
+		t.Fatal(err)
+	}
+	state, err = adapter.AttachmentState(ctx, "sandbox", "token")
+	if err != nil || state != runtime.AttachmentAbsent {
+		t.Fatalf("stopped must read absent for journal reconciliation: %v, %v", state, err)
+	}
+	// A plain Start runs the gateway but binds it foreign (not journal's own).
+	if _, err = adapter.Start(ctx, "plain", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if state, err = adapter.AttachmentState(ctx, "plain", "token"); err != nil || state != runtime.AttachmentForeign {
+		t.Fatalf("plain start: %v, %v", state, err)
 	}
 }
