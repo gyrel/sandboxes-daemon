@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"time"
 
 	gateway "github.com/rheic/sandboxes-gateway"
@@ -24,15 +25,29 @@ type Manager interface {
 type Adapter struct {
 	manager  Manager
 	auditDir string
+	mu       sync.Mutex
+	owned    map[string]string
 }
 
 // New creates a gateway network adapter.
 func New(manager Manager, auditDir string) *Adapter {
-	return &Adapter{manager: manager, auditDir: auditDir}
+	return &Adapter{manager: manager, auditDir: auditDir, owned: make(map[string]string)}
 }
 
 // Start starts a gateway with a default-deny policy.
 func (a *Adapter) Start(ctx context.Context, sandbox string, ports []runtime.Port, allow, deny []runtime.Rule) (runtime.NetworkAttachment, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	attachment, err := a.start(ctx, sandbox, ports, allow, deny)
+	if err == nil {
+		// Running, but not bound to any journal token: recovery must treat
+		// it as foreign rather than assume it is its own.
+		a.owned[sandbox] = foreignBinding
+	}
+	return attachment, err
+}
+
+func (a *Adapter) start(ctx context.Context, sandbox string, ports []runtime.Port, allow, deny []runtime.Rule) (runtime.NetworkAttachment, error) {
 	policyPorts := make([]policy.Port, 0, len(ports))
 	for _, port := range ports {
 		policyPorts = append(policyPorts, policy.Port{Host: port.Host, Guest: port.Guest, Proto: port.Protocol, HostIP: port.HostIP})
@@ -60,7 +75,46 @@ func (a *Adapter) Start(ctx context.Context, sandbox string, ports []runtime.Por
 	}, nil
 }
 
-// Stop stops the sandbox gateway.
+// StartOwned binds a successful start to its journal token for this process.
+func (a *Adapter) StartOwned(ctx context.Context, sandbox, token string, ports []runtime.Port, allow, deny []runtime.Rule) (runtime.NetworkAttachment, error) {
+	if token == "" {
+		return runtime.NetworkAttachment{}, runtime.ErrOwnershipUnsupported
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	attachment, err := a.start(ctx, sandbox, ports, allow, deny)
+	if err == nil {
+		a.owned[sandbox] = token
+	}
+	return attachment, err
+}
+
+// Binding sentinels distinguish a gateway this process confirmed stopped
+// (absent) from one running without a journal token (foreign). Unknown
+// sandboxes (e.g. after a daemon restart) stay foreign: fail closed.
+const (
+	absentBinding  = "\x00absent"
+	foreignBinding = "\x00foreign"
+)
+
+// AttachmentState maps the adapter's binding table to the runtime tri-state.
+func (a *Adapter) AttachmentState(_ context.Context, sandbox, token string) (runtime.AttachmentState, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	bound, ok := a.owned[sandbox]
+	if !ok {
+		return runtime.AttachmentForeign, nil
+	}
+	if bound == absentBinding {
+		return runtime.AttachmentAbsent, nil
+	}
+	if token != "" && bound == token {
+		return runtime.AttachmentOwned, nil
+	}
+	return runtime.AttachmentForeign, nil
+}
+
+// UpdatePolicy updates the sandbox gateway policy.
 func (a *Adapter) UpdatePolicy(ctx context.Context, sandbox string, ports []runtime.Port, allow, deny []runtime.Rule, revision int) error {
 	policyPorts := make([]policy.Port, 0, len(ports))
 	for _, port := range ports {
@@ -85,7 +139,13 @@ func (a *Adapter) UpdatePorts(ctx context.Context, sandbox string, ports []runti
 }
 
 func (a *Adapter) Stop(ctx context.Context, sandbox string) error {
-	return a.manager.Stop(ctx, sandbox)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	err := a.manager.Stop(ctx, sandbox)
+	if err == nil {
+		a.owned[sandbox] = absentBinding
+	}
+	return err
 }
 
 // SetGitDaemon exposes only the gateway's verified, sandbox-owned Git forward.
@@ -98,6 +158,7 @@ func (a *Adapter) SetGitDaemon(ctx context.Context, sandbox string, enabled bool
 	return forwarder.SetGitDaemon(ctx, sandbox, enabled)
 }
 
+var _ runtime.NetworkAttester = (*Adapter)(nil)
 var _ runtime.Network = (*Adapter)(nil)
 var _ runtime.GitDaemonForwarder = (*Adapter)(nil)
 

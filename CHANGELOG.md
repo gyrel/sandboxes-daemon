@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.96 — 2026-11-24
+
+### Added
+
+- ADR-0009 step 5: the gateway network adapter implements
+  `runtime.NetworkAttester` (token-bound starts; attachment state
+  absent/owned/foreign, fail-closed for unknown), and the daemon
+  reconciles runtime create journals at startup via
+  `Service.RecoverRuntimeJournal` before serving RPCs. Individual
+  LEAVE-decisions are logged as findings; systemic recovery errors are
+  logged loudly without bricking startup (journals persist for the next
+  start). Stale proxy socket/directory removal paths already enforce
+  lstat+uid+live-listener checks (verified, unchanged).
+
+
 ## v0.0.95 — 2026-11-24
 
 ### Fixed
