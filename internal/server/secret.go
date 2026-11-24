@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
 	"github.com/rheic/sandboxes-daemon/internal/service"
 	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
 )
@@ -78,17 +79,82 @@ func (s *SecretServer) Create(ctx context.Context, req *localv1.SecretServiceCre
 	return &localv1.SecretServiceCreateResponse{Secret: secretSummaryToProto(summary)}, nil
 }
 
-// List returns non-secret summaries.
+// SetCustom stores a custom secret that a sandbox uses through a placeholder.
+// The value is cleared after the call. The response carries the full placeholder
+// once, never the value, and reference or command sources are refused until a
+// trusted approval provider exists.
+func (s *SecretServer) SetCustom(ctx context.Context, req *localv1.SecretServiceSetCustomRequest) (*localv1.SecretServiceSetCustomResponse, error) {
+	value := req.GetValue()
+	defer clear(value)
+	scope, err := parseSecretScope(req.GetScope())
+	if err != nil {
+		return nil, err
+	}
+	source := req.GetSource()
+	switch {
+	case source != nil && len(value) != 0:
+		return nil, status.Error(codes.InvalidArgument, "provide either a secret value or a secret source")
+	case source == nil && len(value) == 0:
+		return nil, status.Error(codes.InvalidArgument, "provide a secret value or a secret source")
+	}
+	request := service.CustomSecretSetRequest{
+		Service: req.GetService(), Scope: scope, SandboxName: req.GetSandboxName(), Value: value,
+		Env: req.GetEnv(), Placeholder: req.GetPlaceholder(), Hosts: req.GetHosts(),
+	}
+	if source != nil {
+		request.Source = &servicesecrets.Source{
+			Reference: source.GetReference(), Command: source.GetCommand(), Refresh: source.GetRefresh(),
+			NoVerify: source.GetNoVerify(), ShowError: source.GetShowError(),
+			OPAccount: source.GetOpAccount(), AWSProfile: source.GetAwsProfile(),
+		}
+	}
+	summary, placeholder, err := s.svc.SetCustomSecret(ctx, request)
+	if err != nil {
+		return nil, customSecretError(err)
+	}
+	return &localv1.SecretServiceSetCustomResponse{Secret: customSecretSummaryToProto(summary), Placeholder: placeholder}, nil
+}
+
+// List returns non-secret summaries for service and custom secrets.
 func (s *SecretServer) List(ctx context.Context, _ *localv1.SecretServiceListRequest) (*localv1.SecretServiceListResponse, error) {
 	items, err := s.svc.ListServiceSecrets(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*localv1.SecretSummary, 0, len(items))
+	custom, err := s.svc.ListCustomSecrets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*localv1.SecretSummary, 0, len(items)+len(custom))
 	for index := range items {
 		out = append(out, secretSummaryToProto(items[index]))
 	}
+	for index := range custom {
+		out = append(out, customSecretSummaryToProto(custom[index]))
+	}
 	return &localv1.SecretServiceListResponse{Secrets: out}, nil
+}
+
+// customSecretSummaryToProto maps custom inventory metadata. The mask is the
+// only placeholder form that leaves the daemon on inventory paths.
+func customSecretSummaryToProto(summary customsecrets.Summary) *localv1.SecretSummary {
+	return &localv1.SecretSummary{
+		Service: summary.Service, Scope: string(summary.Scope), SandboxName: summary.SandboxName,
+		CreatedAtUnix: unix(summary.CreatedAt), UpdatedAtUnix: unix(summary.UpdatedAt),
+		SourceKind: string(servicesecrets.SourceKindValue), SecretType: servicesecrets.SecretTypeAPIKey,
+		Origin: summary.Origin, EnvName: summary.EnvName, Hosts: summary.Hosts,
+		PlaceholderMasked: summary.PlaceholderMasked,
+	}
+}
+
+// customSecretError keeps input faults as InvalidArgument. Other failures follow
+// the daemon's standard mapping, whose messages never include secret material.
+func customSecretError(err error) error {
+	if errors.Is(err, customsecrets.ErrInvalidHost) || errors.Is(err, customsecrets.ErrInvalidInput) ||
+		errors.Is(err, customsecrets.ErrInvalidPlaceholder) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return mapError(err)
 }
 
 // secretSummaryToProto maps non-secret inventory metadata. It never copies a
@@ -102,13 +168,21 @@ func secretSummaryToProto(summary servicesecrets.Summary) *localv1.SecretSummary
 	}
 }
 
-// Remove deletes one secret.
+// Remove deletes one custom or service secret. A custom secret is tried first;
+// names that match no custom secret fall through to the service-secret path.
 func (s *SecretServer) Remove(ctx context.Context, req *localv1.SecretServiceRemoveRequest) (*localv1.SecretServiceRemoveResponse, error) {
 	scope, err := parseSecretScope(req.GetScope())
 	if err != nil {
 		return nil, err
 	}
-	removed, err := s.svc.RemoveServiceSecret(ctx, req.GetService(), scope, req.GetSandboxName())
+	removed, err := s.svc.RemoveCustomSecret(ctx, req.GetService(), scope, req.GetSandboxName())
+	if err != nil {
+		return nil, customSecretError(err)
+	}
+	if removed {
+		return &localv1.SecretServiceRemoveResponse{Removed: true}, nil
+	}
+	removed, err = s.svc.RemoveServiceSecret(ctx, req.GetService(), scope, req.GetSandboxName())
 	if err != nil {
 		return nil, err
 	}

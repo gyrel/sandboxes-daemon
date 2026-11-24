@@ -2,8 +2,6 @@ package oauthsession
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,19 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rheic/sandboxes-daemon/internal/keychainchunks"
 	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
 )
 
 const oauthVaultService = "com.rheic.oauth.v1"
-const vaultChunkSize = 1800
-const vaultMaxChunks = 96
-const vaultManifestPrefix = "rheic-keychain-chunks-v1:"
+const vaultChunkSize = keychainchunks.ChunkSize
 
-type vaultManifest struct {
-	Nonce  string `json:"nonce"`
-	Count  int    `json:"count"`
-	Digest string `json:"digest"`
-}
+type vaultManifest = keychainchunks.Manifest
 
 var ErrNoTokens = errors.New("OAuth tokens are not stored")
 
@@ -134,144 +127,30 @@ func (s *VaultSink) HasRefreshToken(ctx context.Context) (bool, error) {
 
 // Delete removes only this provider's vault record.
 func (s *VaultSink) Delete(ctx context.Context) error {
-	value, err := s.vault.Get(ctx, oauthVaultService, s.account)
-	if err != nil && !errors.Is(err, registrycredentials.ErrNotFound) {
-		return errors.New("delete OAuth tokens failed")
-	}
-	if manifest, ok := parseVaultManifest(value); ok {
-		if err := s.deleteChunks(ctx, manifest); err != nil {
-			return errors.New("delete OAuth tokens failed")
-		}
-	} else if strings.HasPrefix(value, vaultManifestPrefix) {
-		return errors.New("delete OAuth tokens failed")
-	}
-	if err := s.vault.Delete(ctx, oauthVaultService, s.account); err != nil {
+	if err := s.records().Delete(ctx, s.account); err != nil {
 		return errors.New("delete OAuth tokens failed")
 	}
 	return nil
+}
+
+func (s *VaultSink) records() keychainchunks.Store {
+	return keychainchunks.Store{Vault: s.vault, Service: oauthVaultService, NotFound: registrycredentials.ErrNotFound}
 }
 
 func (s *VaultSink) savePayload(ctx context.Context, payload []byte) error {
-	count := (len(payload) + vaultChunkSize - 1) / vaultChunkSize
-	if count > vaultMaxChunks {
-		return errors.New("OAuth record exceeds vault limit")
-	}
-	old, hadOld, err := s.currentManifest(ctx)
-	if err != nil {
-		return err
-	}
-	if len(payload) <= vaultChunkSize {
-		if err := s.vault.Set(ctx, oauthVaultService, s.account, string(payload)); err != nil {
-			return err
-		}
-		if hadOld {
-			return s.deleteChunks(ctx, old)
-		}
-		return nil
-	}
-	return s.saveChunks(ctx, payload, count, old, hadOld)
-}
-
-func (s *VaultSink) currentManifest(ctx context.Context) (vaultManifest, bool, error) {
-	value, err := s.vault.Get(ctx, oauthVaultService, s.account)
-	if errors.Is(err, registrycredentials.ErrNotFound) {
-		return vaultManifest{}, false, nil
-	}
-	if err != nil {
-		return vaultManifest{}, false, err
-	}
-	manifest, ok := parseVaultManifest(value)
-	if !ok && strings.HasPrefix(value, vaultManifestPrefix) {
-		return vaultManifest{}, false, errors.New("invalid OAuth vault manifest")
-	}
-	return manifest, ok, nil
-}
-
-func (s *VaultSink) saveChunks(ctx context.Context, payload []byte, count int, old vaultManifest, hadOld bool) error {
-	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return err
-	}
-	digest := sha256.Sum256(payload)
-	manifest := vaultManifest{Nonce: hex.EncodeToString(nonce[:]), Count: count, Digest: hex.EncodeToString(digest[:])}
-	for i := 0; i < count; i++ {
-		end := min((i+1)*vaultChunkSize, len(payload))
-		if err := s.vault.Set(ctx, oauthVaultService, s.chunkAccount(manifest, i), string(payload[i*vaultChunkSize:end])); err != nil {
-			_ = s.deleteChunks(ctx, vaultManifest{Nonce: manifest.Nonce, Count: i})
-			return err
-		}
-	}
-	encoded, err := json.Marshal(manifest)
-	if err != nil {
-		_ = s.deleteChunks(ctx, manifest)
-		return err
-	}
-	if err := s.vault.Set(ctx, oauthVaultService, s.account, vaultManifestPrefix+string(encoded)); err != nil {
-		_ = s.deleteChunks(ctx, manifest)
-		return err
-	}
-	if hadOld {
-		return s.deleteChunks(ctx, old)
-	}
-	return nil
+	return s.records().Save(ctx, s.account, payload)
 }
 
 func (s *VaultSink) loadPayload(ctx context.Context) (string, error) {
-	value, err := s.vault.Get(ctx, oauthVaultService, s.account)
-	if err != nil {
-		return "", err
-	}
-	manifest, ok := parseVaultManifest(value)
-	if !ok {
-		if strings.HasPrefix(value, vaultManifestPrefix) {
-			return "", errors.New("invalid OAuth vault manifest")
-		}
-		return value, nil
-	}
-	var b strings.Builder
-	for i := 0; i < manifest.Count; i++ {
-		chunk, err := s.vault.Get(ctx, oauthVaultService, s.chunkAccount(manifest, i))
-		if err != nil || len(chunk) > vaultChunkSize {
-			return "", errors.New("invalid OAuth vault chunk")
-		}
-		b.WriteString(chunk)
-	}
-	value = b.String()
-	digest := sha256.Sum256([]byte(value))
-	if hex.EncodeToString(digest[:]) != manifest.Digest {
-		return "", errors.New("invalid OAuth vault digest")
-	}
-	return value, nil
+	return s.records().Load(ctx, s.account)
 }
 
 func parseVaultManifest(value string) (vaultManifest, bool) {
-	if !strings.HasPrefix(value, vaultManifestPrefix) {
-		return vaultManifest{}, false
-	}
-	var m vaultManifest
-	if json.Unmarshal([]byte(strings.TrimPrefix(value, vaultManifestPrefix)), &m) != nil || m.Count < 1 || m.Count > vaultMaxChunks || len(m.Nonce) != 32 || len(m.Digest) != 64 {
-		return vaultManifest{}, false
-	}
-	if _, err := hex.DecodeString(m.Nonce); err != nil {
-		return vaultManifest{}, false
-	}
-	if _, err := hex.DecodeString(m.Digest); err != nil {
-		return vaultManifest{}, false
-	}
-	return m, true
+	return keychainchunks.ParseManifest(value)
 }
 
 func (s *VaultSink) chunkAccount(m vaultManifest, i int) string {
-	return fmt.Sprintf("%s:chunk:%s:%d", s.account, m.Nonce, i)
-}
-
-func (s *VaultSink) deleteChunks(ctx context.Context, m vaultManifest) error {
-	for i := 0; i < m.Count; i++ {
-		if err := s.vault.Delete(ctx, oauthVaultService, s.chunkAccount(m, i)); err != nil && !errors.Is(err, registrycredentials.ErrNotFound) {
-			return err
-		}
-	}
-	return nil
+	return keychainchunks.ChunkAccount(s.account, m, i)
 }
 
 // SaveDockerHubPATFingerprint records ownership metadata for the PAT created

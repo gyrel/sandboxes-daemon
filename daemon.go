@@ -14,6 +14,7 @@ import (
 	runtime "github.com/rheic/sandboxes-runtime"
 	"google.golang.org/grpc"
 
+	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
 	"github.com/rheic/sandboxes-daemon/internal/lifecycle"
 	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
 	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
@@ -237,6 +238,11 @@ func configureCredentialStores(svc *service.Service) (func() error, error) {
 		return nil, fmt.Errorf("create service secret store: %w", err)
 	}
 	svc.SetServiceSecretStore(serviceSecretStore)
+	customSecretStore, err := customsecrets.NewStore(servicesecrets.NativeVault{}, servicesecrets.ErrNotFound)
+	if err != nil {
+		return nil, fmt.Errorf("create custom secret store: %w", err)
+	}
+	svc.SetCustomSecretStore(customSecretStore)
 	proxyManager := secretproxy.New()
 	svc.SetSecretProxyManager(proxyManager)
 	return proxyManager.Close, nil

@@ -39,7 +39,7 @@ var _ operation.Store = (*OperationStore)(nil)
 
 // schemaVersion is the latest SQLite schema understood by this daemon. It is
 // stored in PRAGMA user_version and must only increase.
-const schemaVersion = 6
+const schemaVersion = 7
 
 type columnDefinition struct {
 	name       string
@@ -282,6 +282,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if err := s.ensureSecretMetadataColumns(ctx); err != nil {
 		return fmt.Errorf("migrate secret metadata: %w", err)
+	}
+	if err := s.migrateCustomSecrets(ctx); err != nil {
+		return err
 	}
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
 		return fmt.Errorf("record schema version: %w", err)

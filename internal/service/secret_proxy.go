@@ -431,7 +431,8 @@ func (s *Service) buildProxyRoute(ctx context.Context, sb sandbox.Sandbox, name 
 	if dynamic {
 		routeSecret = nil
 	}
-	return secretproxy.RouteConfig{Service: service, Secret: routeSecret, Token: token, CredentialService: contract.credentialService},
+	return secretproxy.RouteConfig{Service: service, Secret: routeSecret, Token: token, CredentialService: contract.credentialService,
+			Substitutions: s.customSubstitutions(sb.Name, contract.upstreamHost)},
 		fmt.Sprintf("%s=%s:%d", name, contract.upstreamHost, contract.guestPort), nil
 }
 
@@ -474,7 +475,7 @@ func (s *Service) buildOAuthProxyRoute(ctx context.Context, sb sandbox.Sandbox, 
 		return []byte(accessToken), nil
 	}
 	service.AuthorizeAddress = s.proxyAddressAuthorizer(sb.ID, contract.upstreamHost)
-	return secretproxy.RouteConfig{Service: service, Token: token},
+	return secretproxy.RouteConfig{Service: service, Token: token, Substitutions: s.customSubstitutions(sb.Name, contract.upstreamHost)},
 		fmt.Sprintf("%s=%s:%d", openAIOAuthRoute, contract.upstreamHost, contract.guestPort), nil
 }
 
