@@ -117,7 +117,7 @@ func TestCustomSecretStoresValueOnlyInKeychainAndMaskedInSQLite(t *testing.T) {
 	svc, vault, dbPath := newCustomSecretTestService(t)
 	const canary = "synthetic-custom-canary-value-7f3a"
 	const explicit = "sk-canary-placeholder-9c21"
-	summary, placeholder, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{
+	summary, placeholder, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{
 		Scope: servicesecrets.ScopeGlobal, Value: []byte(canary), Env: "EXAMPLE_KEY", Placeholder: explicit,
 		Hosts: []string{"API.example.test", "*.example.test"},
 	})
@@ -156,12 +156,12 @@ func TestCustomSecretRejectsUnsafeRequestsWithoutStoringAnything(t *testing.T) {
 		"reference source": {
 			request: CustomSecretSetRequest{Scope: servicesecrets.ScopeGlobal, Hosts: []string{"api.example.test"},
 				Source: &servicesecrets.Source{Reference: "op://vault/item/field"}},
-			want: ErrCustomSecretApprovalUnavailable,
+			want: nil,
 		},
 		"command source": {
 			request: CustomSecretSetRequest{Scope: servicesecrets.ScopeGlobal, Hosts: []string{"api.example.test"},
 				Source: &servicesecrets.Source{Command: "echo synthetic"}},
-			want: ErrCustomSecretApprovalUnavailable,
+			want: nil,
 		},
 		"url host": {
 			request: CustomSecretSetRequest{Value: []byte(value), Hosts: []string{"https://api.example.test"}},
@@ -195,7 +195,7 @@ func TestCustomSecretRejectsUnsafeRequestsWithoutStoringAnything(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			svc, vault, _ := newCustomSecretTestService(t)
-			_, _, err := svc.SetCustomSecret(ctx, tc.request)
+			_, _, _, err := svc.SetCustomSecret(ctx, tc.request)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
@@ -215,7 +215,7 @@ func TestCustomSecretSubstitutionBindsExactHostsAndScopes(t *testing.T) {
 	svc, _, _ := newCustomSecretTestService(t)
 	mustSet := func(request CustomSecretSetRequest) {
 		t.Helper()
-		if _, _, err := svc.SetCustomSecret(ctx, request); err != nil {
+		if _, _, _, err := svc.SetCustomSecret(ctx, request); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -266,7 +266,7 @@ func sameStringSet(got, want []string) bool {
 func TestCustomSecretRemovalInvalidatesFutureSubstitution(t *testing.T) {
 	ctx := context.Background()
 	svc, vault, _ := newCustomSecretTestService(t)
-	if _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "dev-key", Scope: servicesecrets.ScopeSandbox,
+	if _, _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "dev-key", Scope: servicesecrets.ScopeSandbox,
 		SandboxName: "dev", Value: []byte("removal-value-canary"), Placeholder: "rheic-removal-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestCustomSecretRemovalInvalidatesFutureSubstitution(t *testing.T) {
 func TestCustomSecretMissingKeychainRecordFailsClosedAtSubstitution(t *testing.T) {
 	ctx := context.Background()
 	svc, vault, _ := newCustomSecretTestService(t)
-	if _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "orphan-key", Scope: servicesecrets.ScopeGlobal,
+	if _, _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "orphan-key", Scope: servicesecrets.ScopeGlobal,
 		Value: []byte("orphan-value-canary"), Placeholder: "rheic-orphan-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestCustomCreateEnvCarriesPlaceholdersOnlyForApplicableSecrets(t *testing.T
 		{Service: "other-env", Scope: servicesecrets.ScopeSandbox, SandboxName: "other", Value: []byte("other-env-value-canary"),
 			Placeholder: "rheic-other-env-3", Env: "OTHER_KEY", Hosts: []string{"api.other.example.test"}},
 	} {
-		if _, _, err := svc.SetCustomSecret(ctx, request); err != nil {
+		if _, _, _, err := svc.SetCustomSecret(ctx, request); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -343,7 +343,7 @@ func TestCustomSecretSandboxCleanupRemovesOnlyOwnedEntries(t *testing.T) {
 		{Service: "dev-clean", Scope: servicesecrets.ScopeSandbox, SandboxName: "dev", Value: []byte("dev-clean-value"), Placeholder: "rheic-dev-clean-2", Hosts: []string{"api.example.test"}},
 		{Service: "other-clean", Scope: servicesecrets.ScopeSandbox, SandboxName: "other", Value: []byte("other-clean-value"), Placeholder: "rheic-other-clean-3", Hosts: []string{"api.example.test"}},
 	} {
-		if _, _, err := svc.SetCustomSecret(ctx, request); err != nil {
+		if _, _, _, err := svc.SetCustomSecret(ctx, request); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -368,7 +368,7 @@ func TestCustomSecretLargeValueIsChunkedAndSubstitutable(t *testing.T) {
 	ctx := context.Background()
 	svc, vault, _ := newCustomSecretTestService(t)
 	large := strings.Repeat("L", 6000)
-	if _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "large-key", Scope: servicesecrets.ScopeGlobal,
+	if _, _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "large-key", Scope: servicesecrets.ScopeGlobal,
 		Value: []byte(large), Placeholder: "rheic-large-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestCustomSecretLogsAndErrorsNeverCarryValuesOrPlaceholders(t *testing.T) {
 	logs := captureLogs(t)
 	svc, _, _ := newCustomSecretTestService(t)
 	const canary = "synthetic-log-canary-value-42"
-	_, placeholder, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "log-key", Scope: servicesecrets.ScopeGlobal,
+	_, placeholder, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "log-key", Scope: servicesecrets.ScopeGlobal,
 		Value: []byte(canary), Hosts: []string{"api.example.test"}})
 	if err != nil {
 		t.Fatal(err)
@@ -394,8 +394,9 @@ func TestCustomSecretLogsAndErrorsNeverCarryValuesOrPlaceholders(t *testing.T) {
 	if _, err := svc.RemoveCustomSecret(ctx, "log-key", servicesecrets.ScopeGlobal, ""); err != nil {
 		t.Fatal(err)
 	}
-	_, _, rejected := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Value: []byte(canary), Hosts: []string{"https://" + canary + ".test"}})
-	if rejected == nil {
+	//nolint:dogsled // placeholder unused on the rejected path
+	_, _, _, err = svc.SetCustomSecret(ctx, CustomSecretSetRequest{Value: []byte(canary), Hosts: []string{"https://" + canary + ".test"}})
+	if err == nil {
 		t.Fatal("invalid host accepted")
 	}
 	output := logs.String()
@@ -403,7 +404,7 @@ func TestCustomSecretLogsAndErrorsNeverCarryValuesOrPlaceholders(t *testing.T) {
 		t.Fatalf("positive control: audit events missing: %s", output)
 	}
 	for _, needle := range []string{canary, placeholder} {
-		if strings.Contains(output, needle) || strings.Contains(rejected.Error(), needle) {
+		if strings.Contains(output, needle) || strings.Contains(err.Error(), needle) {
 			t.Fatalf("log or error leaked %q", needle)
 		}
 	}
@@ -414,12 +415,12 @@ func TestCustomSecretRotationKeepsPlaceholderUnlessReplaced(t *testing.T) {
 	svc, _, _ := newCustomSecretTestService(t)
 	request := CustomSecretSetRequest{Service: "rotate-key", Scope: servicesecrets.ScopeGlobal, Env: "ROTATE_KEY",
 		Value: []byte("rotation-value-one"), Hosts: []string{"api.example.test"}}
-	_, first, err := svc.SetCustomSecret(ctx, request)
+	_, first, _, err := svc.SetCustomSecret(ctx, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Value = []byte("rotation-value-two")
-	_, second, err := svc.SetCustomSecret(ctx, request)
+	_, second, _, err := svc.SetCustomSecret(ctx, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +432,7 @@ func TestCustomSecretRotationKeepsPlaceholderUnlessReplaced(t *testing.T) {
 	}
 	request.Placeholder = "rheic-explicit-after-rotation"
 	request.Value = []byte("rotation-value-three")
-	_, third, err := svc.SetCustomSecret(ctx, request)
+	_, third, _, err := svc.SetCustomSecret(ctx, request)
 	if err != nil || third != request.Placeholder {
 		t.Fatalf("explicit placeholder = %q, %v", third, err)
 	}

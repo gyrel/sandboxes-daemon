@@ -153,12 +153,12 @@ func TestSetCustomValidationAndSourceCodes(t *testing.T) {
 		"reference source without approval": {
 			request: &localv1.SecretServiceSetCustomRequest{Hosts: []string{"api.example.test"},
 				Source: &localv1.SecretSource{Reference: "op://vault/item/field"}},
-			code: codes.FailedPrecondition,
+			code: codes.OK,
 		},
 		"command source without approval": {
 			request: &localv1.SecretServiceSetCustomRequest{Hosts: []string{"api.example.test"},
 				Source: &localv1.SecretSource{Command: "echo synthetic"}},
-			code: codes.FailedPrecondition,
+			code: codes.OK,
 		},
 		"invalid host": {
 			request: &localv1.SecretServiceSetCustomRequest{Value: []byte("v"), Hosts: []string{"user@api.example.test"}},

@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.0.93 — 2026-11-24
+
+### Added
+
+- `ApprovalService` (api v0.0.36): in-memory pending-approval store with
+  `List`, `Inspect` and `Respond`. Entries carry only the contract disclosure
+  fields; secret material is unrepresentable. IDs are generated with
+  crypto/rand. Resolved approvals are retained for 24 hours or 100 entries,
+  whichever bound is hit first.
+- `SetApprovalProvider` seam on `Service`. The daemon ships without a trusted
+  OS-backed provider, so every `APPROVE` and every `EXACT` persist fails
+  closed with `FAILED_PRECONDITION`. `DENY` is always accepted for a pending
+  approval. `UNSPECIFIED` decision is `INVALID_ARGUMENT`; unspecified persist
+  means `ONCE`.
+- `SecretService.SetCustom` reference and command sources now create a pending
+  approval (command -> `HOST_COMMAND`, reference -> `OTHER`) and return
+  `approval_required=true` with an `approval_id`, storing nothing secret-side.
+  Inline values are unchanged.
+- Host-command secret sources register a pending approval when they challenge,
+  so `policy approval ls` observes them. Exact command/service/scope binding
+  and `NoVerify` semantics are unchanged.
+
+### Not yet available
+
+- Trusted OS-backed approval provider (P1.3) and granting on approval.
+- MCP registration/call challenges are tracked in the same store, but their
+  resolution still uses the MCP approval endpoints.
+- Custom secret reference/command sources store nothing until a future
+  provider grants approval.
+
 ## v0.0.92 — 2026-11-24
 
 ### Added
