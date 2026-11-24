@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.0.97 — 2026-11-24
+
+### Added
+
+- Daemon implementation of MCP management RPCs (api v0.0.38): `MCPLoadServer`,
+  `MCPUnloadServer`, `InspectMCPServer`, `GetMCPAuthStatus`, `RemoveMCPAuth`,
+  and `StartMCPAuth`. Load/unload track per-sandbox gateway attachment state;
+  inspect returns a sanitized `MCPServerDetail` (identity display fields only);
+  auth status maps stored OAuth vault state to the contract enum; remove-auth
+  deletes vault records and drops cached sessions without removing registrations.
+- Registration accepts and validates OAuth fields 8-15 (authorization server URL
+  without userinfo/query, client id, resource, scopes/no_scope exclusivity,
+  skip_auth, callback port bounds, disable_http2) and stores them in the registry.
+
+### Notes
+
+- Interactive OAuth discovery/DCR/browser flow and live gateway tool
+  notifications are not implemented in this daemon; `StartMCPAuth` returns
+  `FAILED_PRECONDITION` and unload reports detachment on next attach. These
+  seams are left for the architect.
+
 ## v0.0.96 — 2026-11-24
 
 ### Added

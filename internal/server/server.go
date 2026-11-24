@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/rheic/sandboxes-daemon/internal/mcpmanager"
 	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
 	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
 	"github.com/rheic/sandboxes-daemon/internal/service"
@@ -79,18 +80,28 @@ func (s *SandboxServer) MCPRegisterServer(ctx context.Context, req *localv1.MCPR
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "MCP registration request is required")
 	}
+	opts := mcpmanager.RegistrationOptions{
+		OAuthAuthorizationServer: req.GetOauthAuthorizationServer(),
+		ClientID:                 req.GetClientId(),
+		Resource:                 req.GetResource(),
+		Scopes:                   append([]string(nil), req.GetScopes()...),
+		NoScope:                  req.GetNoScope(),
+		SkipAuth:                 req.GetSkipAuth(),
+		CallbackPort:             req.GetCallbackPort(),
+		DisableHTTP2:             req.GetDisableHttp2(),
+	}
 	var id string
 	var err error
 	if req.GetUrl() != "" {
 		if req.GetCommand() != "" || len(req.GetArguments()) > 0 || req.GetWorkingDirectory() != "" {
 			return nil, status.Error(codes.InvalidArgument, "remote MCP registration must not include stdio fields")
 		}
-		id, err = s.svc.RegisterRemoteMCPServer(ctx, req.GetName(), req.GetUrl(), req.GetHeaders(), req.GetSecretHeaders())
+		id, err = s.svc.RegisterRemoteMCPServer(ctx, req.GetName(), req.GetUrl(), req.GetHeaders(), req.GetSecretHeaders(), opts)
 	} else {
 		if len(req.GetHeaders())+len(req.GetSecretHeaders()) > 0 {
 			return nil, status.Error(codes.InvalidArgument, "headers are only supported for remote MCP servers")
 		}
-		id, err = s.svc.RegisterMCPServer(ctx, req.GetName(), req.GetCommand(), req.GetArguments(), req.GetWorkingDirectory())
+		id, err = s.svc.RegisterMCPServer(ctx, req.GetName(), req.GetCommand(), req.GetArguments(), req.GetWorkingDirectory(), opts)
 	}
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -118,6 +129,102 @@ func (s *SandboxServer) MCPRemoveServer(ctx context.Context, req *localv1.MCPRem
 		return nil, status.Error(codes.Internal, "MCP registry update failed")
 	}
 	return &localv1.MCPRemoveServerResponse{Removed: removed}, nil
+}
+
+func (s *SandboxServer) MCPLoadServer(ctx context.Context, req *localv1.MCPLoadServerRequest) (*localv1.MCPLoadServerResponse, error) {
+	if req == nil || req.GetName() == "" || req.GetSandboxId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "MCP server name and sandbox ID are required")
+	}
+	loaded, err := s.svc.LoadMCPServer(ctx, req.GetName(), req.GetSandboxId())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &localv1.MCPLoadServerResponse{Loaded: loaded}, nil
+}
+
+func (s *SandboxServer) MCPUnloadServer(ctx context.Context, req *localv1.MCPUnloadServerRequest) (*localv1.MCPUnloadServerResponse, error) {
+	if req == nil || req.GetName() == "" || req.GetSandboxId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "MCP server name and sandbox ID are required")
+	}
+	unloaded, err := s.svc.UnloadMCPServer(ctx, req.GetName(), req.GetSandboxId())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &localv1.MCPUnloadServerResponse{Unloaded: unloaded}, nil
+}
+
+func (s *SandboxServer) InspectMCPServer(ctx context.Context, req *localv1.InspectMCPServerRequest) (*localv1.InspectMCPServerResponse, error) {
+	if req == nil || req.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "MCP server name is required")
+	}
+	detail, err := s.svc.InspectMCPServer(ctx, req.GetName(), req.GetSandboxId())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	gatewayState := localv1.MCPGatewayState_MCP_GATEWAY_STATE_UNLOADED
+	if detail.GatewayState == localv1.MCPGatewayState_MCP_GATEWAY_STATE_LOADED {
+		gatewayState = localv1.MCPGatewayState_MCP_GATEWAY_STATE_LOADED
+	}
+	return &localv1.InspectMCPServerResponse{Server: &localv1.MCPServerDetail{
+		Name:                detail.Name,
+		SandboxId:           detail.SandboxID,
+		IdentityDisplayName: detail.IdentityDisplayName,
+		IdentityKind:        detail.IdentityKind,
+		IdentityIssuerHost:  detail.IdentityIssuerHost,
+		ToolsCount:          detail.ToolsCount,
+		LastSyncAtUnix:      detail.LastSyncAtUnix,
+		AuthStatus:          detail.AuthStatus,
+		GatewayState:        gatewayState,
+	}}, nil
+}
+
+func (s *SandboxServer) GetMCPAuthStatus(ctx context.Context, req *localv1.GetMCPAuthStatusRequest) (*localv1.GetMCPAuthStatusResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "MCP auth status request is required")
+	}
+	if !req.GetAll() && req.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "MCP server name is required")
+	}
+	statusValue, entries, err := s.svc.GetMCPAuthStatus(ctx, req.GetName(), req.GetAll())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	resp := &localv1.GetMCPAuthStatusResponse{}
+	if req.GetAll() {
+		out := make([]*localv1.MCPServerAuthStatus, 0, len(entries))
+		for i := range entries {
+			out = append(out, &localv1.MCPServerAuthStatus{Name: entries[i].Name, Status: entries[i].Status})
+		}
+		resp.Entries = out
+	} else {
+		resp.Status = statusValue
+	}
+	return resp, nil
+}
+
+func (s *SandboxServer) RemoveMCPAuth(ctx context.Context, req *localv1.RemoveMCPAuthRequest) (*localv1.RemoveMCPAuthResponse, error) {
+	if req == nil || req.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "MCP server name is required")
+	}
+	removed, err := s.svc.RemoveMCPAuth(ctx, req.GetName())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &localv1.RemoveMCPAuthResponse{Removed: removed}, nil
+}
+
+func (s *SandboxServer) StartMCPAuth(ctx context.Context, req *localv1.StartMCPAuthRequest) (*localv1.StartMCPAuthResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "MCP auth request is required")
+	}
+	if !req.GetAll() && req.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "MCP server name is required")
+	}
+	approvalRequired, approvalID, err := s.svc.StartMCPAuth(ctx, req.GetName(), req.GetSandboxId(), req.GetScopes(), req.GetNoScope(), req.GetAll())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &localv1.StartMCPAuthResponse{ApprovalRequired: approvalRequired, ApprovalId: approvalID}, nil
 }
 
 func (s *SandboxServer) MCPCall(ctx context.Context, req *localv1.MCPCallRequest) (*localv1.MCPCallResponse, error) {
