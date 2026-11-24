@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.0.94 — 2026-11-24
+
+### Added
+
+- `KitPolicyService` (api v0.0.37): `CheckKit` and `GetKitPolicyConfig` RPCs
+  registered like sibling services. `CheckKit` validates source kind and
+  source references (userinfo/query rejected as `INVALID_REFERENCE` without
+  echoing the reference), applies local kit settings and managed organization
+  policy (managed deny is sticky), and returns fail-closed decisions.
+- Settings keys `kit.allowedSources` (directory/zip/git/oci; default
+  directory+zip), `kit.allowLocalKits` (default true) and `kit.requireSignature`
+  (default false) with strict validation.
+- Exported `Service.CheckKitSource` for the future kit install path.
+
 ## v0.0.93 — 2026-11-24
 
 ### Added

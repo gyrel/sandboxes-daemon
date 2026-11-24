@@ -90,6 +90,10 @@ type Service struct {
 	OrgPolicyEnforce bool
 	// OrgPolicyOrg is the organization whose stored bundle is enforced.
 	OrgPolicyOrg string
+	// Kit policy settings. KitAllowedSources defaults to directory+zip when empty.
+	KitAllowedSources   []string
+	KitAllowLocalKits   bool
+	KitRequireSignature bool
 	// QUICEnabled mirrors the gateway experimental UDP domain policy capability
 	// so the daemon can reject unenforceable effective policy before runtime.
 	QUICEnabled              bool
@@ -1329,6 +1333,8 @@ func New(st *store.Store, backend runtime.Backend) *Service {
 		DefaultImage:        "alpine:3.22",
 		DefaultCPUs:         cpus,
 		DefaultMemoryMiB:    memoryMiB,
+		KitAllowedSources:   []string{kitSourceDirectory, kitSourceZip},
+		KitAllowLocalKits:   true,
 		now:                 time.Now,
 		dockerHubAuth:       oauthsession.NewDockerHubAuthTransport(),
 		oauthRefresh:        oauthsession.NewRefreshCoordinator(),
