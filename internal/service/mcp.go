@@ -3,13 +3,33 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"time"
 
 	core "github.com/rheic/sandboxes-core"
 	"github.com/rheic/sandboxes-core/sandbox"
 
+	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+
 	"github.com/rheic/sandboxes-daemon/internal/mcpmanager"
+	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
 	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
 )
+
+// MCPInspectDetail is the daemon-side view returned by InspectMCPServer.
+type MCPInspectDetail struct {
+	Name                string
+	SandboxID           string
+	IdentityDisplayName string
+	IdentityKind        string
+	IdentityIssuerHost  string
+	ToolsCount          uint32
+	LastSyncAtUnix      int64
+	AuthStatus          localv1.MCPAuthStatus
+	GatewayState        localv1.MCPGatewayState
+}
 
 func (s *Service) mcpRegistry(ctx context.Context) (*mcpmanager.Manager, error) {
 	s.mcpMu.Lock()
@@ -91,22 +111,22 @@ func (s *Service) ListMCPServers(ctx context.Context, sandboxID string) ([]mcpma
 	}
 	return manager.List(), nil
 }
-func (s *Service) RegisterMCPServer(ctx context.Context, name, command string, args []string, directory string) (string, error) {
+func (s *Service) RegisterMCPServer(ctx context.Context, name, command string, args []string, directory string, opts ...mcpmanager.RegistrationOptions) (string, error) {
 	manager, err := s.mcpRegistry(ctx)
 	if err != nil {
 		return "", err
 	}
-	return manager.Register(ctx, name, command, args, directory)
+	return manager.Register(ctx, name, command, args, directory, opts...)
 }
 
 // RegisterRemoteMCPServer queues a remote (streamable HTTP) MCP server. The
 // URL must satisfy the daemon's fail-closed host allowlist.
-func (s *Service) RegisterRemoteMCPServer(ctx context.Context, name, rawURL string, headers, secretHeaders map[string]string) (string, error) {
+func (s *Service) RegisterRemoteMCPServer(ctx context.Context, name, rawURL string, headers, secretHeaders map[string]string, opts ...mcpmanager.RegistrationOptions) (string, error) {
 	manager, err := s.mcpRegistry(ctx)
 	if err != nil {
 		return "", err
 	}
-	return manager.RegisterRemote(ctx, name, rawURL, headers, secretHeaders)
+	return manager.RegisterRemote(ctx, name, rawURL, headers, secretHeaders, opts...)
 }
 func (s *Service) ApproveMCPRegistration(ctx context.Context, id string) (*mcpmanager.Summary, error) {
 	manager, err := s.mcpRegistry(ctx)
@@ -151,4 +171,183 @@ func (s *Service) ApproveMCPCall(ctx context.Context, id string) (json.RawMessag
 		}
 		return nil
 	})
+}
+
+func (s *Service) LoadMCPServer(ctx context.Context, name, sandboxID string) (bool, error) {
+	if name == "" || sandboxID == "" {
+		return false, fmt.Errorf("%w: MCP server name and sandbox ID are required", errors.New("invalid argument"))
+	}
+	sb, err := s.store.Get(ctx, sandboxID)
+	if err != nil {
+		return false, err
+	}
+	if sb.State != sandbox.Running {
+		return false, core.ErrConflict
+	}
+	manager, err := s.mcpRegistry(ctx)
+	if err != nil {
+		return false, err
+	}
+	return manager.Load(ctx, name, sandboxID)
+}
+
+func (s *Service) UnloadMCPServer(ctx context.Context, name, sandboxID string) (bool, error) {
+	if name == "" || sandboxID == "" {
+		return false, fmt.Errorf("%w: MCP server name and sandbox ID are required", errors.New("invalid argument"))
+	}
+	sb, err := s.store.Get(ctx, sandboxID)
+	if err != nil {
+		return false, err
+	}
+	if sb.State != sandbox.Running {
+		return false, core.ErrConflict
+	}
+	manager, err := s.mcpRegistry(ctx)
+	if err != nil {
+		return false, err
+	}
+	return manager.Unload(ctx, name, sandboxID)
+}
+
+func (s *Service) InspectMCPServer(ctx context.Context, name, sandboxID string) (MCPInspectDetail, error) {
+	if name == "" {
+		return MCPInspectDetail{}, fmt.Errorf("%w: MCP server name is required", errors.New("invalid argument"))
+	}
+	if sandboxID != "" {
+		if _, err := s.store.Get(ctx, sandboxID); err != nil {
+			return MCPInspectDetail{}, err
+		}
+	}
+	manager, err := s.mcpRegistry(ctx)
+	if err != nil {
+		return MCPInspectDetail{}, err
+	}
+	server, loaded, err := manager.Inspect(name, sandboxID)
+	if err != nil {
+		return MCPInspectDetail{}, err
+	}
+	issuerHost := ""
+	if server.OAuthAuthorizationServer != "" {
+		if parsed, err := url.Parse(server.OAuthAuthorizationServer); err == nil && parsed.Host != "" {
+			issuerHost = parsed.Hostname()
+		}
+	}
+	if issuerHost == "" && server.URL != "" {
+		if parsed, err := url.Parse(server.URL); err == nil {
+			issuerHost = parsed.Hostname()
+		}
+	}
+	gatewayState := localv1.MCPGatewayState_MCP_GATEWAY_STATE_UNLOADED
+	if loaded {
+		gatewayState = localv1.MCPGatewayState_MCP_GATEWAY_STATE_LOADED
+	}
+	return MCPInspectDetail{
+		Name:                server.Name,
+		SandboxID:           sandboxID,
+		IdentityDisplayName: server.Name,
+		IdentityKind:        server.Transport,
+		IdentityIssuerHost:  issuerHost,
+		ToolsCount:          0,
+		LastSyncAtUnix:      0,
+		AuthStatus:          s.mcpAuthStatusForServer(ctx, server),
+		GatewayState:        gatewayState,
+	}, nil
+}
+
+func isMCPAuthBearing(server mcpmanager.Server) bool {
+	return server.Transport == "remote"
+}
+
+func (s *Service) mcpAuthStatusForServer(ctx context.Context, server mcpmanager.Server) localv1.MCPAuthStatus {
+	if !isMCPAuthBearing(server) {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_NOT_CONFIGURED
+	}
+	vault := s.oauthVault()
+	sink, err := oauthsession.NewVaultSink(vault, server.Name)
+	if err != nil {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_ERROR
+	}
+	has, err := sink.HasTokens(ctx)
+	if err != nil {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_ERROR
+	}
+	if !has {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_NOT_CONFIGURED
+	}
+	_, expiresAt, err := sink.Load(ctx)
+	if err != nil {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_ERROR
+	}
+	if !expiresAt.IsZero() && time.Now().UTC().After(expiresAt) {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_EXPIRED
+	}
+	return localv1.MCPAuthStatus_MCP_AUTH_STATUS_READY
+}
+
+func (s *Service) GetMCPAuthStatus(ctx context.Context, name string, all bool) (localv1.MCPAuthStatus, []localv1.MCPServerAuthStatus, error) {
+	manager, err := s.mcpRegistry(ctx)
+	if err != nil {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_UNSPECIFIED, nil, err
+	}
+	if all {
+		entries := make([]localv1.MCPServerAuthStatus, 0)
+		for _, server := range manager.AllServers() { //nolint:gocritic
+			if !isMCPAuthBearing(server) {
+				continue
+			}
+			entries = append(entries, localv1.MCPServerAuthStatus{
+				Name:   server.Name,
+				Status: s.mcpAuthStatusForServer(ctx, server),
+			})
+		}
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_UNSPECIFIED, entries, nil
+	}
+	if name == "" {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_UNSPECIFIED, nil, fmt.Errorf("%w: MCP server name is required", errors.New("invalid argument"))
+	}
+	server, ok := manager.GetServer(name)
+	if !ok {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_UNSPECIFIED, nil, core.ErrNotFound
+	}
+	if !isMCPAuthBearing(server) {
+		return localv1.MCPAuthStatus_MCP_AUTH_STATUS_NOT_CONFIGURED, nil, nil
+	}
+	return s.mcpAuthStatusForServer(ctx, server), nil, nil
+}
+
+func (s *Service) RemoveMCPAuth(ctx context.Context, name string) (bool, error) {
+	if name == "" {
+		return false, fmt.Errorf("%w: MCP server name is required", errors.New("invalid argument"))
+	}
+	removed := false
+	vault := s.oauthVault()
+	sink, err := oauthsession.NewVaultSink(vault, name)
+	if err == nil {
+		has, herr := sink.HasTokens(ctx)
+		if herr == nil && has {
+			if derr := sink.Delete(ctx); derr == nil {
+				removed = true
+			}
+		}
+	}
+	if manager, merr := s.mcpRegistry(ctx); merr == nil {
+		manager.DropSession(name)
+	}
+	return removed, nil
+}
+
+func (s *Service) StartMCPAuth(ctx context.Context, name, sandboxID string, scopes []string, noScope, all bool) (bool, string, error) {
+	if !all && name == "" {
+		return false, "", fmt.Errorf("%w: MCP server name is required", errors.New("invalid argument"))
+	}
+	if name != "" {
+		manager, err := s.mcpRegistry(ctx)
+		if err != nil {
+			return false, "", err
+		}
+		if _, ok := manager.GetServer(name); !ok {
+			return false, "", core.ErrNotFound
+		}
+	}
+	return false, "", fmt.Errorf("%w: interactive MCP OAuth discovery and DCR flow is not implemented in this daemon", core.ErrConflict)
 }

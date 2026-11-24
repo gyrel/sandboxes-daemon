@@ -123,11 +123,15 @@ func dialRemoteIP(ctx context.Context, dialer *net.Dialer, override func(context
 // RegisterRemote queues a remote (streamable HTTP) MCP server for trusted
 // host approval. The URL must satisfy the fail-closed remote policy before a
 // challenge is created.
-func (m *Manager) RegisterRemote(ctx context.Context, name, rawURL string, headers, secretHeaders map[string]string) (string, error) {
+func (m *Manager) RegisterRemote(ctx context.Context, name, rawURL string, headers, secretHeaders map[string]string, opts ...RegistrationOptions) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	server, err := prepareRemoteServer(name, rawURL, headers, secretHeaders, m.remoteHostAllowed)
+	o := RegistrationOptions{}
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	server, err := prepareRemoteServer(name, rawURL, headers, secretHeaders, m.remoteHostAllowed, o)
 	if err != nil {
 		return "", err
 	}
@@ -136,9 +140,16 @@ func (m *Manager) RegisterRemote(ctx context.Context, name, rawURL string, heade
 
 // prepareRemoteServer validates a remote MCP server registration against the
 // host allowlist. Anything but an exact, allowlisted https host fails closed.
-func prepareRemoteServer(name, rawURL string, headers, secretHeaders map[string]string, allowed func(string) bool) (Server, error) {
+func prepareRemoteServer(name, rawURL string, headers, secretHeaders map[string]string, allowed func(string) bool, opts ...RegistrationOptions) (Server, error) {
 	if !namePattern.MatchString(name) {
 		return Server{}, errors.New("invalid MCP server name")
+	}
+	o := RegistrationOptions{}
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	if err := validateRegistrationOptions(o); err != nil {
+		return Server{}, err
 	}
 	_, cleanURL, err := validateRemoteURL(rawURL, allowed)
 	if err != nil {
@@ -148,7 +159,16 @@ func prepareRemoteServer(name, rawURL string, headers, secretHeaders map[string]
 	if err != nil {
 		return Server{}, err
 	}
-	return Server{Name: name, Transport: transportRemote, URL: cleanURL, SecretHeaders: copiedSecrets}, nil
+	return Server{Name: name, Transport: transportRemote, URL: cleanURL, SecretHeaders: copiedSecrets,
+		OAuthAuthorizationServer: o.OAuthAuthorizationServer,
+		ClientID:                 o.ClientID,
+		Resource:                 o.Resource,
+		Scopes:                   append([]string(nil), o.Scopes...),
+		NoScope:                  o.NoScope,
+		SkipAuth:                 o.SkipAuth,
+		CallbackPort:             o.CallbackPort,
+		DisableHTTP2:             o.DisableHTTP2,
+	}, nil
 }
 
 // validateRemoteURL enforces the remote transport policy and returns the
@@ -181,7 +201,7 @@ func validateRemoteURL(rawURL string, allowed func(string) bool) (host, cleanURL
 		return "", "", errors.New("remote MCP host is not allowed by local policy")
 	}
 	clean := *parsed
-	clean.Scheme = "https"
+	clean.Scheme = "https" //nolint:goconst
 	if clean.Port() == "" {
 		clean.Host = net.JoinHostPort(strings.ToLower(host), "443")
 	} else {
