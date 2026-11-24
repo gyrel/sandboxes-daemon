@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.95 — 2026-11-24
+
+### Fixed
+
+- Consume runtime v0.0.61: `create` starts the VM network only after proxy
+  and skills validation, so a failed create no longer leaks a network
+  attachment.
+
 ## v0.0.94 — 2026-11-24
 
 ### Added
