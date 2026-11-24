@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.90 — 2026-11-24
+
+### Fixed
+
+- Consume runtime v0.0.59: template capture excludes are root-anchored
+  (`./proc`, `./sys`, `./dev`, `./run`), so nested directories with those
+  names stay in the capture, `/run` runtime state no longer enters
+  templates, and deleted base directories fold into one whiteout instead
+  of whiteouts inside a whiteout that the erofs differ rejected with
+  `Not a directory`.
+
 ## v0.0.89 — 2026-11-23
 
 ### Fixed
