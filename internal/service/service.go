@@ -35,6 +35,7 @@ import (
 	"github.com/rheic/sandboxes-gateway/registryauth"
 	runtime "github.com/rheic/sandboxes-runtime"
 
+	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
 	"github.com/rheic/sandboxes-daemon/internal/mcpmanager"
 	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
 	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
@@ -64,6 +65,7 @@ type Service struct {
 	registryCredentials *registrycredentials.Store
 	registryPullLimiter *registrycredentials.PullLimiter
 	serviceSecrets      *servicesecrets.Store
+	customSecrets       *customsecrets.Store
 	secretProxies       *secretproxy.Manager
 	proxyHelperPath     string
 	proxyTempDir        string
@@ -1360,6 +1362,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 		return operation.Operation{}, err
 	}
 	env, proxyServiceNames, err := stripProxyCreateEnv(env)
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	env, err = s.customCreateEnv(ctx, name, env)
 	if err != nil {
 		return operation.Operation{}, err
 	}
@@ -3962,6 +3968,9 @@ func (s *Service) cleanupDeletedSandbox(ctx context.Context, sb sandbox.Sandbox)
 		failures = append(failures, err)
 	}
 	if err := s.cleanupSandboxServiceSecrets(ctx, sb.Name); err != nil {
+		failures = append(failures, err)
+	}
+	if err := s.cleanupSandboxCustomSecrets(ctx, sb.Name); err != nil {
 		failures = append(failures, err)
 	}
 	if err := s.cleanupSandboxRegistryCredentials(ctx, sb.Name); err != nil {

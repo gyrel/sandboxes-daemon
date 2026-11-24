@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.0.92 — Unreleased
+
+### Added
+
+- `SecretService.SetCustom` (api v0.0.36): a custom secret binds a
+  sandbox-visible placeholder to a host-vault value and a set of destination
+  host patterns. Inline values are stored only in the OS keychain. SQLite keeps
+  the masked placeholder, host patterns and environment name. Responses return
+  the full placeholder once on write and never the value.
+- Host patterns accept exact DNS names, IP literals, `*` (one label) and `**`
+  (one or more labels). URLs, userinfo, ports, paths and bare wildcard suffixes
+  are rejected.
+- Proxy substitution: on an https route, a placeholder in a guest request header
+  is replaced with the matching host-vault value before the request is
+  forwarded. A resolver error, an ambiguous placeholder set or a plaintext route
+  never substitutes and fails closed.
+- Custom secrets with an environment name inject the placeholder into the
+  sandbox environment at create. Only the placeholder is injected.
+- `SecretService.List` returns custom secrets. `SecretService.Remove` removes
+  them and closes streams authorized under them.
+- Values larger than one keychain item use the shared chunked format
+  (`rheic-keychain-chunks-v1:`), now in `internal/keychainchunks`.
+
+### Not yet available
+
+- `reference` and `command` sources return `FAILED_PRECONDITION`. Approval
+  requires a trusted OS-backed provider and an ApprovalService, neither of
+  which exists in this daemon yet.
+- Custom substitution applies only on proxy channels that already exist for the
+  sandbox. A sandbox with no brokered route for a host does not substitute for
+  that host.
+
+### Changed
+
+- Consume sandboxes-api v0.0.36 for `SetCustom` and the custom
+  `SecretSummary` fields.
+- Store schema v7 adds `custom_secret_index`. The migration runs in one
+  transaction, and the pre-upgrade backup is taken as for earlier versions.
+
 ## v0.0.91 — 2026-11-24
 
 ### Fixed
