@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.91 — 2026-11-24
+
+### Fixed
+
+- Consume runtime v0.0.60: template imports register under the exact
+  normalized name (`--base-name` plus the OCI index ref-name annotation)
+  instead of containerd's generated `import-<date>` reference, so
+  `template save` completes import verification. Templates saved by
+  older runtimes carry annotation-less archives; re-save them.
+
 ## v0.0.90 — 2026-11-24
 
 ### Fixed
