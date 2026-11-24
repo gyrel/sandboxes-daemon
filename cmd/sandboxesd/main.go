@@ -339,7 +339,7 @@ func buildBackend(opts *options, gatewayLost chan<- string) (runtime.Backend, fu
 		CTR:         opts.ctrPath,
 		Runtime:     opts.runtimeName,
 		Snapshotter: opts.snapshotter,
-	}, runtimectr.BackendOptions{Image: opts.image, FIFODir: fifoDir, Network: network, Artifacts: artifacts, DigestsPath: digests})
+	}, runtimectr.BackendOptions{StateDir: opts.stateDir, Image: opts.image, FIFODir: fifoDir, Network: network, Artifacts: artifacts, DigestsPath: digests})
 	if err != nil {
 		return nil, nil, fmt.Errorf("create runtime backend: %w", err)
 	}

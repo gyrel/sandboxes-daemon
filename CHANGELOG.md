@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.98 — 2026-11-24
+
+### Fixed
+
+- Pass the daemon state directory into the runtime backend options so
+  ADR-0009 journal recovery roots at the real state dir instead of the
+  default /var/lib/rheic (which logged a fail-closed recovery warning on
+  every start).
+
 ## v0.0.97 — 2026-11-24
 
 ### Added
