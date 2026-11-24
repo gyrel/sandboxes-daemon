@@ -15,6 +15,7 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,6 +28,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	core "github.com/rheic/sandboxes-core"
 
+	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+
+	"github.com/rheic/sandboxes-daemon/internal/approvals"
 	"github.com/rheic/sandboxes-daemon/internal/mcpprocess"
 	"github.com/rheic/sandboxes-daemon/internal/version"
 )
@@ -133,15 +137,16 @@ type challenge struct {
 	arguments     json.RawMessage
 }
 type Manager struct {
-	state    State
-	approver ApprovalProvider
-	now      func() time.Time
-	mu       sync.Mutex
-	servers  map[string]Server
-	pending  map[string]challenge
-	sessions map[string]*managedSession
-	starting map[string]chan struct{}
-	closed   bool
+	state     State
+	approver  ApprovalProvider
+	approvals *approvals.Store
+	now       func() time.Time
+	mu        sync.Mutex
+	servers   map[string]Server
+	pending   map[string]challenge
+	sessions  map[string]*managedSession
+	starting  map[string]chan struct{}
+	closed    bool
 	// remoteHosts is the exact allowlist of host names for remote MCP
 	// servers; empty disables the transport (fail closed).
 	remoteHosts map[string]struct{}
@@ -167,6 +172,12 @@ func (m *Manager) SetRemoteSecretResolver(resolver RemoteSecretResolver) {
 func (m *Manager) SetApprovalProvider(provider ApprovalProvider) {
 	m.mu.Lock()
 	m.approver = provider
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetApprovalStore(store *approvals.Store) {
+	m.mu.Lock()
+	m.approvals = store
 	m.mu.Unlock()
 }
 
@@ -372,9 +383,28 @@ func (m *Manager) registerPrepared(ctx context.Context, server Server) (string, 
 			return "", errors.New("MCP server name already has a pending registration")
 		}
 	}
-	id, err := token()
+	destination, headers, err := approvalScope(server)
 	if err != nil {
 		return "", err
+	}
+	var id string
+	if m.approvals != nil {
+		entry, err := m.approvals.Create(approvals.CreateRequest{
+			Kind:            localv1.ApprovalKind_APPROVAL_KIND_MCP_REGISTRATION,
+			ActionSummary:   "register MCP server " + server.Name,
+			DestinationHost: destinationHost(destination),
+			DestinationPath: destinationPath(destination),
+			Headers:         mcpApprovalHeaders(headers),
+		})
+		if err != nil {
+			return "", err
+		}
+		id = entry.ID
+	} else {
+		id, err = token()
+		if err != nil {
+			return "", err
+		}
 	}
 	m.pending[id] = challenge{kind: challengeRegistration, expires: m.now().Add(challengeTTL), server: cloneServer(server)}
 	return id, nil
@@ -406,6 +436,9 @@ func (m *Manager) ApproveRegistration(ctx context.Context, id string) (*Summary,
 		return nil, err
 	}
 	if err := approver.Approve(ctx, ApprovalRequest{Action: "register", ServerName: p.server.Name, Command: p.server.Command, URL: destination, Headers: headers, ArgumentCount: len(p.server.Arguments), Directory: p.server.Directory}); err != nil {
+		if m.approvals != nil {
+			_, _ = m.approvals.Resolve(id, localv1.ApprovalDecision_APPROVAL_DECISION_DENY, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
+		}
 		return nil, errors.New("MCP registration was denied or trusted approval failed")
 	}
 	if err := m.verifyServer(p.server); err != nil {
@@ -426,6 +459,9 @@ func (m *Manager) ApproveRegistration(ctx context.Context, id string) (*Summary,
 	if err := m.persist(ctx); err != nil {
 		delete(m.servers, p.server.Name)
 		return nil, err
+	}
+	if m.approvals != nil {
+		_, _ = m.approvals.Resolve(id, localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
 	}
 	return &Summary{Name: p.server.Name}, nil
 }
@@ -491,9 +527,29 @@ func (m *Manager) RequestCall(sandbox, server, tool string, raw json.RawMessage)
 	if len(m.pending) >= maxPending {
 		return "", errors.New("MCP approvals are at capacity")
 	}
-	id, err := token()
+	destination, headers, err := approvalScope(cfg)
 	if err != nil {
 		return "", err
+	}
+	var id string
+	if m.approvals != nil {
+		entry, err := m.approvals.Create(approvals.CreateRequest{
+			Kind:            localv1.ApprovalKind_APPROVAL_KIND_MCP_CALL,
+			SandboxID:       sandbox,
+			ActionSummary:   "call " + tool + " on " + cfg.Name,
+			DestinationHost: destinationHost(destination),
+			DestinationPath: destinationPath(destination),
+			Headers:         mcpApprovalHeaders(headers),
+		})
+		if err != nil {
+			return "", err
+		}
+		id = entry.ID
+	} else {
+		id, err = token()
+		if err != nil {
+			return "", err
+		}
 	}
 	m.pending[id] = challenge{kind: challengeToolCall, expires: m.now().Add(challengeTTL), server: cloneServer(cfg), sandbox: sandbox, tool: tool, arguments: append(json.RawMessage(nil), raw...)}
 	return id, nil
@@ -525,10 +581,19 @@ func (m *Manager) ApproveCall(ctx context.Context, id string, validateSandbox fu
 	approver := m.approver
 	m.mu.Unlock()
 	if approver == nil {
+		if m.approvals != nil {
+			_, _ = m.approvals.Resolve(id, localv1.ApprovalDecision_APPROVAL_DECISION_DENY, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
+		}
 		return nil, errors.New("trusted MCP host approval provider is unavailable")
 	}
 	if err := m.approveCallScope(ctx, p, approver); err != nil {
+		if m.approvals != nil {
+			_, _ = m.approvals.Resolve(id, localv1.ApprovalDecision_APPROVAL_DECISION_DENY, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
+		}
 		return nil, err
+	}
+	if m.approvals != nil {
+		_, _ = m.approvals.Resolve(id, localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
 	}
 	if err := validateSandbox(ctx, p.sandbox); err != nil {
 		return nil, errors.New("sandbox is no longer available for MCP")
@@ -1043,4 +1108,45 @@ func (m *Manager) serverUsableLocked(s Server) bool {
 		return err == nil && m.remoteHostAllowedLocked(host)
 	}
 	return executableAvailable(s)
+}
+
+func destinationHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return raw
+}
+
+func destinationPath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil {
+		return u.EscapedPath()
+	}
+	return ""
+}
+
+func mcpApprovalHeaders(headers []ApprovalHeader) []*localv1.ApprovalHeader {
+	out := make([]*localv1.ApprovalHeader, 0, len(headers))
+	for _, h := range headers {
+		vc := localv1.HeaderValueClass_HEADER_VALUE_CLASS_UNSPECIFIED
+		switch h.ValueClass {
+		case ApprovalHeaderStatic:
+			vc = localv1.HeaderValueClass_HEADER_VALUE_CLASS_STATIC
+		case ApprovalHeaderHostVault:
+			vc = localv1.HeaderValueClass_HEADER_VALUE_CLASS_VAULT
+		}
+		out = append(out, &localv1.ApprovalHeader{
+			Name:              h.Name,
+			ValueClass:        vc,
+			VaultReferenceIds: append([]string(nil), h.References...),
+		})
+	}
+	return out
 }

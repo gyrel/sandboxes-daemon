@@ -30,11 +30,14 @@ import (
 
 	core "github.com/rheic/sandboxes-core"
 	"github.com/rheic/sandboxes-core/operation"
+
+	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
 	"github.com/rheic/sandboxes-core/sandbox"
 	gatewaypolicy "github.com/rheic/sandboxes-gateway/policy"
 	"github.com/rheic/sandboxes-gateway/registryauth"
 	runtime "github.com/rheic/sandboxes-runtime"
 
+	"github.com/rheic/sandboxes-daemon/internal/approvals"
 	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
 	"github.com/rheic/sandboxes-daemon/internal/mcpmanager"
 	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
@@ -106,6 +109,8 @@ type Service struct {
 	mcpManager               *mcpmanager.Manager
 	mcpApprover              mcpmanager.ApprovalProvider
 	hostCommandApprover      HostCommandApprovalProvider
+	approvals                *approvals.Store
+	approvalProvider         ApprovalProvider
 	mcpRemoteHosts           []string
 	registryDockerGrants     map[string][]string
 	registryPrivateGrants    map[string][]string
@@ -137,6 +142,21 @@ func (s *Service) SetHostCommandApprovalProvider(provider HostCommandApprovalPro
 	s.hostCommandApprover = provider
 }
 
+// SetApprovalStore installs the pending-approval store. A nil store disables
+// approval tracking; the daemon always installs one at construction.
+func (s *Service) SetApprovalStore(approvalStore *approvals.Store) {
+	s.approvals = approvalStore
+}
+
+// SetApprovalProvider installs the trusted host-side consent mechanism for
+// ApprovalService.Respond. There is deliberately no RPC/CLI boolean fallback:
+// a nil provider keeps APPROVE and EXACT persist failing closed. The provider
+// is never invoked with caller identity or a challenge ID as consent; only the
+// stored disclosure-safe approval entry is presented to it.
+func (s *Service) SetApprovalProvider(provider ApprovalProvider) {
+	s.approvalProvider = provider
+}
+
 func (s *Service) approveSecretSource(ctx context.Context, service string, scope servicesecrets.Scope, sandboxName string, source *servicesecrets.Source) error {
 	if source == nil || strings.TrimSpace(source.Command) == "" {
 		return nil
@@ -148,10 +168,31 @@ func (s *Service) approveHostCommand(ctx context.Context, service string, scope 
 	if s.hostCommandApprover == nil {
 		return errors.New("host command secret sources require trusted host approval; none is configured")
 	}
+	sandboxID := ""
+	if scope == servicesecrets.ScopeSandbox {
+		sandboxID = strings.TrimSpace(sandboxName)
+	}
+	var approvalID string
+	if s.approvals != nil {
+		entry, err := s.approvals.Create(approvals.CreateRequest{
+			Kind:          localv1.ApprovalKind_APPROVAL_KIND_HOST_COMMAND,
+			SandboxID:     sandboxID,
+			ActionSummary: "host command secret source approval",
+		})
+		if err == nil {
+			approvalID = entry.ID
+		}
+	}
 	if err := s.hostCommandApprover.ApproveHostCommand(ctx, HostCommandApprovalRequest{
 		Command: command, Service: service, Scope: scope, SandboxName: sandboxName,
 	}); err != nil {
+		if approvalID != "" && s.approvals != nil {
+			_, _ = s.approvals.Resolve(approvalID, localv1.ApprovalDecision_APPROVAL_DECISION_DENY, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
+		}
 		return errors.New("host command secret source was denied or approval failed")
+	}
+	if approvalID != "" && s.approvals != nil {
+		_, _ = s.approvals.Resolve(approvalID, localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
 	}
 	return nil
 }
@@ -1281,6 +1322,7 @@ func New(st *store.Store, backend runtime.Backend) *Service {
 	cpus, memoryMiB := hostResourceDefaults()
 	s := &Service{
 		store:               st,
+		approvals:           approvals.New(approvals.Config{}),
 		journal:             operation.NewJournal(st.Operations()),
 		backend:             backend,
 		registryPullLimiter: registrycredentials.NewPullLimiter(),

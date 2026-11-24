@@ -23,6 +23,7 @@ func (s *Service) mcpRegistry(ctx context.Context) (*mcpmanager.Manager, error) 
 	}
 	manager.SetRemoteAllowlist(s.mcpRemoteHosts)
 	manager.SetApprovalProvider(s.mcpApprover)
+	manager.SetApprovalStore(s.approvals)
 	manager.SetRemoteSecretResolver(func(ctx context.Context, serverName, placeholder string) ([]byte, error) {
 		if s.serviceSecrets == nil {
 			return nil, servicesecrets.ErrNotFound

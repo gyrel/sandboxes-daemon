@@ -12,6 +12,9 @@ import (
 
 	core "github.com/rheic/sandboxes-core"
 
+	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+
+	"github.com/rheic/sandboxes-daemon/internal/approvals"
 	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
 	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
 	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
@@ -45,36 +48,75 @@ func (s *Service) SetCustomSecretStore(secretStore *customsecrets.Store) {
 // non-secret summary and the full placeholder, which the write path echoes once.
 // The placeholder is written to the keychain together with the value, and only
 // its mask reaches SQLite.
-func (s *Service) SetCustomSecret(ctx context.Context, req CustomSecretSetRequest) (customsecrets.Summary, string, error) {
+//
+//nolint:gocognit,gocyclo,cyclop // source and inline branches
+func (s *Service) SetCustomSecret(ctx context.Context, req CustomSecretSetRequest) (customsecrets.Summary, string, string, error) {
 	defer clear(req.Value)
 	if s.customSecrets == nil || s.store == nil {
-		return customsecrets.Summary{}, "", errors.New("custom secret store is unavailable")
+		return customsecrets.Summary{}, "", "", errors.New("custom secret store is unavailable")
 	}
+	//nolint:nestif // source branch validates and creates approval
 	if req.Source != nil && (req.Source.Reference != "" || req.Source.Command != "") {
-		slog.Info("custom secret refused", "decision", "approval_unavailable", "service", req.Service)
-		return customsecrets.Summary{}, "", ErrCustomSecretApprovalUnavailable
+		// Create a pending approval and store nothing secret-side. Granting is
+		// gated by the (absent in this slice) trusted approval provider.
+		scope, sandboxName, err := customsecrets.ValidateScope(req.Scope, req.SandboxName)
+		if err != nil {
+			return customsecrets.Summary{}, "", "", err
+		}
+		hosts, err := customsecrets.NormalizeHosts(req.Hosts)
+		if err != nil {
+			return customsecrets.Summary{}, "", "", err
+		}
+		name, err := customServiceName(req.Service, hosts)
+		if err != nil {
+			return customsecrets.Summary{}, "", "", err
+		}
+		if err := customsecrets.ValidateEnvName(req.Env); err != nil {
+			return customsecrets.Summary{}, "", "", err
+		}
+		kind := localv1.ApprovalKind_APPROVAL_KIND_OTHER
+		if req.Source.Command != "" {
+			kind = localv1.ApprovalKind_APPROVAL_KIND_HOST_COMMAND
+		}
+		sandboxID := ""
+		if scope == servicesecrets.ScopeSandbox {
+			sandboxID = strings.TrimSpace(sandboxName)
+		}
+		if s.approvals == nil {
+			return customsecrets.Summary{}, "", "", ErrCustomSecretApprovalUnavailable
+		}
+		entry, err := s.approvals.Create(approvals.CreateRequest{
+			Kind:          kind,
+			SandboxID:     sandboxID,
+			ActionSummary: "custom secret source approval for " + name,
+		})
+		if err != nil {
+			return customsecrets.Summary{}, "", "", err
+		}
+		slog.Info("custom secret approval created", "decision", "approval_required", "service", name, "approval_id", entry.ID)
+		return customsecrets.Summary{}, "", entry.ID, nil
 	}
 	scope, sandboxName, err := customsecrets.ValidateScope(req.Scope, req.SandboxName)
 	if err != nil {
-		return customsecrets.Summary{}, "", err
+		return customsecrets.Summary{}, "", "", err
 	}
 	if err := customsecrets.ValidateValue(req.Value); err != nil {
-		return customsecrets.Summary{}, "", err
+		return customsecrets.Summary{}, "", "", err
 	}
 	hosts, err := customsecrets.NormalizeHosts(req.Hosts)
 	if err != nil {
-		return customsecrets.Summary{}, "", err
+		return customsecrets.Summary{}, "", "", err
 	}
 	name, err := customServiceName(req.Service, hosts)
 	if err != nil {
-		return customsecrets.Summary{}, "", err
+		return customsecrets.Summary{}, "", "", err
 	}
 	if err := customsecrets.ValidateEnvName(req.Env); err != nil {
-		return customsecrets.Summary{}, "", err
+		return customsecrets.Summary{}, "", "", err
 	}
 	release, err := s.acquireCredentialGate(ctx, customSecretGateKey(name, scope, sandboxName))
 	if err != nil {
-		return customsecrets.Summary{}, "", err
+		return customsecrets.Summary{}, "", "", err
 	}
 	defer release()
 	return s.storeCustomSecret(ctx, customSecretWrite{
@@ -89,20 +131,20 @@ type customSecretWrite struct {
 	hosts                                                          []string
 }
 
-func (s *Service) storeCustomSecret(ctx context.Context, write customSecretWrite) (customsecrets.Summary, string, error) {
+func (s *Service) storeCustomSecret(ctx context.Context, write customSecretWrite) (customsecrets.Summary, string, string, error) {
 	previous, previousErr := s.customSecrets.Load(ctx, write.name, write.scope, write.sandboxName)
 	hadPrevious := previousErr == nil
 	if previousErr != nil && !customsecrets.IsNotFound(previousErr) {
-		return customsecrets.Summary{}, "", fmt.Errorf("check existing custom secret: %w", previousErr)
+		return customsecrets.Summary{}, "", "", fmt.Errorf("check existing custom secret: %w", previousErr)
 	}
 	placeholder, err := choosePlaceholder(write.placeholderRequest, previous, hadPrevious, []byte(write.value))
 	if err != nil {
-		return customsecrets.Summary{}, "", err
+		return customsecrets.Summary{}, "", "", err
 	}
 	write.placeholder = placeholder
 	previousIndex, indexErr := s.store.GetCustomSecretIndex(ctx, write.name, string(write.scope), write.sandboxName)
 	if indexErr != nil && !errors.Is(indexErr, core.ErrNotFound) {
-		return customsecrets.Summary{}, "", fmt.Errorf("check existing custom secret index: %w", indexErr)
+		return customsecrets.Summary{}, "", "", fmt.Errorf("check existing custom secret index: %w", indexErr)
 	}
 	now := s.now().UTC()
 	createdAt := now
@@ -111,7 +153,7 @@ func (s *Service) storeCustomSecret(ctx context.Context, write customSecretWrite
 	}
 	record := customsecrets.Record{Placeholder: write.placeholder, Value: write.value}
 	if err := s.customSecrets.Save(ctx, write.name, write.scope, write.sandboxName, record); err != nil {
-		return customsecrets.Summary{}, "", err
+		return customsecrets.Summary{}, "", "", err
 	}
 	entry := store.CustomSecretIndex{
 		Service: write.name, Scope: string(write.scope), SandboxName: write.sandboxName, EnvName: write.env,
@@ -119,11 +161,11 @@ func (s *Service) storeCustomSecret(ctx context.Context, write customSecretWrite
 		Origin: servicesecrets.OriginLocal, CreatedAt: createdAt, UpdatedAt: now,
 	}
 	if err := s.store.UpsertCustomSecretIndex(ctx, entry); err != nil {
-		return customsecrets.Summary{}, "", errors.Join(err, s.rollbackCustomSecret(ctx, write, previous, hadPrevious))
+		return customsecrets.Summary{}, "", "", errors.Join(err, s.rollbackCustomSecret(ctx, write, previous, hadPrevious))
 	}
 	slog.Info("custom secret stored", "decision", "stored", "service", write.name, "scope", string(write.scope),
 		"sandbox", write.sandboxName, "hosts", write.hosts, "env", write.env, "replaced", hadPrevious)
-	return customSummary(entry), write.placeholder, nil
+	return customSummary(entry), write.placeholder, "", nil
 }
 
 // choosePlaceholder keeps the placeholder that the sandbox environment already

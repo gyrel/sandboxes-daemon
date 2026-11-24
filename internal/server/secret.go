@@ -108,11 +108,11 @@ func (s *SecretServer) SetCustom(ctx context.Context, req *localv1.SecretService
 			OPAccount: source.GetOpAccount(), AWSProfile: source.GetAwsProfile(),
 		}
 	}
-	summary, placeholder, err := s.svc.SetCustomSecret(ctx, request)
+	summary, placeholder, approvalID, err := s.svc.SetCustomSecret(ctx, request)
 	if err != nil {
 		return nil, customSecretError(err)
 	}
-	return &localv1.SecretServiceSetCustomResponse{Secret: customSecretSummaryToProto(summary), Placeholder: placeholder}, nil
+	return &localv1.SecretServiceSetCustomResponse{Secret: customSecretSummaryToProto(summary), Placeholder: placeholder, ApprovalRequired: approvalID != "", ApprovalId: approvalID}, nil
 }
 
 // List returns non-secret summaries for service and custom secrets.
