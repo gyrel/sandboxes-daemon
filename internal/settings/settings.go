@@ -42,6 +42,12 @@ type Values struct {
 	RegistryPrivateRedirects []string
 	// RegistryPrivateCA is an optional host-side PEM bundle for a private CA.
 	RegistryPrivateCA string
+	// Kit policy settings. KitAllowedSources is a comma-separated list of
+	// source kinds (directory, zip, git, oci). Empty/absent uses the default
+	// directory+zip set. KitAllowLocalKits defaults to true.
+	KitAllowedSources   []string
+	KitAllowLocalKits   bool
+	KitRequireSignature bool
 	// PolicySync configures the opt-in background pull of a signed organization
 	// policy bundle. All four required values must be set together; the interval
 	// is optional and defaults to policysync.DefaultInterval.
@@ -66,7 +72,10 @@ func DefaultPath() string {
 
 // Load reads the optional settings file. A missing file is not an error.
 func Load(path string) (Values, error) {
-	var values Values
+	values := Values{
+		KitAllowedSources: []string{"directory", "zip"}, //nolint:goconst // default source set
+		KitAllowLocalKits: true,
+	}
 	if path == "" {
 		return values, nil
 	}
@@ -116,6 +125,9 @@ func validateValues(values *Values) error {
 		return errors.New("settings default_memory_mib must be at most 32768")
 	}
 	if err := validateOrgPolicy(values); err != nil {
+		return err
+	}
+	if err := validateKitPolicy(values); err != nil {
 		return err
 	}
 	if err := validatePolicySync(values); err != nil {
@@ -294,6 +306,24 @@ func parse(r io.Reader, values *Values) error {
 			if err := parseRegistryPrivateSetting(values, key, value); err != nil {
 				return fmt.Errorf("settings line %d: %w", lineNumber, err)
 			}
+		case "kit.allowed_sources", "kit.allowedSources":
+			sources, parseErr := parseKitAllowedSources(value)
+			if parseErr != nil {
+				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
+			}
+			values.KitAllowedSources = sources
+		case "kit.allow_local_kits", "kit.allowLocalKits":
+			allowed, parseErr := parseStrictBool(key, value)
+			if parseErr != nil {
+				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
+			}
+			values.KitAllowLocalKits = allowed
+		case "kit.require_signature", "kit.requireSignature":
+			required, parseErr := parseStrictBool(key, value)
+			if parseErr != nil {
+				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
+			}
+			values.KitRequireSignature = required
 		default:
 			return fmt.Errorf("settings line %d: unknown key %q", lineNumber, key)
 		}
@@ -425,6 +455,43 @@ func validDNSLabel(label string) bool {
 		}
 	}
 	return true
+}
+
+func parseKitAllowedSources(value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, errors.New("kit.allowedSources must be a non-empty comma-separated list")
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, part := range strings.Split(value, ",") {
+		kind := strings.ToLower(strings.TrimSpace(part))
+		switch kind {
+		case "directory", "zip", "git", "oci":
+		default:
+			return nil, fmt.Errorf("kit.allowedSources contains unknown source kind %q", part)
+		}
+		if _, exists := seen[kind]; exists {
+			return nil, fmt.Errorf("kit.allowedSources contains duplicate source kind %q", kind)
+		}
+		seen[kind] = struct{}{}
+		out = append(out, kind)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("kit.allowedSources must not be empty")
+	}
+	return out, nil
+}
+
+func validateKitPolicy(values *Values) error {
+	for _, source := range values.KitAllowedSources {
+		switch source {
+		case "directory", "zip", "git", "oci":
+		default:
+			return fmt.Errorf("settings kit.allowedSources contains unknown source kind %q", source)
+		}
+	}
+	return nil
 }
 
 func parseValue(raw string) (string, error) {

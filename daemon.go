@@ -49,8 +49,12 @@ type Config struct {
 	DockerVolumeSize     string
 	// OrgPolicyEnforce applies the stored organization policy bundle. It is off
 	// by default and fails closed when no usable bundle exists.
-	OrgPolicyEnforce      bool
-	OrgPolicyOrg          string
+	OrgPolicyEnforce bool
+	OrgPolicyOrg     string
+	// Kit policy settings.
+	KitAllowedSources     []string
+	KitAllowLocalKits     bool
+	KitRequireSignature   bool
 	MCPRemoteAllowedHosts []string
 	// RegistryPrivate configures one allowlisted private registry reached
 	// through the guest registry proxy (ADR-0006).
@@ -219,6 +223,9 @@ func applyConfig(svc *service.Service, cfg Config) {
 	svc.QUICEnabled = cfg.QUICEnabled
 	svc.OrgPolicyEnforce = cfg.OrgPolicyEnforce
 	svc.OrgPolicyOrg = cfg.OrgPolicyOrg
+	svc.KitAllowedSources = cfg.KitAllowedSources
+	svc.KitAllowLocalKits = cfg.KitAllowLocalKits
+	svc.KitRequireSignature = cfg.KitRequireSignature
 	svc.SetMCPRemoteAllowlist(cfg.MCPRemoteAllowedHosts)
 	if cfg.DockerVolumeSize != "" {
 		svc.DockerVolumeSize = cfg.DockerVolumeSize
@@ -256,6 +263,7 @@ func registerLocalServices(grpcServer *grpc.Server, svc *service.Service) {
 	localv1.RegisterSecretServiceServer(grpcServer, server.NewSecret(svc))
 	localv1.RegisterTemplateServiceServer(grpcServer, server.NewTemplate(svc))
 	localv1.RegisterApprovalServiceServer(grpcServer, server.NewApproval(svc))
+	localv1.RegisterKitPolicyServiceServer(grpcServer, server.NewKitPolicy(svc))
 }
 
 //nolint:gocritic // Config is a value object assembled by the caller.

@@ -65,6 +65,9 @@ type options struct {
 	quicExperimental      bool
 	orgPolicyEnforce      bool
 	orgPolicyOrg          string
+	kitAllowedSources     []string
+	kitAllowLocalKits     bool
+	kitRequireSignature   bool
 	policySyncURL         string
 	policySyncOrg         string
 	policySyncPublicKey   string
@@ -141,6 +144,9 @@ func run() int {
 		QUICEnabled:              quicRuleCapability(&opts),
 		OrgPolicyEnforce:         opts.orgPolicyEnforce,
 		OrgPolicyOrg:             opts.orgPolicyOrg,
+		KitAllowedSources:        opts.kitAllowedSources,
+		KitAllowLocalKits:        opts.kitAllowLocalKits,
+		KitRequireSignature:      opts.kitRequireSignature,
 		Cleanup:                  cleanup,
 		OAuthProviders:           dockerOAuthProviders(),
 		DNSUpstream:              opts.dnsUpstream,
@@ -243,6 +249,9 @@ func (opts *options) applySettings(values *settings.Values) {
 	opts.registryPrivateCAPath = values.RegistryPrivateCA
 	opts.orgPolicyEnforce = values.OrgPolicyEnforce
 	opts.orgPolicyOrg = values.OrgPolicyOrg
+	opts.kitAllowedSources = values.KitAllowedSources
+	opts.kitAllowLocalKits = values.KitAllowLocalKits
+	opts.kitRequireSignature = values.KitRequireSignature
 	opts.policySyncURL = values.PolicySyncURL
 	opts.policySyncOrg = values.PolicySyncOrg
 	opts.policySyncPublicKey = values.PolicySyncPublicKeyFile
