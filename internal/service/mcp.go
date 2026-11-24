@@ -177,9 +177,6 @@ func (s *Service) LoadMCPServer(ctx context.Context, name, sandboxID string) (bo
 	if name == "" || sandboxID == "" {
 		return false, fmt.Errorf("%w: MCP server name and sandbox ID are required", errors.New("invalid argument"))
 	}
-	if _, err := s.store.Get(ctx, sandboxID); err != nil {
-		return false, err
-	}
 	sb, err := s.store.Get(ctx, sandboxID)
 	if err != nil {
 		return false, err
@@ -197,9 +194,6 @@ func (s *Service) LoadMCPServer(ctx context.Context, name, sandboxID string) (bo
 func (s *Service) UnloadMCPServer(ctx context.Context, name, sandboxID string) (bool, error) {
 	if name == "" || sandboxID == "" {
 		return false, fmt.Errorf("%w: MCP server name and sandbox ID are required", errors.New("invalid argument"))
-	}
-	if _, err := s.store.Get(ctx, sandboxID); err != nil {
-		return false, err
 	}
 	sb, err := s.store.Get(ctx, sandboxID)
 	if err != nil {
