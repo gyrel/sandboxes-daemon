@@ -122,7 +122,30 @@ type Server struct {
 	Headers map[string]string `json:"headers,omitempty"`
 	// SecretHeaders contains only vault placeholder templates, never values.
 	SecretHeaders map[string]string `json:"secret_headers,omitempty"`
+	// OAuth registration metadata (non-secret). Applies to url transports.
+	OAuthAuthorizationServer string   `json:"oauth_authorization_server,omitempty"`
+	ClientID                 string   `json:"client_id,omitempty"`
+	Resource                 string   `json:"resource,omitempty"`
+	Scopes                   []string `json:"scopes,omitempty"`
+	NoScope                  bool     `json:"no_scope,omitempty"`
+	SkipAuth                 bool     `json:"skip_auth,omitempty"`
+	CallbackPort             int32    `json:"callback_port,omitempty"`
+	DisableHTTP2             bool     `json:"disable_http2,omitempty"`
 }
+
+// RegistrationOptions carries non-secret OAuth registration fields (api v0.0.38
+// fields 8-15). Unknown or invalid values fail closed.
+type RegistrationOptions struct {
+	OAuthAuthorizationServer string
+	ClientID                 string
+	Resource                 string
+	Scopes                   []string
+	NoScope                  bool
+	SkipAuth                 bool
+	CallbackPort             int32
+	DisableHTTP2             bool
+}
+
 type Summary struct {
 	Name      string
 	Transport string
@@ -137,16 +160,17 @@ type challenge struct {
 	arguments     json.RawMessage
 }
 type Manager struct {
-	state     State
-	approver  ApprovalProvider
-	approvals *approvals.Store
-	now       func() time.Time
-	mu        sync.Mutex
-	servers   map[string]Server
-	pending   map[string]challenge
-	sessions  map[string]*managedSession
-	starting  map[string]chan struct{}
-	closed    bool
+	state           State
+	approver        ApprovalProvider
+	approvals       *approvals.Store
+	now             func() time.Time
+	mu              sync.Mutex
+	servers         map[string]Server
+	pending         map[string]challenge
+	sessions        map[string]*managedSession
+	starting        map[string]chan struct{}
+	loadedSandboxes map[string]map[string]struct{}
+	closed          bool
 	// remoteHosts is the exact allowlist of host names for remote MCP
 	// servers; empty disables the transport (fail closed).
 	remoteHosts map[string]struct{}
@@ -189,7 +213,7 @@ type managedSession struct {
 }
 
 func New(ctx context.Context, state State) (*Manager, error) {
-	m := &Manager{state: state, now: time.Now, servers: make(map[string]Server), pending: make(map[string]challenge), sessions: make(map[string]*managedSession), starting: make(map[string]chan struct{})}
+	m := &Manager{state: state, now: time.Now, servers: make(map[string]Server), pending: make(map[string]challenge), sessions: make(map[string]*managedSession), starting: make(map[string]chan struct{}), loadedSandboxes: make(map[string]map[string]struct{})}
 	items, err := loadRegistry(ctx, state)
 	if err != nil {
 		return nil, err
@@ -350,11 +374,15 @@ func SanitizeRegistrySetting(raw string) (string, error) {
 	return string(sanitized), nil
 }
 
-func (m *Manager) Register(ctx context.Context, name, command string, args []string, dir string) (string, error) {
+func (m *Manager) Register(ctx context.Context, name, command string, args []string, dir string, opts ...RegistrationOptions) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	server, err := prepareServer(name, command, args, dir)
+	o := RegistrationOptions{}
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	server, err := prepareServer(name, command, args, dir, o)
 	if err != nil {
 		return "", err
 	}
@@ -500,6 +528,117 @@ func (m *Manager) Remove(ctx context.Context, name string) (bool, error) {
 	}
 	return true, nil
 }
+
+// Load attaches a registered server to a sandbox gateway. It records the
+// attachment without starting host processes; sessions start lazily on use.
+func (m *Manager) Load(ctx context.Context, name, sandboxID string) (bool, error) {
+	if name == "" || sandboxID == "" {
+		return false, errors.New("MCP server name and sandbox ID are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return false, errors.New("MCP manager is closed")
+	}
+	if _, ok := m.servers[name]; !ok {
+		return false, core.ErrNotFound
+	}
+	if m.loadedSandboxes[sandboxID] == nil {
+		m.loadedSandboxes[sandboxID] = make(map[string]struct{})
+	}
+	if _, ok := m.loadedSandboxes[sandboxID][name]; ok {
+		return true, nil
+	}
+	m.loadedSandboxes[sandboxID][name] = struct{}{}
+	return true, nil
+}
+
+// Unload detaches a server from a sandbox gateway. A server that is not
+// currently loaded for that sandbox is a successful no-op.
+func (m *Manager) Unload(ctx context.Context, name, sandboxID string) (bool, error) {
+	if name == "" || sandboxID == "" {
+		return false, errors.New("MCP server name and sandbox ID are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return false, errors.New("MCP manager is closed")
+	}
+	if _, ok := m.servers[name]; !ok {
+		return false, core.ErrNotFound
+	}
+	if set, ok := m.loadedSandboxes[sandboxID]; ok {
+		delete(set, name)
+	}
+	return true, nil
+}
+
+// Inspect returns one registered server and whether it is loaded for the given
+// sandbox scope. An empty sandboxID selects global registry scope.
+func (m *Manager) Inspect(name, sandboxID string) (Server, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return Server{}, false, errors.New("MCP manager is closed")
+	}
+	server, ok := m.servers[name]
+	if !ok {
+		return Server{}, false, core.ErrNotFound
+	}
+	loaded := false
+	if sandboxID == "" { //nolint:nestif
+		if _, ok := m.sessions[name]; ok {
+			loaded = true
+		}
+		if !loaded {
+			for _, set := range m.loadedSandboxes {
+				if _, ok := set[name]; ok {
+					loaded = true
+					break
+				}
+			}
+		}
+	} else {
+		if set, ok := m.loadedSandboxes[sandboxID]; ok {
+			_, loaded = set[name]
+		}
+	}
+	return cloneServer(server), loaded, nil
+}
+
+// GetServer returns one registered server.
+func (m *Manager) GetServer(name string) (Server, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	server, ok := m.servers[name]
+	if !ok {
+		return Server{}, false
+	}
+	return cloneServer(server), true
+}
+
+// AllServers returns all registered servers.
+func (m *Manager) AllServers() []Server {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]Server, 0, len(m.servers))
+	for _, server := range m.servers { //nolint:gocritic
+		result = append(result, cloneServer(server))
+	}
+	return result
+}
+
+// DropSession closes and removes a cached managed session.
+func (m *Manager) DropSession(name string) {
+	m.mu.Lock()
+	session := m.sessions[name]
+	delete(m.sessions, name)
+	m.mu.Unlock()
+	if session != nil {
+		_ = session.close()
+	}
+}
+
 func (m *Manager) RequestCall(sandbox, server, tool string, raw json.RawMessage) (string, error) {
 	if sandbox == "" || server == "" || tool == "" {
 		return "", errors.New("sandbox, server, and tool are required")
@@ -604,7 +743,7 @@ func (m *Manager) ApproveCall(ctx context.Context, id string, validateSandbox fu
 // approveCallScope presents the exact call scope to the trusted provider and
 // revalidates it after the provider returns. The check binds approval to the
 // destination and header configuration captured at challenge creation.
-func (m *Manager) approveCallScope(ctx context.Context, p challenge, approver ApprovalProvider) error {
+func (m *Manager) approveCallScope(ctx context.Context, p challenge, approver ApprovalProvider) error { //nolint:gocritic
 	argumentKeys, err := jsonObjectKeys(p.arguments)
 	if err != nil {
 		return errors.New("MCP tool arguments are invalid")
@@ -708,8 +847,43 @@ func (m *Manager) persist(ctx context.Context) error {
 	}
 	return m.state.SetSetting(ctx, "mcp_stdio_servers_v1", string(raw))
 }
-func prepareServer(name, command string, args []string, dir string) (Server, error) {
+func isHTTPScheme(scheme string) bool {
+	return scheme == "http" || scheme == "https" //nolint:goconst
+}
+
+func validateRegistrationOptions(opts RegistrationOptions) error { //nolint:gocyclo,cyclop
+	if len(opts.Scopes) > 0 && opts.NoScope {
+		return errors.New("MCP registration scopes and no_scope are mutually exclusive")
+	}
+	if opts.OAuthAuthorizationServer != "" {
+		if strings.Contains(opts.OAuthAuthorizationServer, "://") {
+			parsed, err := url.Parse(opts.OAuthAuthorizationServer)
+			if err != nil || parsed == nil || !isHTTPScheme(parsed.Scheme) || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+				return errors.New("MCP OAuth authorization server URL must not contain userinfo, query, or fragment")
+			}
+		}
+	}
+	if opts.Resource != "" {
+		parsed, err := url.Parse(opts.Resource)
+		if err != nil || parsed == nil || !isHTTPScheme(parsed.Scheme) || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+			return errors.New("MCP resource must be an absolute URI with scheme and host and no fragment")
+		}
+	}
+	if opts.CallbackPort < 0 || opts.CallbackPort > 65535 {
+		return errors.New("MCP callback port must be between 0 and 65535")
+	}
+	return nil
+}
+
+func prepareServer(name, command string, args []string, dir string, opts ...RegistrationOptions) (Server, error) {
+	o := RegistrationOptions{}
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	if err := validateRegistrationInput(name, command, args, dir); err != nil {
+		return Server{}, err
+	}
+	if err := validateRegistrationOptions(o); err != nil {
 		return Server{}, err
 	}
 	resolved, hash, err := resolveExecutable(command)
@@ -720,7 +894,16 @@ func prepareServer(name, command string, args []string, dir string) (Server, err
 	if err != nil {
 		return Server{}, err
 	}
-	return Server{Name: name, Command: resolved, Arguments: append([]string(nil), args...), Directory: resolvedDir, ExecutableSHA256: hash}, nil
+	return Server{Name: name, Command: resolved, Arguments: append([]string(nil), args...), Directory: resolvedDir, ExecutableSHA256: hash,
+		OAuthAuthorizationServer: o.OAuthAuthorizationServer,
+		ClientID:                 o.ClientID,
+		Resource:                 o.Resource,
+		Scopes:                   append([]string(nil), o.Scopes...),
+		NoScope:                  o.NoScope,
+		SkipAuth:                 o.SkipAuth,
+		CallbackPort:             o.CallbackPort,
+		DisableHTTP2:             o.DisableHTTP2,
+	}, nil
 }
 
 func validateRegistrationInput(name, command string, args []string, dir string) error {
