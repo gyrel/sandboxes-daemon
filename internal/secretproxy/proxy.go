@@ -181,6 +181,9 @@ type proxyRoute struct {
 	// hijacked connection is no longer owned by net/http and would otherwise
 	// outlive the credential or policy that authorized it.
 	upgrades *upgradeTracker
+	// substitutions resolves per-request placeholder replacements. It is used
+	// only when the upstream is https (see proxySnapshot.httpsUpstream).
+	substitutions SubstitutionResolver
 }
 
 type proxySnapshot struct {
@@ -193,6 +196,8 @@ type proxySnapshot struct {
 	handler        http.Handler
 	ctx            context.Context
 	upgrades       *upgradeTracker
+	substitutions  SubstitutionResolver
+	httpsUpstream  bool
 }
 
 // upgradeTracker owns the hijacked connections of one route. Closing a route
@@ -329,6 +334,9 @@ type RouteConfig struct {
 	// name is an alias for it (for example github-web uses github). Empty means
 	// the route is backed by a credential named after the route itself.
 	CredentialService string
+	// Substitutions, when set, replaces guest placeholders in request headers
+	// with host-vault values before forwarding. It applies only to https routes.
+	Substitutions SubstitutionResolver
 }
 
 // TokenHeader carries the per-VM bearer sent by the guest proxy helper. It is
@@ -397,7 +405,7 @@ func (m *Manager) StartUnixRoutes(ctx context.Context, sandbox string, routes ma
 		routeCtx, cancel := context.WithCancel(context.Background())
 		preparedRoutes[name] = &proxyRoute{upstream: upstream.String(), service: route.Service, credentialService: route.CredentialService,
 			secret: append([]byte(nil), route.Secret...), token: []byte(route.Token), caCert: append([]byte(nil), route.CACert...), maxRequestBody: route.MaxRequestBody, reverse: reverse,
-			handler: route.Handler, ctx: routeCtx, cancel: cancel, upgrades: newUpgradeTracker()}
+			handler: route.Handler, ctx: routeCtx, cancel: cancel, upgrades: newUpgradeTracker(), substitutions: route.Substitutions}
 	}
 	key := sandbox + "/" + firstRouteName(preparedRoutes)
 	m.mu.Lock()
@@ -556,11 +564,10 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 		limit = maxRequestBody
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
-	r.Header.Del(TokenHeader)
-	r.Header.Del(ServiceHeader)
-	r.Header.Del("Proxy-Authorization")
-	r.Header.Del("Authorization")
-	r.Header.Del("X-Api-Key")
+	dropGuestCredentialHeaders(r)
+	if !substituteRequest(w, r, service, snapshot) {
+		return
+	}
 	credential := snapshot.secret
 	if snapshot.service.Credential != nil {
 		resolved, credentialErr := snapshot.service.Credential(r.Context())
@@ -582,6 +589,16 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 		return
 	}
 	snapshot.reverse.ServeHTTP(w, r)
+}
+
+// dropGuestCredentialHeaders removes guest-controlled channel and auth headers
+// before the host adds its own credential.
+func dropGuestCredentialHeaders(r *http.Request) {
+	r.Header.Del(TokenHeader)
+	r.Header.Del(ServiceHeader)
+	r.Header.Del("Proxy-Authorization")
+	r.Header.Del("Authorization")
+	r.Header.Del("X-Api-Key")
 }
 
 func allowedServicePath(target *url.URL, prefix string) bool {
@@ -613,7 +630,8 @@ func (p *proxy) snapshot(name string) (proxySnapshot, bool) {
 		return proxySnapshot{}, false
 	}
 	return proxySnapshot{service: route.service, secret: append([]byte(nil), route.secret...),
-		token: append([]byte(nil), route.token...), caCert: append([]byte(nil), route.caCert...), maxRequestBody: route.maxRequestBody, reverse: route.reverse, handler: route.handler, ctx: route.ctx, upgrades: route.upgrades}, true
+		token: append([]byte(nil), route.token...), caCert: append([]byte(nil), route.caCert...), maxRequestBody: route.maxRequestBody, reverse: route.reverse, handler: route.handler, ctx: route.ctx, upgrades: route.upgrades,
+		substitutions: route.substitutions, httpsUpstream: strings.HasPrefix(route.upstream, "https://")}, true
 }
 
 func (p *proxy) tokenSnapshot(name string) ([]byte, bool) {
@@ -663,6 +681,7 @@ func (p *proxy) updateRoutes(socketPath string, routes map[string]*proxyRoute) (
 		current.credentialService = next.credentialService
 		current.handler = next.handler
 		current.maxRequestBody = next.maxRequestBody
+		current.substitutions = next.substitutions
 		current.secret = next.secret
 		current.token = next.token
 		current.caCert = next.caCert
