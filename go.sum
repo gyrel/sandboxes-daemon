@@ -105,8 +105,6 @@ github.com/rheic/sandboxes-core v0.0.14 h1:eysuLQziuT1m0oDTLtgN4mjbFYrAWpWSUxISn
 github.com/rheic/sandboxes-core v0.0.14/go.mod h1:ue8m6n4U0yiuQfJ2DVSIOgalrai/LX+CsapbHLIOT+k=
 github.com/rheic/sandboxes-gateway v0.0.21 h1:wfvfkHvvMLoRpNZQrQgSlW8ybKf+fToM3HP8RFzI254=
 github.com/rheic/sandboxes-gateway v0.0.21/go.mod h1:NnIYUqBIx0IkVhiOtb+dr7fwHCjYnQwkqWN3jN88GjA=
-github.com/rheic/sandboxes-runtime v0.0.58 h1:DfvfFsZqcjCauoY27A1iHdcvzQBtkStXZovE3tdmO2M=
-github.com/rheic/sandboxes-runtime v0.0.58/go.mod h1:5dPwMIEE4dY7DVt+nxsrKlp4shuD8cKkqvSouA3SP38=
 github.com/rheic/sandboxes-runtime v0.0.59 h1:yBsvd14JEzGYZRVBVoVmhpN3/f0kK/C4ont7pqeorTk=
 github.com/rheic/sandboxes-runtime v0.0.59/go.mod h1:s9uK4Rd123tSp+hlN7b97MvQtwq3odHjI+jKBkR0iVs=
 github.com/rheic/slogx v0.1.0 h1:c4QpKu547M4kN/RelGISVtuAzuGmc1TDYsmaU2O3RKg=
