@@ -435,6 +435,7 @@ func (m *Manager) registerPrepared(ctx context.Context, server Server) (string, 
 		}
 	}
 	m.pending[id] = challenge{kind: challengeRegistration, expires: m.now().Add(challengeTTL), server: cloneServer(server)}
+	emitRegistration(ctx, server.Name, true, false)
 	return id, nil
 }
 func (m *Manager) ApproveRegistration(ctx context.Context, id string) (*Summary, error) {
@@ -491,6 +492,7 @@ func (m *Manager) ApproveRegistration(ctx context.Context, id string) (*Summary,
 	if m.approvals != nil {
 		_, _ = m.approvals.Resolve(id, localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
 	}
+	emitRegistration(ctx, p.server.Name, true, true)
 	return &Summary{Name: p.server.Name}, nil
 }
 func (m *Manager) List() []Summary {
@@ -547,9 +549,11 @@ func (m *Manager) Load(ctx context.Context, name, sandboxID string) (bool, error
 		m.loadedSandboxes[sandboxID] = make(map[string]struct{})
 	}
 	if _, ok := m.loadedSandboxes[sandboxID][name]; ok {
+		emitLoad(ctx, name)
 		return true, nil
 	}
 	m.loadedSandboxes[sandboxID][name] = struct{}{}
+	emitLoad(ctx, name)
 	return true, nil
 }
 

@@ -9,7 +9,7 @@ require (
 	github.com/rheic/sandboxes-core v0.0.15
 	github.com/rheic/sandboxes-gateway v0.0.21
 	github.com/rheic/sandboxes-runtime v0.0.64
-	github.com/rheic/slogx v0.2.0
+	github.com/rheic/slogx v0.2.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.50.0
 	google.golang.org/grpc v1.85.0
