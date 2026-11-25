@@ -327,8 +327,18 @@ func (s *Store) evictExpiredResolved() {
 		}
 	}
 	for _, id := range expired {
+		e := s.entries[id]
 		delete(s.entries, id)
 		s.removeFromOrder(id)
+		// The pending queue has no per-entry TTL; this sweep retires resolved
+		// entries once they age past the inspection window, so the emitted
+		// ttl_ms is the entry age at eviction.
+		var ttlMS uint64
+		if age := now.Sub(e.resolvedAt); age > 0 {
+			//nolint:gosec // age is a positive duration; the int64 cannot wrap.
+			ttlMS = uint64(age.Milliseconds())
+		}
+		emitApprovalExpired(id, ttlMS)
 	}
 }
 

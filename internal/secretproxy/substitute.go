@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/rheic/slogx/events"
 )
 
 // Substitution replaces one guest-visible placeholder in request headers with a
@@ -28,8 +30,8 @@ var errAmbiguousSubstitution = errors.New("ambiguous placeholder substitution")
 // injection. It reports false after writing a 502 when substitution fails
 // closed, so the request never reaches the upstream with a partial rewrite.
 // Logs carry the route name and a count only, never placeholders or values.
-func substituteRequest(w http.ResponseWriter, r *http.Request, service string, snapshot proxySnapshot) bool {
-	applied, err := applySubstitutions(r.Context(), r, snapshot.substitutions, snapshot.httpsUpstream)
+func substituteRequest(w http.ResponseWriter, r *http.Request, service string, snapshot *proxySnapshot) bool {
+	applied, err := applySubstitutions(r.Context(), r, snapshot.substitutions, snapshot.httpsUpstream, snapshot.upstreamHost)
 	if err != nil {
 		slog.Warn("custom secret substitution failed closed", "service", service)
 		http.Error(w, "proxy credential unavailable", http.StatusBadGateway)
@@ -46,32 +48,55 @@ func substituteRequest(w http.ResponseWriter, r *http.Request, service string, s
 // a plaintext route can never receive a substituted value. Replacement runs in
 // a single pass, so a substituted value that happens to contain another
 // placeholder is never rescanned. It returns the number of header values that
-// contained a placeholder.
-func applySubstitutions(ctx context.Context, r *http.Request, resolve SubstitutionResolver, httpsUpstream bool) (int, error) {
-	if resolve == nil || !httpsUpstream {
+// contained a placeholder. Every refusal is recorded through the catalog:
+// a configured resolver against a plaintext upstream is an InsecureScheme
+// refusal, a failing host vault is VaultLocked, and a binding without a
+// usable placeholder reference is RefMissing. Ambiguous overlapping bindings
+// have no catalog reason and are not emitted.
+func applySubstitutions(ctx context.Context, r *http.Request, resolve SubstitutionResolver, httpsUpstream bool, host string) (int, error) {
+	if resolve == nil {
+		return 0, nil
+	}
+	if !httpsUpstream {
+		emitSecretSubstitute(ctx, host, "", events.SecretSubstituteDecisionRefused,
+			events.SecretSubstituteReasonInsecurescheme, events.OutcomeDenied)
 		return 0, nil
 	}
 	subs, err := resolve(ctx)
 	defer clearSubstitutions(subs)
 	if err != nil {
+		emitSecretSubstitute(ctx, host, "", events.SecretSubstituteDecisionRefused,
+			events.SecretSubstituteReasonVaultlocked, events.OutcomeFailed)
 		return 0, err
 	}
 	if len(subs) == 0 {
 		return 0, nil
 	}
 	if err := validateSubstitutions(subs); err != nil {
+		if !errors.Is(err, errAmbiguousSubstitution) {
+			emitSecretSubstitute(ctx, host, "", events.SecretSubstituteDecisionRefused,
+				events.SecretSubstituteReasonRefmissing, events.OutcomeFailed)
+		}
 		return 0, err
 	}
+	return substituteHeaders(ctx, r, host, subs), nil
+}
+
+// substituteHeaders performs the single-pass replacement and records one
+// substituted decision per placeholder that matched a header value.
+func substituteHeaders(ctx context.Context, r *http.Request, host string, subs []Substitution) int {
 	pairs := make([]string, 0, 2*len(subs))
 	for _, sub := range subs {
 		pairs = append(pairs, sub.Placeholder, string(sub.Value))
 	}
 	replacer := strings.NewReplacer(pairs...)
 	applied := 0
+	matched := make([]int, len(subs))
 	for _, values := range r.Header {
 		for i, value := range values {
-			for _, sub := range subs {
+			for j, sub := range subs {
 				if strings.Contains(value, sub.Placeholder) {
+					matched[j]++
 					applied++
 					break
 				}
@@ -79,7 +104,12 @@ func applySubstitutions(ctx context.Context, r *http.Request, resolve Substituti
 			values[i] = replacer.Replace(value)
 		}
 	}
-	return applied, nil
+	for j, sub := range subs {
+		if matched[j] > 0 {
+			emitSecretSubstitute(ctx, host, sub.Placeholder, events.SecretSubstituteDecisionSubstituted, "", events.OutcomeOK)
+		}
+	}
+	return applied
 }
 
 // validateSubstitutions fails closed on empty, duplicate or overlapping

@@ -177,7 +177,10 @@ func emitPeerReject(uid uint64) {
 
 type proxyRoute struct {
 	upstream string
-	service  Service
+	// upstreamHost is the route's policy-target hostname, recorded once at
+	// route build for substitution decision events.
+	upstreamHost string
+	service      Service
 	// credentialService is the stored credential that backs this route when it
 	// differs from the route name (for example github-web is backed by github).
 	credentialService string
@@ -211,6 +214,7 @@ type proxySnapshot struct {
 	upgrades       *upgradeTracker
 	substitutions  SubstitutionResolver
 	httpsUpstream  bool
+	upstreamHost   string
 }
 
 // upgradeTracker owns the hijacked connections of one route. Closing a route
@@ -416,7 +420,7 @@ func (m *Manager) StartUnixRoutes(ctx context.Context, sandbox string, routes ma
 			http.Error(w, "proxy upstream unavailable", http.StatusBadGateway)
 		}
 		routeCtx, cancel := context.WithCancel(context.Background())
-		preparedRoutes[name] = &proxyRoute{upstream: upstream.String(), service: route.Service, credentialService: route.CredentialService,
+		preparedRoutes[name] = &proxyRoute{upstream: upstream.String(), upstreamHost: upstream.Host, service: route.Service, credentialService: route.CredentialService,
 			secret: append([]byte(nil), route.Secret...), token: []byte(route.Token), caCert: append([]byte(nil), route.CACert...), maxRequestBody: route.MaxRequestBody, reverse: reverse,
 			handler: route.Handler, ctx: routeCtx, cancel: cancel, upgrades: newUpgradeTracker(), substitutions: route.Substitutions}
 	}
@@ -578,7 +582,7 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	dropGuestCredentialHeaders(r)
-	if !substituteRequest(w, r, service, snapshot) {
+	if !substituteRequest(w, r, service, &snapshot) {
 		return
 	}
 	credential := snapshot.secret
@@ -644,7 +648,8 @@ func (p *proxy) snapshot(name string) (proxySnapshot, bool) {
 	}
 	return proxySnapshot{service: route.service, secret: append([]byte(nil), route.secret...),
 		token: append([]byte(nil), route.token...), caCert: append([]byte(nil), route.caCert...), maxRequestBody: route.maxRequestBody, reverse: route.reverse, handler: route.handler, ctx: route.ctx, upgrades: route.upgrades,
-		substitutions: route.substitutions, httpsUpstream: strings.HasPrefix(route.upstream, "https://")}, true
+		substitutions: route.substitutions, httpsUpstream: strings.HasPrefix(route.upstream, "https://"),
+		upstreamHost: route.upstreamHost}, true
 }
 
 func (p *proxy) tokenSnapshot(name string) ([]byte, bool) {
@@ -657,14 +662,14 @@ func (p *proxy) tokenSnapshot(name string) ([]byte, bool) {
 	return append([]byte(nil), route.token...), true
 }
 
-func (s proxySnapshot) upgradeGeneration() uint64 {
+func (s *proxySnapshot) upgradeGeneration() uint64 {
 	if s.upgrades == nil {
 		return 0
 	}
 	return s.upgrades.currentGeneration()
 }
 
-func (s proxySnapshot) upgradeWriter(w http.ResponseWriter, generation uint64) http.ResponseWriter {
+func (s *proxySnapshot) upgradeWriter(w http.ResponseWriter, generation uint64) http.ResponseWriter {
 	if s.upgrades == nil {
 		return w
 	}
