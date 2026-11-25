@@ -163,14 +163,11 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	if changed > 0 {
 		slog.Info("reconciled interrupted state", "records", changed)
 	}
-	findings, err := svc.RecoverRuntimeJournal(ctx)
+	_, err = svc.RecoverRuntimeJournal(ctx)
 	if err != nil {
 		// Systemic recovery failure must not brick the daemon, but it is
 		// loud: journals remain for the next start and operators see why.
 		slog.Error("runtime journal recovery incomplete", "error", err)
-	}
-	for _, finding := range findings {
-		slog.Info("journal recovery left a resource", "finding", finding)
 	}
 	var policySync *policySyncRunner
 	if err := configurePolicySync(&cfg, st, &policySync); err != nil {
@@ -192,7 +189,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 
 	// The MCP contract caps JSON results at 4 MiB. Allow bounded protobuf
 	// framing overhead while keeping all daemon responses size-limited.
-	grpcServer := grpc.NewServer(grpc.MaxSendMsgSize(5 << 20))
+	grpcServer := grpc.NewServer(grpc.MaxSendMsgSize(5<<20), grpc.UnaryInterceptor(server.UnaryCorrelationInterceptor), grpc.StreamInterceptor(server.StreamCorrelationInterceptor))
 	defer grpcServer.Stop()
 	registerLocalServices(grpcServer, svc)
 

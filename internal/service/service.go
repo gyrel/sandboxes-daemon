@@ -4170,6 +4170,7 @@ func (s *Service) RecoverRuntimeJournal(ctx context.Context) ([]string, error) {
 	findings, err := rec.Recover(ctx)
 	summaries := make([]string, 0, len(findings))
 	for _, f := range findings {
+		emitJournalFinding(ctx, f)
 		summaries = append(summaries, f.String())
 	}
 	return summaries, err
