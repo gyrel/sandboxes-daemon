@@ -10,6 +10,8 @@ import (
 
 	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
 
+	"github.com/rheic/slogx/events"
+
 	"github.com/rheic/sandboxes-daemon/internal/approvals"
 )
 
@@ -82,6 +84,7 @@ func (s *Service) RespondApproval(ctx context.Context, approvalID string, decisi
 	if decision == localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE ||
 		persist == localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_EXACT {
 		if s.approvalProvider == nil {
+			emitPlatformUnsupported(ctx, events.PlatformUnsupportedCapabilityApprovalprovidermissing)
 			return approvals.Entry{}, "", ErrApprovalProviderUnavailable
 		}
 	}

@@ -39,7 +39,14 @@ const (
 	kitSourceOci       = "oci"
 )
 
-func (s *Service) CheckKitSource(ctx context.Context, kind localv1.KitSourceKind, ref string, sandboxID string, signed bool) (localv1.CheckKitReason, bool, error) {
+func (s *Service) CheckKitSource(ctx context.Context, kind localv1.KitSourceKind, ref string, sandboxID string, signed bool) (reason localv1.CheckKitReason, allowedResult bool, resultErr error) {
+	var sources []string
+	var local, signature bool
+	defer func() {
+		if resultErr == nil {
+			emitKitCheck(ctx, kind, ref, sources, local, signature, reason)
+		}
+	}()
 	if kind == localv1.KitSourceKind_KIT_SOURCE_KIND_UNSPECIFIED {
 		return localv1.CheckKitReason_CHECK_KIT_REASON_UNSPECIFIED, false, fmt.Errorf("%w: kit source kind is required", core.ErrConflict)
 	}
@@ -51,7 +58,7 @@ func (s *Service) CheckKitSource(ctx context.Context, kind localv1.KitSourceKind
 	if s.OrgPolicyEnforce && strings.TrimSpace(s.OrgPolicyOrg) != "" {
 		if _, err := orgpolicy.Load(ctx, s.store, s.OrgPolicyOrg, s.now().UTC()); err != nil {
 			slog.Info("kit policy check", "reason", "policy_unavailable", "allowed", false, "managed", true)
-			return localv1.CheckKitReason_CHECK_KIT_REASON_POLICY_UNAVAILABLE, false, nil //nolint:nilerr // fail-closed outcome is reported via reason, not an RPC error
+			return localv1.CheckKitReason_CHECK_KIT_REASON_POLICY_UNAVAILABLE, false, nil
 		}
 		managed = true
 	}
@@ -62,6 +69,7 @@ func (s *Service) CheckKitSource(ctx context.Context, kind localv1.KitSourceKind
 	}
 
 	allowedSources, allowLocal, requireSig := s.effectiveKitSettings(ctx)
+	sources, local, signature = allowedSources, allowLocal, requireSig
 	sourceName := kitSourceKindName(kind)
 
 	allowed := false

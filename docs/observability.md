@@ -8,4 +8,6 @@ Journal recovery emits `rheic.journal.recover` for each recognized finding left 
 
 MCP registration emits `rheic.mcp.register` when a challenge is issued and when the registration is stored. Successful sandbox attachments emit `rheic.mcp.load`. Both hash server names and include correlation IDs when available. Load currently reports zero tools and an empty approval ID because attachment does not discover tools or create an approval.
 
-Daemon lifecycle, reconcile counters, create unwind, peer credential rejection, approvals, kit checks, MCP attestation and unsuccessful loads, templates, secrets, platform unsupported positions, and runtime verification and launch remain uninstrumented.
+Kit checks emit `rheic.kit.check` for allowed sources and the source, local-kit, and signature policy refusals. References are hashed; invalid-reference and unavailable-policy refusals have no matching catalog reason and are not emitted. Missing approval providers emit `rheic.platform.unsupported`.
+
+Daemon lifecycle, reconcile counters, create unwind, peer credential rejection, approval lifecycle, remaining kit refusals, MCP attestation and unsuccessful loads, templates, secrets, other platform unsupported positions, and runtime verification and launch remain uninstrumented.
