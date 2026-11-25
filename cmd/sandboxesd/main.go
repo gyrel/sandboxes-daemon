@@ -76,6 +76,9 @@ type options struct {
 	policySyncPublicKey   string
 	policySyncTokenFile   string
 	policySyncInterval    time.Duration
+	logMaxSizeMiB         uint64
+	logMaxFiles           int
+	logTotalCapMiB        uint64
 	showVersion           bool
 }
 
@@ -195,6 +198,9 @@ func run() int {
 		SkillsHelperPath:         opts.skillsHelperPath,
 		SkillsStorePath:          opts.skillsStorePath,
 		PolicySync:               policySync,
+		LogMaxSizeMiB:            opts.logMaxSizeMiB,
+		LogMaxFiles:              opts.logMaxFiles,
+		LogTotalCapMiB:           opts.logTotalCapMiB,
 	})
 	if err != nil {
 		slog.Error("daemon stopped", "error", err)
@@ -285,6 +291,9 @@ func (opts *options) applySettings(values *settings.Values) {
 	opts.policySyncPublicKey = values.PolicySyncPublicKeyFile
 	opts.policySyncTokenFile = values.PolicySyncTokenFile
 	opts.policySyncInterval = values.PolicySyncInterval
+	opts.logMaxSizeMiB = values.LogMaxSizeMiB
+	opts.logMaxFiles = values.LogMaxFiles
+	opts.logTotalCapMiB = values.LogTotalCapMiB
 }
 
 // loadPolicySync reads the protected token and public-key files only when the
