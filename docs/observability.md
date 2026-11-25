@@ -6,4 +6,6 @@ Correlation context persists for the lifetime of an individual RPC stream. Propa
 
 Journal recovery emits `rheic.journal.recover` for each recognized finding left in place. The event contains a mapped reason, a SHA-256 resource hash, and correlation IDs when available. Unknown reasons are not emitted. The resource kind is currently reported as `unknown` because the runtime finding does not expose it.
 
-The remaining daemon lifecycle, approval, kit, MCP, template, secret, platform and runtime catalog contours are not yet instrumented by this change.
+MCP registration emits `rheic.mcp.register` when a challenge is issued and when the registration is stored. Successful sandbox attachments emit `rheic.mcp.load`. Both hash server names and include correlation IDs when available. Load currently reports zero tools and an empty approval ID because attachment does not discover tools or create an approval.
+
+Daemon lifecycle, reconcile counters, create unwind, peer credential rejection, approvals, kit checks, MCP attestation and unsuccessful loads, templates, secrets, platform unsupported positions, and runtime verification and launch remain uninstrumented.
