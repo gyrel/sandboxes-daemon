@@ -4,10 +4,12 @@ package secretproxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,16 +31,17 @@ func TestPeerCheckingListenerRejectsForeignOwner(t *testing.T) {
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&out, nil)))
 	defer slog.SetDefault(old)
-	inner, err := net.Listen("unix", filepath.Join(mustTempDir(t), "peer.sock"))
+	inner, err := net.Listen("unix", filepath.Join(mustTempDir(t), "canary-token.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var rejected atomic.Int64
+	droppedUID := uint64(987654321)
 	listener := peerCheckingListener{
 		Listener: inner,
 		rejected: &rejected,
 		peerUID: func(net.Conn) (uint64, bool) {
-			return currentUID() + 1, true
+			return droppedUID, true
 		},
 	}
 	defer func() { _ = listener.Close() }()
@@ -71,6 +74,23 @@ func TestPeerCheckingListenerRejectsForeignOwner(t *testing.T) {
 	<-acceptErr
 	if !strings.Contains(out.String(), "rheic.peercred.reject") || strings.Contains(out.String(), inner.Addr().String()) {
 		t.Fatalf("unexpected event: %s", out.String())
+	}
+	var record map[string]json.RawMessage
+	line := strings.TrimSpace(out.String())
+	if err := json.Unmarshal([]byte(line), &record); err != nil {
+		t.Fatalf("expected one JSON event: %v", err)
+	}
+	uid := strconv.FormatUint(droppedUID, 10)
+	if string(record["peer_uid"]) != uid {
+		t.Errorf("peer_uid = %s, want numeric %s", record["peer_uid"], uid)
+	}
+	delete(record, "peer_uid")
+	rest, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rest), uid) || strings.Contains(line, "canary-token") || strings.Contains(line, inner.Addr().String()) {
+		t.Errorf("UID or socket path leaked outside peer_uid: %s", line)
 	}
 	if rejected.Load() != 1 {
 		t.Fatalf("rejected=%d want 1", rejected.Load())

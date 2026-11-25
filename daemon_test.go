@@ -3,11 +3,15 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,5 +285,65 @@ func TestStateDirectoryLockRejectsSymlink(t *testing.T) {
 	data, err := os.ReadFile(target)
 	if err != nil || string(data) != "unchanged" {
 		t.Fatalf("symlink target changed: %q, %v", data, err)
+	}
+}
+
+func TestDaemonLifecycleEventsRedactConfigPaths(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	dir, err := os.MkdirTemp("/tmp", "canary-state-token-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "canary-socket-token.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, Config{SocketPath: socket, StateDir: dir}) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		select {
+		case err := <-done:
+			cancel()
+			t.Fatalf("daemon exited before ready: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("daemon did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{"rheic.daemon.start": 0, "rheic.daemon.ready": 0, "rheic.daemon.shutdown": 0}
+	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("invalid JSON log: %v", err)
+		}
+		name, _ := record["event"].(string)
+		if _, ok := counts[name]; !ok {
+			continue
+		}
+		counts[name]++
+		for _, secret := range []string{dir, socket, "canary-state-token", "canary-socket-token"} {
+			if strings.Contains(line, secret) {
+				t.Errorf("%s leaked %q: %s", name, secret, line)
+			}
+		}
+	}
+	for name, count := range counts {
+		if count != 1 {
+			t.Errorf("%s count = %d, want 1", name, count)
+		}
 	}
 }

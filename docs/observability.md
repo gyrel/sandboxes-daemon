@@ -13,3 +13,9 @@ Approvals, kit checks, MCP attestation and unsuccessful loads, templates, secret
 Lifecycle emits start, ready and shutdown events; the socket path is represented by the first 12 SHA-256 bytes. The bundle digest is the SHA-256 of the configured digest file when readable. `managed_verify=ok` means startup configuration passed, not that artifacts have already been verified. Ready's recovered count is the existing reconciliation change count. Shutdown has no flushable logger sink or in-flight counter: the catalog requires both fields, so they are false and zero; a missing signal is empty. Reconcile reports the number of sandbox records scanned; adopted, left-alone and generation-mismatch counts are unavailable and encoded as zero. Secret proxy credential denials emit peer credential rejection; a failed credential lookup has an unknown UID encoded as zero.
 
 Create unwind and runtime verification decision points are in the external runtime module, and are not wired here. Refused managed configuration fails before daemon Run and does not currently emit a start event.
+
+| Event contour | Canary coverage |
+| --- | --- |
+| Daemon start, ready, shutdown | One event each; synthetic socket and state directory secrets are absent from event JSON. Ordinary daemon logs are outside this event-specific check. |
+| Daemon reconcile | Two sandbox records are scanned; all four catalog counts are present, and sandbox names are absent from captured JSONL. |
+| Peer credential rejection | One rejected peer; UID appears as a numeric `peer_uid` only, and the socket path and token are absent from the captured line. |
