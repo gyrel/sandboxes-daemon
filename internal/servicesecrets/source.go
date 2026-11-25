@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/rheic/slogx/events"
 )
 
 const (
@@ -205,11 +207,13 @@ func (s *Store) SaveSource(ctx context.Context, service string, scope Scope, san
 	}
 	defer clear(encoded)
 	if err := s.vault.Set(ctx, vaultService, account(summary), string(encoded)); err != nil {
+		emitSecretWrite(ctx, account(summary), events.OutcomeFailed)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return Summary{}, err
 		}
 		return Summary{}, errors.New("store service secret source in host keychain")
 	}
+	emitSecretWrite(ctx, account(summary), events.OutcomeOK)
 	s.resolver().invalidate(account(summary))
 	if source.Reference != "" {
 		summary.SourceKind = SourceKindReference

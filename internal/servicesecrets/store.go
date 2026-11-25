@@ -11,6 +11,8 @@ import (
 	"unicode/utf8"
 
 	keyring "github.com/zalando/go-keyring"
+
+	"github.com/rheic/slogx/events"
 )
 
 const vaultService = "com.rheic.service-secrets.v1"
@@ -156,11 +158,13 @@ func (s *Store) Save(ctx context.Context, service string, scope Scope, sandboxNa
 		return Summary{}, fmt.Errorf("%w: value must be valid UTF-8 and 1 to 8192 bytes", ErrInvalid)
 	}
 	if err := s.vault.Set(ctx, vaultService, account(summary), string(value)); err != nil {
+		emitSecretWrite(ctx, account(summary), events.OutcomeFailed)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return Summary{}, err
 		}
 		return Summary{}, errors.New("store service secret in host keychain")
 	}
+	emitSecretWrite(ctx, account(summary), events.OutcomeOK)
 	s.resolver().invalidate(account(summary))
 	summary.SourceKind = SourceKindValue
 	summary.SecretType = SecretTypeAPIKey

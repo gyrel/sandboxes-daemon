@@ -13,6 +13,7 @@ import (
 	core "github.com/rheic/sandboxes-core"
 
 	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	"github.com/rheic/slogx/events"
 
 	"github.com/rheic/sandboxes-daemon/internal/approvals"
 	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
@@ -93,6 +94,9 @@ func (s *Service) SetCustomSecret(ctx context.Context, req CustomSecretSetReques
 		if err != nil {
 			return customsecrets.Summary{}, "", "", err
 		}
+		// Granting is gated by a trusted provider that this slice does not
+		// have, so the request is recorded with provider none.
+		emitApprovalRequested(ctx, entry, events.ApprovalRequestedProviderNone)
 		slog.Info("custom secret approval created", "decision", "approval_required", "service", name, "approval_id", entry.ID)
 		return customsecrets.Summary{}, "", entry.ID, nil
 	}

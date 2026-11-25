@@ -85,6 +85,8 @@ func (s *Service) RespondApproval(ctx context.Context, approvalID string, decisi
 		persist == localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_EXACT {
 		if s.approvalProvider == nil {
 			emitPlatformUnsupported(ctx, events.PlatformUnsupportedCapabilityApprovalprovidermissing)
+			emitApprovalResponded(ctx, approvalID, decision, persist,
+				events.ApprovalRespondedResultFailedPrecondition, events.OutcomeDenied)
 			return approvals.Entry{}, "", ErrApprovalProviderUnavailable
 		}
 	}
@@ -93,6 +95,9 @@ func (s *Service) RespondApproval(ctx context.Context, approvalID string, decisi
 			denied, _ := s.approvals.Resolve(approvalID, localv1.ApprovalDecision_APPROVAL_DECISION_DENY,
 				localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
 			_ = denied
+			emitApprovalResponded(ctx, approvalID, localv1.ApprovalDecision_APPROVAL_DECISION_DENY,
+				localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE,
+				events.ApprovalRespondedResultOk, events.OutcomeDenied)
 			return approvals.Entry{}, "", fmt.Errorf("%w: %w", ErrApprovalDenied, err)
 		}
 	}
@@ -100,6 +105,7 @@ func (s *Service) RespondApproval(ctx context.Context, approvalID string, decisi
 	if err != nil {
 		return approvals.Entry{}, "", err
 	}
+	emitApprovalResponded(ctx, approvalID, decision, persist, events.ApprovalRespondedResultOk, respondedOutcome(decision))
 	// EXACT rule storage lands with the governance provider slice; until then
 	// the decision is recorded but no rule ID is returned.
 	slog.Info("approval decision recorded", "approval_id", approvalID, "kind", entry.Kind, "decision", decision, "persist_scope", persist)

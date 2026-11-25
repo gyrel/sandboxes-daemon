@@ -37,6 +37,7 @@ import (
 	"github.com/rheic/sandboxes-gateway/registryauth"
 	runtime "github.com/rheic/sandboxes-runtime"
 	"github.com/rheic/sandboxes-runtime/ctr"
+	"github.com/rheic/slogx/events"
 
 	"github.com/rheic/sandboxes-daemon/internal/approvals"
 	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
@@ -186,6 +187,7 @@ func (s *Service) approveHostCommand(ctx context.Context, service string, scope 
 		})
 		if err == nil {
 			approvalID = entry.ID
+			emitApprovalRequested(ctx, entry, events.ApprovalRequestedProviderOs)
 		}
 	}
 	if err := s.hostCommandApprover.ApproveHostCommand(ctx, HostCommandApprovalRequest{
@@ -193,11 +195,17 @@ func (s *Service) approveHostCommand(ctx context.Context, service string, scope 
 	}); err != nil {
 		if approvalID != "" && s.approvals != nil {
 			_, _ = s.approvals.Resolve(approvalID, localv1.ApprovalDecision_APPROVAL_DECISION_DENY, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
+			emitApprovalResponded(ctx, approvalID, localv1.ApprovalDecision_APPROVAL_DECISION_DENY,
+				localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE,
+				events.ApprovalRespondedResultOk, events.OutcomeDenied)
 		}
 		return errors.New("host command secret source was denied or approval failed")
 	}
 	if approvalID != "" && s.approvals != nil {
 		_, _ = s.approvals.Resolve(approvalID, localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE, localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE)
+		emitApprovalResponded(ctx, approvalID, localv1.ApprovalDecision_APPROVAL_DECISION_APPROVE,
+			localv1.ApprovalPersistScope_APPROVAL_PERSIST_SCOPE_ONCE,
+			events.ApprovalRespondedResultOk, events.OutcomeOK)
 	}
 	return nil
 }

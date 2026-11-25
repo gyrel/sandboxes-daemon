@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/rheic/slogx/events"
+
 	"github.com/rheic/sandboxes-daemon/internal/keychainchunks"
 	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
 )
@@ -63,7 +65,15 @@ func (s *Store) Save(ctx context.Context, service string, scope servicesecrets.S
 		return ErrKeychain
 	}
 	defer clear(payload)
-	return s.mapError(s.records.Save(ctx, account(service, scope, sandboxName), payload))
+	key := account(service, scope, sandboxName)
+	if err := s.mapError(s.records.Save(ctx, key, payload)); err != nil {
+		emitSecretWrite(ctx, key, false, events.OutcomeFailed)
+		return err
+	}
+	// A stored custom record always carries the placeholder that the write
+	// path echoes exactly once to its caller.
+	emitSecretWrite(ctx, key, record.Placeholder != "", events.OutcomeOK)
+	return nil
 }
 
 // Load returns the record for one custom secret. Callers must not log it.
