@@ -82,7 +82,10 @@ The state directory contains:
 - `daemon.loglevel.json`: persistent `general` and `proxy` levels. Accepted
   levels are `debug`, `info`, `warn`, `error`; `proxy` is reserved for proxy
   logs and is accepted for `sbx daemon log-level` grammar parity.
-- `daemon.log`: detached-start output.
+- `daemon.log`: detached-start output. The daemon also writes this file itself
+  through a size-rotating sink (default 8 MiB per file, 5 archived files, 64 MiB
+  total), so its on-disk footprint is bounded. Rotation caps are tunable in the
+  settings file as `log.maxSizeMiB`, `log.maxFiles` and `log.totalCapMiB`.
 
 `daemon start` spawns `sandboxesd --state <dir> --socket <socket>`; `--policy
 allow-all|balanced|deny-all` initializes the global policy profile (the default

@@ -179,3 +179,55 @@ registry_private_grants = "one=repository:team/private:pull"
 		}
 	}
 }
+
+func TestLogRotationSettingsDefaultToUnset(t *testing.T) {
+	values, err := Load(filepath.Join(t.TempDir(), "settings.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values.LogMaxSizeMiB != 0 || values.LogMaxFiles != 0 || values.LogTotalCapMiB != 0 {
+		t.Fatalf("absent log rotation settings = %+v, want all zero (unset)", values)
+	}
+}
+
+func TestParseLogRotationSettings(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantSize  uint64
+		wantFiles int
+		wantCap   uint64
+		wantErr   string
+	}{
+		{name: "snake keys", body: "log.max_size_mib = 16\nlog.max_files = 3\nlog.total_cap_mib = 128\n", wantSize: 16, wantFiles: 3, wantCap: 128},
+		{name: "camel keys", body: "log.maxSizeMiB = 32\nlog.maxFiles = 7\nlog.totalCapMiB = 256\n", wantSize: 32, wantFiles: 7, wantCap: 256},
+		{name: "size zero", body: "log.max_size_mib = 0\n", wantErr: "must be at least 1"},
+		{name: "files zero", body: "log.max_files = 0\n", wantErr: "must be at least 1"},
+		{name: "cap zero", body: "log.total_cap_mib = 0\n", wantErr: "must be at least 1"},
+		{name: "size negative", body: "log.max_size_mib = -1\n", wantErr: "non-negative integer"},
+		{name: "size too large", body: "log.max_size_mib = 4097\n", wantErr: "at most 4096"},
+		{name: "files too large", body: "log.max_files = 257\n", wantErr: "at most 256"},
+		{name: "cap too large", body: "log.total_cap_mib = 65537\n", wantErr: "at most 65536"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var values Values
+			err := parse(strings.NewReader(test.body), &values)
+			if err == nil {
+				err = validateValues(&values)
+			}
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("parse/validate error = %v", err)
+				}
+				if values.LogMaxSizeMiB != test.wantSize || values.LogMaxFiles != test.wantFiles || values.LogTotalCapMiB != test.wantCap {
+					t.Fatalf("values = size %d files %d cap %d", values.LogMaxSizeMiB, values.LogMaxFiles, values.LogTotalCapMiB)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
