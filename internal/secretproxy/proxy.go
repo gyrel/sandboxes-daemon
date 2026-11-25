@@ -5,6 +5,8 @@ package secretproxy
 import (
 	"bufio"
 	"context"
+	"log/slog"
+
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -24,6 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rheic/slogx/events"
 
 	daemonnetwork "github.com/rheic/sandboxes-daemon/internal/network"
 )
@@ -147,6 +151,7 @@ func (l peerCheckingListener) Accept() (net.Conn, error) {
 				// A failed credential lookup is not proof of a same-owner
 				// peer. Fail closed on platforms with POSIX peer credentials.
 				l.rejected.Add(1)
+				emitPeerReject(0)
 				_ = conn.Close()
 				continue
 			}
@@ -158,7 +163,15 @@ func (l peerCheckingListener) Accept() (net.Conn, error) {
 			return conn, nil
 		}
 		l.rejected.Add(1)
+		emitPeerReject(uid)
 		_ = conn.Close()
+	}
+}
+
+func emitPeerReject(uid uint64) {
+	event, err := events.PeerCredReject(events.OutcomeDenied, events.PeerCredRejectParams{PeerUID: uid, Transport: events.PeerCredRejectTransportUnix})
+	if err == nil {
+		event.Emit(context.Background(), slog.Default(), events.Standard{})
 	}
 }
 

@@ -56,7 +56,19 @@ type Values struct {
 	PolicySyncPublicKeyFile string
 	PolicySyncTokenFile     string
 	PolicySyncInterval      time.Duration
+	// Log rotation caps the daemon's own file sink ($STATE/daemon.log). Zero
+	// values use the documented defaults (8 MiB per file, 5 files, 64 MiB total).
+	LogMaxSizeMiB  uint64
+	LogMaxFiles    int
+	LogTotalCapMiB uint64
 }
+
+// Log rotation bounds, shared by parse-time and load-time validation.
+const (
+	logMaxSizeMiBMax  = 4096
+	logMaxFilesMax    = 256
+	logTotalCapMiBMax = 65536
+)
 
 // DefaultPath returns ~/.config/rheic/settings.toml, honoring XDG_CONFIG_HOME.
 func DefaultPath() string {
@@ -133,7 +145,23 @@ func validateValues(values *Values) error {
 	if err := validatePolicySync(values); err != nil {
 		return err
 	}
+	if err := validateLogRotation(values); err != nil {
+		return err
+	}
 	return validateRegistryPrivate(values)
+}
+
+func validateLogRotation(values *Values) error {
+	if values.LogMaxSizeMiB > logMaxSizeMiBMax {
+		return fmt.Errorf("settings log.maxSizeMiB must be at most %d", logMaxSizeMiBMax)
+	}
+	if values.LogMaxFiles > logMaxFilesMax {
+		return fmt.Errorf("settings log.maxFiles must be at most %d", logMaxFilesMax)
+	}
+	if values.LogTotalCapMiB > logTotalCapMiBMax {
+		return fmt.Errorf("settings log.totalCapMiB must be at most %d", logTotalCapMiBMax)
+	}
+	return nil
 }
 
 func validatePolicySync(values *Values) error {
@@ -324,6 +352,33 @@ func parse(r io.Reader, values *Values) error {
 				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
 			}
 			values.KitRequireSignature = required
+		case "log.max_size_mib", "log.maxSizeMiB":
+			size, parseErr := parseUint(key, value)
+			if parseErr != nil {
+				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
+			}
+			if size == 0 {
+				return fmt.Errorf("settings line %d: log.maxSizeMiB must be at least 1", lineNumber)
+			}
+			values.LogMaxSizeMiB = size
+		case "log.max_files", "log.maxFiles":
+			files, parseErr := parseUint(key, value)
+			if parseErr != nil {
+				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
+			}
+			if files == 0 {
+				return fmt.Errorf("settings line %d: log.maxFiles must be at least 1", lineNumber)
+			}
+			values.LogMaxFiles = int(files) //nolint:gosec // parseUint uses 32 bits; validateLogRotation applies the 256 cap.
+		case "log.total_cap_mib", "log.totalCapMiB":
+			totalCap, parseErr := parseUint(key, value)
+			if parseErr != nil {
+				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
+			}
+			if totalCap == 0 {
+				return fmt.Errorf("settings line %d: log.totalCapMiB must be at least 1", lineNumber)
+			}
+			values.LogTotalCapMiB = totalCap
 		default:
 			return fmt.Errorf("settings line %d: unknown key %q", lineNumber, key)
 		}
@@ -373,7 +428,7 @@ func parseRegistryPrivateSetting(values *Values, key, value string) error {
 }
 
 func parseDefaultResource(values *Values, key, value string) error {
-	parsed, err := parseUint(key, value, 32)
+	parsed, err := parseUint(key, value)
 	if err != nil {
 		return err
 	}
@@ -508,8 +563,8 @@ func parseValue(raw string) (string, error) {
 	return value, nil
 }
 
-func parseUint(key, value string, bits int) (uint64, error) {
-	parsed, err := strconv.ParseUint(value, 10, bits)
+func parseUint(key, value string) (uint64, error) {
+	parsed, err := strconv.ParseUint(value, 10, 32)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be a non-negative integer", key)
 	}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -73,6 +76,9 @@ type options struct {
 	policySyncPublicKey   string
 	policySyncTokenFile   string
 	policySyncInterval    time.Duration
+	logMaxSizeMiB         uint64
+	logMaxFiles           int
+	logTotalCapMiB        uint64
 	showVersion           bool
 }
 
@@ -93,6 +99,7 @@ func main() {
 	os.Exit(run())
 }
 
+//nolint:funlen // Process setup is kept together.
 func run() int {
 	if len(os.Args) > 1 && os.Args[1] == gateway.SupervisorArgument {
 		if err := gateway.RunSupervisor(os.Args[2:]); err != nil {
@@ -106,8 +113,23 @@ func run() int {
 		_, _ = fmt.Fprintln(os.Stdout, version.Version)
 		return 0
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	var signalMu sync.Mutex
+	shutdownSignal := ""
+	go func() {
+		select {
+		case sig := <-signals:
+			signalMu.Lock()
+			shutdownSignal = sig.String()
+			signalMu.Unlock()
+			stop()
+		case <-ctx.Done():
+		}
+	}()
 	if controller, err := lifecycle.OpenLogController(opts.stateDir); err != nil {
 		slog.Warn("log-level control unavailable; using info", "error", err)
 	} else {
@@ -135,7 +157,16 @@ func run() int {
 		slog.Error("load policy sync configuration", "error", syncErr)
 		return 1
 	}
+	bundleDigest := ""
+	if opts.artifactDigests != "" {
+		if data, readErr := os.ReadFile(opts.artifactDigests); readErr == nil {
+			sum := sha256.Sum256(data)
+			bundleDigest = hex.EncodeToString(sum[:])
+		}
+	}
 	err = daemon.Run(ctx, daemon.Config{
+		RuntimeBundleDigest:      bundleDigest,
+		ShutdownSignal:           func() string { signalMu.Lock(); defer signalMu.Unlock(); return shutdownSignal },
 		SocketPath:               opts.socketPath,
 		StateDir:                 opts.stateDir,
 		Backend:                  backend,
@@ -167,6 +198,9 @@ func run() int {
 		SkillsHelperPath:         opts.skillsHelperPath,
 		SkillsStorePath:          opts.skillsStorePath,
 		PolicySync:               policySync,
+		LogMaxSizeMiB:            opts.logMaxSizeMiB,
+		LogMaxFiles:              opts.logMaxFiles,
+		LogTotalCapMiB:           opts.logTotalCapMiB,
 	})
 	if err != nil {
 		slog.Error("daemon stopped", "error", err)
@@ -257,6 +291,9 @@ func (opts *options) applySettings(values *settings.Values) {
 	opts.policySyncPublicKey = values.PolicySyncPublicKeyFile
 	opts.policySyncTokenFile = values.PolicySyncTokenFile
 	opts.policySyncInterval = values.PolicySyncInterval
+	opts.logMaxSizeMiB = values.LogMaxSizeMiB
+	opts.logMaxFiles = values.LogMaxFiles
+	opts.logTotalCapMiB = values.LogTotalCapMiB
 }
 
 // loadPolicySync reads the protected token and public-key files only when the
