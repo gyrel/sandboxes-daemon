@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-core/sandbox"
+	"github.com/gyrel/sandboxes-core/sandbox"
 
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestPolicyMutationRevokesActiveOAuthUpgrade(t *testing.T) {
@@ -68,7 +68,7 @@ func TestPolicyMutationRevokesActiveOAuthUpgrade(t *testing.T) {
 	manager := secretproxy.New()
 	defer func() { _ = manager.Close() }()
 	svc.SetSecretProxyManager(manager)
-	dir, err := os.MkdirTemp("/tmp", "rheic-service-upgrade-")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-service-upgrade-")
 	if err != nil {
 		t.Fatal(err)
 	}

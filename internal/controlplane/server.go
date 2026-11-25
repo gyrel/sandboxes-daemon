@@ -195,7 +195,7 @@ PRAGMA user_version=1;`
 }
 
 func backupDatabase(db *sql.DB, dbPath string) error {
-	backupDir, err := os.MkdirTemp(filepath.Dir(dbPath), ".rheic-server-backup-")
+	backupDir, err := os.MkdirTemp(filepath.Dir(dbPath), ".gyrel-server-backup-")
 	if err != nil {
 		return fmt.Errorf("create migration backup directory: %w", err)
 	}

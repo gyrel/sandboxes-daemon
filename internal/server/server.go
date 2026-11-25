@@ -7,20 +7,20 @@ import (
 	"fmt"
 	"time"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
-	apiversion "github.com/rheic/sandboxes-api/version"
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/operation"
-	"github.com/rheic/sandboxes-core/sandbox"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
+	apiversion "github.com/gyrel/sandboxes-api/version"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/operation"
+	"github.com/gyrel/sandboxes-core/sandbox"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/rheic/sandboxes-daemon/internal/mcpmanager"
-	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/service"
-	"github.com/rheic/sandboxes-daemon/internal/version"
+	"github.com/gyrel/sandboxes-daemon/internal/mcpmanager"
+	"github.com/gyrel/sandboxes-daemon/internal/orgpolicy"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/service"
+	"github.com/gyrel/sandboxes-daemon/internal/version"
 )
 
 const (

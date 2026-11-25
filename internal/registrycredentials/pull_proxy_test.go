@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-gateway/registryauth"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
 )
 
 type pullRoundTripperFunc func(*http.Request) (*http.Response, error)

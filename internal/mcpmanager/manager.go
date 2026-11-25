@@ -25,14 +25,14 @@ import (
 	"sync"
 	"time"
 
+	core "github.com/gyrel/sandboxes-core"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	core "github.com/rheic/sandboxes-core"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 
-	"github.com/rheic/sandboxes-daemon/internal/approvals"
-	"github.com/rheic/sandboxes-daemon/internal/mcpprocess"
-	"github.com/rheic/sandboxes-daemon/internal/version"
+	"github.com/gyrel/sandboxes-daemon/internal/approvals"
+	"github.com/gyrel/sandboxes-daemon/internal/mcpprocess"
+	"github.com/gyrel/sandboxes-daemon/internal/version"
 )
 
 const (
@@ -1206,7 +1206,7 @@ func (m *Manager) startSession(ctx context.Context, server Server) (*managedSess
 	if err != nil {
 		return nil, errors.New("MCP server could not be started")
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "rheic-daemon", Version: version.Version}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "gyrel-daemon", Version: version.Version}, nil)
 	session, err := client.Connect(ctx, &mcp.IOTransport{Reader: process.Stdout, Writer: process.Stdin, MaxLineLength: 5 << 20}, nil)
 	if err != nil {
 		_ = process.Close()

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rheic/sandboxes-gateway/registryauth"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
 )
 
 const (
@@ -299,7 +299,7 @@ func (p *PullProxy) issueToken(repository string, actions map[string]struct{}) (
 	if _, err := rand.Read(random[:]); err != nil {
 		return "", err
 	}
-	token := "rheic-" + base64.RawURLEncoding.EncodeToString(random[:])
+	token := "gyrel-" + base64.RawURLEncoding.EncodeToString(random[:])
 	clear(random[:])
 	p.stateMu.Lock()
 	defer p.stateMu.Unlock()
@@ -508,7 +508,7 @@ func (p *PullProxy) prepareRegistryRequest(w http.ResponseWriter, r *http.Reques
 }
 
 func (p *PullProxy) authorizeGuestOperation(w http.ResponseWriter, r *http.Request, operation registryOperation, token string) bool {
-	if len(r.Header.Values("Authorization")) == 1 && strings.HasPrefix(token, "Bearer rheic-") &&
+	if len(r.Header.Values("Authorization")) == 1 && strings.HasPrefix(token, "Bearer gyrel-") &&
 		p.authorizeToken(strings.TrimPrefix(token, "Bearer "), operation.repository, operation.action) {
 		return true
 	}

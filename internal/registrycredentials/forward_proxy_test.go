@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-gateway/registryauth"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
 )
 
 type closeTrackingBody struct {
@@ -413,9 +413,9 @@ func TestProxyAuthorityPersistsAndMintsHostBoundLeaf(t *testing.T) {
 }
 
 func TestTokenRequestAcceptsRepeatedScopes(t *testing.T) {
-	query := "service=fixture&scope=repository:rheic/acceptance:pull&scope=repository:rheic/acceptance:pull%2Cpush"
+	query := "service=fixture&scope=repository:gyrel/acceptance:pull&scope=repository:gyrel/acceptance:pull%2Cpush"
 	repository, actions, ok, valid := parseTokenRequestScope(query, "fixture")
-	if !valid || !ok || repository != "rheic/acceptance" {
+	if !valid || !ok || repository != "gyrel/acceptance" {
 		t.Fatalf("scope = %q %v %v %v", repository, actions, ok, valid)
 	}
 	if _, hasPull := actions[registryActionPull]; !hasPull {
@@ -661,7 +661,7 @@ func TestPrivateForwardUsesUpstreamChallengeRealmAndLocalTokenEndpoint(t *testin
 	if err := json.Unmarshal(tokenResponse.Body.Bytes(), &issued); err != nil {
 		t.Fatalf("decode sentinel token: %v", err)
 	}
-	if !strings.HasPrefix(issued.Token, "rheic-") {
+	if !strings.HasPrefix(issued.Token, "gyrel-") {
 		t.Fatalf("guest token %q is not a broker sentinel", issued.Token)
 	}
 

@@ -1,4 +1,4 @@
-//go:build darwin && rheic_p04_service_live
+//go:build darwin && gyrel_p04_service_live
 
 package service
 
@@ -16,17 +16,17 @@ import (
 	"testing"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	daemonnetwork "github.com/rheic/sandboxes-daemon/internal/network"
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
-	"github.com/rheic/sandboxes-daemon/internal/store"
-	gateway "github.com/rheic/sandboxes-gateway"
-	rt "github.com/rheic/sandboxes-runtime"
-	"github.com/rheic/sandboxes-runtime/ctr"
+	core "github.com/gyrel/sandboxes-core"
+	daemonnetwork "github.com/gyrel/sandboxes-daemon/internal/network"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
+	gateway "github.com/gyrel/sandboxes-gateway"
+	rt "github.com/gyrel/sandboxes-runtime"
+	"github.com/gyrel/sandboxes-runtime/ctr"
 )
 
-const p04ServiceCredential = "rheic-p04-service-synthetic-credential"
+const p04ServiceCredential = "gyrel-p04-service-synthetic-credential"
 
 func TestP04ServiceCreateStartExecRevokeAgainstOwnedVM(t *testing.T) {
 	if runtime.GOARCH != "arm64" {
@@ -46,7 +46,7 @@ func TestP04ServiceCreateStartExecRevokeAgainstOwnedVM(t *testing.T) {
 		}
 	})
 	defer func() {
-		evidenceDir := os.Getenv("RHEIC_P04_EVIDENCE_DIR")
+		evidenceDir := os.Getenv("GYREL_P04_EVIDENCE_DIR")
 		if !t.Failed() || evidenceDir == "" {
 			return
 		}
@@ -258,7 +258,7 @@ func TestP04ServiceCreateStartExecRevokeAgainstOwnedVM(t *testing.T) {
 		t.Fatalf("service Create did not persist sandbox identity and start broker (id=%q)", sandboxID)
 	}
 
-	checkEnv := `/bin/sh -c 'test "$OPENAI_API_KEY" = rheic-proxy-placeholder && test "$OPENAI_BASE_URL" = http://127.0.0.1:3128/v1'`
+	checkEnv := `/bin/sh -c 'test "$OPENAI_API_KEY" = gyrel-proxy-placeholder && test "$OPENAI_BASE_URL" = http://127.0.0.1:3128/v1'`
 	if err := waitP04ServiceHelper(ctx, svc, sandboxID); err != nil {
 		t.Fatalf("guest proxy helper did not start: %v", err)
 	}
@@ -332,16 +332,16 @@ func getP04ServiceInputs(t *testing.T) p04ServiceInputs {
 		}
 		return value
 	}
-	image := os.Getenv("RHEIC_P04_IMAGE")
+	image := os.Getenv("GYREL_P04_IMAGE")
 	if image == "" {
 		image = "docker.io/library/alpine:3.22"
 	}
 	return p04ServiceInputs{
-		containerd: get("RHEIC_P04_CONTAINERD"), ctr: get("RHEIC_P04_CTR"),
-		shim: get("RHEIC_P04_SHIM"), kernel: get("RHEIC_P04_KERNEL"),
-		rootfs: get("RHEIC_P04_ROOTFS"), helper: get("RHEIC_P04_HELPER"),
-		libkrun: get("RHEIC_P04_LIBKRUN"), gvproxy: get("RHEIC_P04_GVPROXY"),
-		daemon: get("RHEIC_P04_DAEMON"), image: image,
+		containerd: get("GYREL_P04_CONTAINERD"), ctr: get("GYREL_P04_CTR"),
+		shim: get("GYREL_P04_SHIM"), kernel: get("GYREL_P04_KERNEL"),
+		rootfs: get("GYREL_P04_ROOTFS"), helper: get("GYREL_P04_HELPER"),
+		libkrun: get("GYREL_P04_LIBKRUN"), gvproxy: get("GYREL_P04_GVPROXY"),
+		daemon: get("GYREL_P04_DAEMON"), image: image,
 	}
 }
 
@@ -380,7 +380,7 @@ func execP04Service(ctx context.Context, svc *Service, sandboxID, command string
 func waitP04ServiceHelper(ctx context.Context, svc *Service, sandboxID string) error {
 	command := `/bin/sh -c 'i=0; while [ "$i" -lt 50 ]; do grep -Eq "^ *[0-9]+: 0100007F:0C38 +00000000:0000 +0A " /proc/net/tcp && exit 0; i=$((i + 1)); sleep 0.1; done; exit 1'`
 	if _, err := execP04Service(ctx, svc, sandboxID, command, nil); err != nil {
-		diagnostics, diagnosticErr := execP04Service(ctx, svc, sandboxID, `/bin/sh -c 'echo helper; ls -l /tmp/rheic-proxy-helper; echo tcp; cat /proc/net/tcp; echo tcp6; cat /proc/net/tcp6; echo fds; ls -l /proc/2/fd'`, nil)
+		diagnostics, diagnosticErr := execP04Service(ctx, svc, sandboxID, `/bin/sh -c 'echo helper; ls -l /tmp/gyrel-proxy-helper; echo tcp; cat /proc/net/tcp; echo tcp6; cat /proc/net/tcp6; echo fds; ls -l /proc/2/fd'`, nil)
 		return fmt.Errorf("wait for guest proxy listener: %w; diagnostics=%q (diagnostic error: %v)", err, diagnostics, diagnosticErr)
 	}
 	return nil

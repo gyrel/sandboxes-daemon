@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 )
 
+// legacy-compat: see RENAME-MAP §2 — persisted keychain service label; rename deferred.
 const vaultService = "com.rheic.registry-credentials.v1"
 const registryHTTPScheme = "https"
 const registryActionPull = "pull"

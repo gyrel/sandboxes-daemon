@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	core "github.com/gyrel/sandboxes-core"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	core "github.com/rheic/sandboxes-core"
 )
 
 type memoryMCPState struct {

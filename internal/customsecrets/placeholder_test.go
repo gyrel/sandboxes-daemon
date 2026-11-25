@@ -16,7 +16,7 @@ func TestResolvePlaceholderGeneratesUniqueTemplatedValues(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(got, "rheic-") || len(got) != len("rheic-")+32 {
+		if !strings.HasPrefix(got, "gyrel-") || len(got) != len("gyrel-")+32 {
 			t.Fatalf("default placeholder shape = %q", got)
 		}
 		if strings.Contains(got, value) {

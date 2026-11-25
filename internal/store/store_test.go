@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/operation"
-	"github.com/rheic/sandboxes-core/sandbox"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/operation"
+	"github.com/gyrel/sandboxes-core/sandbox"
 )
 
 func TestSandboxAndOperationLifecycle(t *testing.T) {

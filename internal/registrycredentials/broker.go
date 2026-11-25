@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/rheic/sandboxes-gateway/registryauth"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
 )
 
 // PullRequest contains host-authorized inputs for a single registry pull. The

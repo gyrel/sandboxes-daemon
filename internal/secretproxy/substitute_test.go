@@ -94,7 +94,7 @@ func (f *substituteFixture) send(t *testing.T, headers map[string]string) int {
 }
 
 const (
-	testPlaceholder = "rheic-placeholder-4f2a9c1e"
+	testPlaceholder = "gyrel-placeholder-4f2a9c1e"
 	testValue       = "synthetic-secret-value-do-not-print"
 )
 
@@ -161,7 +161,7 @@ func TestSubstitutionNegativeControlsFailClosedOrSkip(t *testing.T) {
 }
 
 func TestSubstitutionIsSinglePassAndRemovalStopsInjection(t *testing.T) {
-	const innerPlaceholder = "rheic-placeholder-inner-7d3e"
+	const innerPlaceholder = "gyrel-placeholder-inner-7d3e"
 	fixture := startSubstituteChannel(t, "https://api.example.test", func(context.Context) ([]Substitution, error) {
 		return []Substitution{
 			{Placeholder: testPlaceholder, Value: []byte(innerPlaceholder)},

@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
-	runtime "github.com/rheic/sandboxes-runtime"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
+	runtime "github.com/gyrel/sandboxes-runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/rheic/sandboxes-daemon/internal/service"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/service"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 type interactiveBackend struct{ outputBackend }

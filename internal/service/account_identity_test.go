@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestAccountUsernameResolution(t *testing.T) {

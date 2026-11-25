@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/operation"
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/operation"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
 )
 
 type execSession struct {
@@ -229,7 +229,7 @@ func (s *Service) resolveProxyEnvEntry(ctx context.Context, sb sandbox.Sandbox, 
 	if err != nil || !containsString(decodeProxyServices(configuredValue), name) {
 		return "", "", fmt.Errorf("%w: sandbox was not created with the %s proxy channel", core.ErrConflict, name)
 	}
-	return key + "=rheic-proxy-placeholder", name, nil
+	return key + "=gyrel-proxy-placeholder", name, nil
 }
 
 func (s *Service) finishProxyEnv(ctx context.Context, sb sandbox.Sandbox, env, out, proxyServices []string) ([]string, error) {

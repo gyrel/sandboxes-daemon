@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/service"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/service"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 // sbxSecretItem mirrors commands.secretJSON from sbx v0.50.1.

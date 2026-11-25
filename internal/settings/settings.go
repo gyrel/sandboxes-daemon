@@ -1,4 +1,4 @@
-// Package settings loads the host-side Rheic settings file.
+// Package settings loads the host-side Gyrel settings file.
 package settings
 
 import (
@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/controlplane"
-	"github.com/rheic/sandboxes-daemon/internal/policysync"
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
+	"github.com/gyrel/sandboxes-daemon/internal/policysync"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
 )
 
 // Values are the supported user overrides. Zero means "not set".
@@ -71,15 +71,18 @@ const (
 )
 
 // DefaultPath returns ~/.config/rheic/settings.toml, honoring XDG_CONFIG_HOME.
+//
+// legacy-compat: see RENAME-MAP §2 — the settings file path is a persisted
+// on-disk identifier; rename deferred for data-migration safety.
 func DefaultPath() string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "rheic", "settings.toml")
+		return filepath.Join(dir, "rheic", "settings.toml") // legacy-compat: see RENAME-MAP §2.
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "rheic", "settings.toml")
+	return filepath.Join(home, ".config", "rheic", "settings.toml") // legacy-compat: see RENAME-MAP §2.
 }
 
 // Load reads the optional settings file. A missing file is not an error.

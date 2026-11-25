@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/policysync"
+	"github.com/gyrel/sandboxes-daemon/internal/policysync"
 )
 
 // PolicySyncConfig configures the opt-in background org policy sync. The

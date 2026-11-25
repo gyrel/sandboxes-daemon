@@ -17,6 +17,7 @@ import (
 
 const (
 	// Prefix marks a keychain value that is a manifest rather than a payload.
+	// legacy-compat: see RENAME-MAP §2 — persisted in keychain values; rename deferred.
 	Prefix = "rheic-keychain-chunks-v1:"
 	// ChunkSize bounds one keychain item. Payloads up to this size are inline.
 	ChunkSize = 1800

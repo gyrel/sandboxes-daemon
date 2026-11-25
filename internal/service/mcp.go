@@ -8,14 +8,14 @@ import (
 	"net/url"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/sandbox"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/sandbox"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 
-	"github.com/rheic/sandboxes-daemon/internal/mcpmanager"
-	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/mcpmanager"
+	"github.com/gyrel/sandboxes-daemon/internal/oauthsession"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
 )
 
 // MCPInspectDetail is the daemon-side view returned by InspectMCPServer.

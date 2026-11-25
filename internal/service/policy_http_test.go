@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	core "github.com/rheic/sandboxes-core"
-	sandbox "github.com/rheic/sandboxes-core/sandbox"
+	core "github.com/gyrel/sandboxes-core"
+	sandbox "github.com/gyrel/sandboxes-core/sandbox"
 )
 
 func TestNormalizeRulesHTTPConditions(t *testing.T) {

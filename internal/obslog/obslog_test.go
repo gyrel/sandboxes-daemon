@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rheic/slogx/rotate"
+	"github.com/gyrel/slogx/rotate"
 )
 
 func TestRotateConfig(t *testing.T) {
@@ -125,8 +125,8 @@ func TestSampleDropsEmitsToStderrWithoutRecursion(t *testing.T) {
 	if err := json.Unmarshal(stderr.Bytes(), &event); err != nil {
 		t.Fatalf("stderr output is not JSON: %v: %q", err, stderr.String())
 	}
-	if event["event"] != "rheic.obs.log_dropped" {
-		t.Fatalf("event = %v, want rheic.obs.log_dropped", event["event"])
+	if event["event"] != "gyrel.obs.log_dropped" {
+		t.Fatalf("event = %v, want gyrel.obs.log_dropped", event["event"])
 	}
 	if event["component"] != "daemon" {
 		t.Fatalf("component = %v, want daemon", event["component"])

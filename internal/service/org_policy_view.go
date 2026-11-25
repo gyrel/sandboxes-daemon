@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
+	"github.com/gyrel/sandboxes-daemon/internal/orgpolicy"
 )
 
 // OrgPolicyRule is one non-secret rule in the effective organization policy

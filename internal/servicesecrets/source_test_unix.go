@@ -30,7 +30,7 @@ func TestCommandSourceRejectsOutputOverLimit(t *testing.T) {
 }
 
 func TestCommandSourceUsesFreshWorkingDirectoryAndFilteredEnvironment(t *testing.T) {
-	const privateEnv = "RHEIC_SECRET_RESOLVER_TEST_PRIVATE"
+	const privateEnv = "GYREL_SECRET_RESOLVER_TEST_PRIVATE"
 	t.Setenv(privateEnv, "must-not-be-inherited")
 	value, err := resolveSource(context.Background(), Source{Command: "printf '%s|%s' \"${" + privateEnv + "-unset}\" \"$PWD\""})
 	if err != nil {

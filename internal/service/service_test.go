@@ -22,15 +22,15 @@ import (
 	"testing"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/operation"
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/operation"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
 
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestLifecycle(t *testing.T) {
@@ -522,7 +522,7 @@ func (f *fakeRuntime) Create(_ context.Context, cfg runtime.Config) (runtime.Han
 	if f.afterCreate != nil {
 		f.afterCreate()
 	}
-	return runtime.Handle{ID: "rheic-" + cfg.Name}, nil
+	return runtime.Handle{ID: "gyrel-" + cfg.Name}, nil
 }
 func (f *fakeRuntime) CreateWithProxy(ctx context.Context, cfg *runtime.Config, helperPath string, guestPort uint16, serviceHost string) (runtime.Handle, error) {
 	f.proxyHelperPath = helperPath
@@ -585,7 +585,7 @@ func (f *fakeRuntime) Delete(ctx context.Context, _ runtime.Handle) error {
 	return f.deleteErr
 }
 func (f *fakeRuntime) Handle(name string) runtime.Handle {
-	return runtime.Handle{ID: "rheic-" + name}
+	return runtime.Handle{ID: "gyrel-" + name}
 }
 
 func TestLifecycleWithRuntime(t *testing.T) {
@@ -1329,7 +1329,7 @@ func TestCreateCloneUsesPrivateReadOnlySourceAndUploadOnlyDaemon(t *testing.T) {
 		case strings.Contains(joined, " clone "):
 			sawClone = strings.Contains(joined, "--no-local") && strings.Contains(joined, "--no-hardlinks") &&
 				strings.Contains(joined, "--no-recurse-submodules") && strings.Contains(joined, "-- /run/sandbox/source "+workdir) &&
-				strings.Contains(strings.Join(request.Argv, " "), "GIT_CONFIG_GLOBAL=/tmp/.rheic-clone-gitconfig")
+				strings.Contains(strings.Join(request.Argv, " "), "GIT_CONFIG_GLOBAL=/tmp/.gyrel-clone-gitconfig")
 		case strings.Contains(joined, "remote set-url origin"):
 			sawOriginRetained = strings.HasSuffix(joined, "remote set-url origin "+cloneSourceGuestPath)
 		case strings.Contains(joined, "core.hooksPath /dev/null"):
@@ -2257,7 +2257,7 @@ func (f *fakePolicyRuntime) UpdatePolicy(_ context.Context, h runtime.Handle, al
 	if f.before != nil {
 		f.before()
 	}
-	if f.failName != "" && h.ID == "rheic-"+f.failName {
+	if f.failName != "" && h.ID == "gyrel-"+f.failName {
 		return errors.New("injected policy update failure")
 	}
 	if f.err != nil {
@@ -3253,6 +3253,7 @@ func TestRemoveServiceSecretCleansStaleIndexWithCanonicalScope(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// legacy-compat: see RENAME-MAP §2 — on-disk keychain service label.
 	if err := vault.Delete(ctx, "com.rheic.service-secrets.v1", "openai/global"); err != nil {
 		t.Fatal(err)
 	}
@@ -3328,7 +3329,7 @@ func TestRemoveServiceSecretRevokesProxyBeforeVaultDelete(t *testing.T) {
 
 func shortTestProxySocketPath(t *testing.T) string {
 	t.Helper()
-	directory, err := os.MkdirTemp("/tmp", "rheic-rm-")
+	directory, err := os.MkdirTemp("/tmp", "gyrel-rm-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3694,7 +3695,7 @@ func TestResolveOpenAIOAuthProxyEnvUsesExplicitConfiguredRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolved, route, err := svc.resolveProxyEnvEntry(ctx, sb, "OPENAI_API_KEY", "${oauth:openai}")
-	if err != nil || route != "openai-oauth" || resolved != "OPENAI_API_KEY=rheic-proxy-placeholder" {
+	if err != nil || route != "openai-oauth" || resolved != "OPENAI_API_KEY=gyrel-proxy-placeholder" {
 		t.Fatalf("resolved=%q route=%q err=%v", resolved, route, err)
 	}
 	for _, value := range []string{"${oauth:anthropic}", "${oauth:openai}${proxy:openai}", "prefix${oauth:openai}"} {
@@ -3798,7 +3799,7 @@ func TestRefreshPoliciesPaginatesAllSandboxes(t *testing.T) {
 	if len(backend.handles) != total {
 		t.Fatalf("runtime updates = %d, want %d", len(backend.handles), total)
 	}
-	last := fmt.Sprintf("rheic-policy-page-%03d", total-1)
+	last := fmt.Sprintf("gyrel-policy-page-%03d", total-1)
 	if !slices.Contains(backend.handles, last) {
 		t.Fatalf("sandbox on the last page was not refreshed: %v", backend.handles)
 	}

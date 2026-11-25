@@ -4,9 +4,9 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/rheic/sandboxes-core/ids"
-	runtime "github.com/rheic/sandboxes-runtime"
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/sandboxes-core/ids"
+	runtime "github.com/gyrel/sandboxes-runtime"
+	"github.com/gyrel/slogx/events"
 )
 
 // emitTemplateSaved records one template save outcome. Only values the save

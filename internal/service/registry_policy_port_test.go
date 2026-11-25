@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rheic/sandboxes-core/sandbox"
+	"github.com/gyrel/sandboxes-core/sandbox"
 
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestResolvedRegistryEgressMatchesCustomPort(t *testing.T) {

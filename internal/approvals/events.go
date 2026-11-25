@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/slogx/events"
 )
 
 // emitApprovalExpired records one resolved approval leaving the retention

@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"runtime"
 
-	"github.com/rheic/sandboxes-core/ids"
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/sandboxes-core/ids"
+	"github.com/gyrel/slogx/events"
 )
 
 // emitSecretWrite records one host-vault write attempt. The vault account key

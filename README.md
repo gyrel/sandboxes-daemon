@@ -1,11 +1,11 @@
 # sandboxes-daemon
 
-![Rheic blue shark logo](docs/assets/rheic-shark.png)
+![Gyrel blue shark logo](docs/assets/gyrel-shark.png)
 
 
 ## Import path migration
 
-The canonical Go module path is now `github.com/rheic/sandboxes-daemon` (previously `github.com/quoiner/sandboxes-daemon`). Update imports and `go.mod` requirements when moving to a release that includes this change. The old module path is not kept as a compatibility alias. The daemon reads settings only from `~/.config/rheic/settings.toml` (or `$XDG_CONFIG_HOME/rheic/settings.toml`) and uses its own `com.rheic.*` keychain services; no legacy brand settings or keychain paths are consulted.
+The canonical Go module path is now `github.com/gyrel/sandboxes-daemon` (previously `github.com/quoiner/sandboxes-daemon`). Update imports and `go.mod` requirements when moving to a release that includes this change. The old module path is not kept as a compatibility alias. The daemon reads settings only from `~/.config/rheic/settings.toml` (or `$XDG_CONFIG_HOME/rheic/settings.toml`) and uses its own `com.rheic.*` keychain services; no legacy brand settings or keychain paths are consulted. (legacy-compat: the `rheic` on-disk names — the `com.rheic.*` keychain services and the `~/.config/rheic/` settings path — are retained for data-migration safety; see RENAME-MAP §2.)
 
 Policy updates use atomic single-rule mutations. The legacy whole-policy
 replacement RPC is rejected to prevent stale clients from restoring revoked
@@ -28,7 +28,7 @@ local API, and supervision of runtime and gateway processes.
 
 A new sandbox without an explicit policy profile uses the Docker sbx baseline:
 local `allow-all` egress (`allow-all`, TCP and UDP to `0.0.0.0/0`). This is an
-owner decision (2026-11-16) to keep Rheic aligned with sbx defaults "for now";
+owner decision (2026-11-16) to keep Gyrel aligned with sbx defaults "for now";
 it is not a claim that allow-all is the safest default. The selected profile is
 logged at sandbox creation with `sandbox`, `profile`, `source`, `allow_rules`
 and `deny_rules` fields.
@@ -185,13 +185,13 @@ must use a host-vault reference. See
 [docs/MCP-MIGRATION.md](docs/MCP-MIGRATION.md).
 
 Service proxy references require the matching static guest helper artifact.
-Download the `rheic-proxy-helper-linux-arm64` or
-`rheic-proxy-helper-linux-amd64` release asset (verify its checksum), run
+Download the `gyrel-proxy-helper-linux-arm64` or
+`gyrel-proxy-helper-linux-amd64` release asset (verify its checksum), run
 `chmod +x` on it because release downloads do not preserve the executable bit,
 or build it with `make build-proxy-helper`. Either pass
-`--proxy-helper /absolute/path/to/rheic-proxy-helper-linux-arm64`, or place the
+`--proxy-helper /absolute/path/to/gyrel-proxy-helper-linux-arm64`, or place the
 artifact next to the running `sandboxesd` executable as
-`rheic-proxy-helper-linux-<goarch>` or `bin/rheic-proxy-helper-linux-<goarch>`.
+`gyrel-proxy-helper-linux-<goarch>` or `bin/gyrel-proxy-helper-linux-<goarch>`.
 Discovery never searches `PATH`; an explicit flag always wins and must name an
 absolute path. The daemon accepts a static Linux ARM64 or AMD64 ELF helper that
 does not require a dynamic linker. If no configured or discovered helper passes
@@ -278,7 +278,7 @@ all-sandboxes registry scopes, and records a non-authenticating fingerprint so
 logout removes only credentials created by that account flow. Existing registry
 entries are not overwritten. Docker account login uses the Docker public
 device-flow client ID embedded in Docker CLI and the installed Docker
-Sandboxes `sbx` binary. No Rheic OAuth registration is needed. Browser launch
+Sandboxes `sbx` binary. No Gyrel OAuth registration is needed. Browser launch
 is supported on macOS; other platforms return unsupported.
 
 ## Policy sync (opt-in background sync)
@@ -299,8 +299,8 @@ is a startup error.
 ```toml
 policy_sync.url = "https://control.example.test:8443"
 policy_sync.org = "acme"
-policy_sync.public_key_file = "/home/operator/.config/rheic/policy.public"
-policy_sync.token_file = "/home/operator/.config/rheic/policy.token"
+policy_sync.public_key_file = "/home/operator/.config/gyrel/policy.public"
+policy_sync.token_file = "/home/operator/.config/gyrel/policy.token"
 policy_sync.interval = "5m" # optional, 30s..24h, default 5m
 ```
 
@@ -333,7 +333,7 @@ key offline.
 
 ```sh
 # 1. Generate the policy-signing key pair (policy-key.private is 0600).
-rheic-server keygen --prefix ./policy-key
+gyrel-server keygen --prefix ./policy-key
 
 # 2. Create an unsigned payload. revision must increase on every rollout and
 #    expiresAt should be comfortably in the future.
@@ -351,34 +351,34 @@ cat > ./policy-payload.json <<'EOF'
 EOF
 
 # 3. Sign locally with the canonical policy encoding.
-rheic-server sign-policy \
+gyrel-server sign-policy \
   --input ./policy-payload.json \
   --private-key ./policy-key.private \
   --output ./signed-policy.json
 
 # 4. Publish with an admin credential from the server's credentials file.
-export RHEIC_ADMIN_TOKEN="$(jq -r '.credentials[] | select(.role == "admin") | .token' ./credentials.json)"
+export GYREL_ADMIN_TOKEN="$(jq -r '.credentials[] | select(.role == "admin") | .token' ./credentials.json)"
 curl --fail --cacert ./tls/ca.crt \
-  -H "Authorization: Bearer $RHEIC_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $GYREL_ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @./signed-policy.json \
   -X PUT https://control.example.test:8443/v1/orgs/acme/policy
 
 # 5. Install the daemon-side settings and protected files.
-install -d -m 700 "$HOME/.config/rheic"
+install -d -m 700 "$HOME/.config/gyrel"
 cat > "$HOME/.config/rheic/settings.toml" <<EOF
 policy_sync.url = "https://control.example.test:8443"
 policy_sync.org = "acme"
-policy_sync.public_key_file = "$HOME/.config/rheic/policy.public"
-policy_sync.token_file = "$HOME/.config/rheic/policy.token"
+policy_sync.public_key_file = "$HOME/.config/gyrel/policy.public"
+policy_sync.token_file = "$HOME/.config/gyrel/policy.token"
 policy_sync.interval = "5m"
 EOF
 chmod 600 "$HOME/.config/rheic/settings.toml"
-install -m 644 ./policy-key.public "$HOME/.config/rheic/policy.public"
+install -m 644 ./policy-key.public "$HOME/.config/gyrel/policy.public"
 
 # Use a reader or admin token. Write it without putting it on a command line.
 (umask 077; jq -r '.credentials[] | select(.role == "reader") | .token' ./credentials.json \
-  > "$HOME/.config/rheic/policy.token")
+  > "$HOME/.config/gyrel/policy.token")
 
 # 6. Start the daemon. With org_policy.enforce also set, the synced deny rules
 #    apply to new sandbox operations.

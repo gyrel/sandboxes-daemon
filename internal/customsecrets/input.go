@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
 )
 
 // MaxValueBytes matches the built-in service secret limit.

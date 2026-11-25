@@ -112,7 +112,7 @@ func TestGoogleServiceProxyOverridesGuestKey(t *testing.T) {
 		t.Fatalf("Google service contract=%+v, found=%t", service, ok)
 	}
 	service.Upstream = upstream.URL
-	dir, err := os.MkdirTemp("/tmp", "rheic-google-proxy")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-google-proxy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestUnixProxyResolvesOAuthCredentialOnHostAndFailsClosed(t *testing.T) {
 		}
 		req.Header.Set(ServiceHeader, "openai-oauth")
 		req.Header.Set(TokenHeader, token)
-		req.Header.Set("Authorization", "Bearer rheic-proxy-placeholder")
+		req.Header.Set("Authorization", "Bearer gyrel-proxy-placeholder")
 		req.Header.Set("X-Api-Key", "guest-controlled")
 		resp, doErr := client.Do(req)
 		if doErr != nil {
@@ -365,7 +365,7 @@ func TestUnixProxySecretRefreshRotatesTokenAndRevokesChannel(t *testing.T) {
 	if err := manager.RevokeSecret("openai", "", "global"); err != nil {
 		t.Fatal(err)
 	}
-	request, _ = http.NewRequest(http.MethodGet, "http://upstream.test/__rheic/proxy/token", nil)
+	request, _ = http.NewRequest(http.MethodGet, "http://upstream.test/__gyrel/proxy/token", nil)
 	if _, err := client.Do(request); err == nil {
 		t.Fatal("revoked broker still accepts requests")
 	}
@@ -571,7 +571,7 @@ func TestUnixProxyAliasRouteRefreshRotatesCredentialAndRevokeRemovesRoute(t *tes
 	var requests []upstreamRequest
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		requests = append(requests, upstreamRequest{route: r.Header.Get("X-Rheic-Secret-Proxy"), auth: r.Header.Get("Authorization")})
+		requests = append(requests, upstreamRequest{route: r.Header.Get("X-Gyrel-Secret-Proxy"), auth: r.Header.Get("Authorization")})
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -813,8 +813,8 @@ func TestUnixProxyCustomHandlerDoesNotRequireSecretBytes(t *testing.T) {
 
 func TestUnixProxyBrokerProcessDeathCancelsAndRecovers(t *testing.T) {
 	const (
-		childFlag = "RHEIC_P04_BROKER_CHILD"
-		childURL  = "RHEIC_P04_BROKER_UPSTREAM"
+		childFlag = "GYREL_P04_BROKER_CHILD"
+		childURL  = "GYREL_P04_BROKER_UPSTREAM"
 	)
 	if os.Getenv(childFlag) == "1" {
 		dir := filepath.Join(os.TempDir(), fmt.Sprintf("kqproxy-process-death-%d", os.Getppid()))
@@ -1239,7 +1239,7 @@ func TestUnixProxyCAEndpointRequiresChannelToken(t *testing.T) {
 		return dialer.DialContext(ctx, "unix", socket)
 	}}}
 
-	positive, err := http.NewRequest(http.MethodGet, "http://broker/__rheic/proxy/ca/openai", nil)
+	positive, err := http.NewRequest(http.MethodGet, "http://broker/__gyrel/proxy/ca/openai", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1255,7 +1255,7 @@ func TestUnixProxyCAEndpointRequiresChannelToken(t *testing.T) {
 	}
 
 	for _, receivedToken := range []string{"", wrongToken} {
-		negative, err := http.NewRequest(http.MethodGet, "http://broker/__rheic/proxy/ca/openai", nil)
+		negative, err := http.NewRequest(http.MethodGet, "http://broker/__gyrel/proxy/ca/openai", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1320,7 +1320,7 @@ func TestUnixProxyCAEndpointBindsTokenToRequestedRoute(t *testing.T) {
 		{service: "openai", token: tokenA, want: http.StatusOK, body: "synthetic-ca-a"},
 		{service: "anthropic", token: tokenB, want: http.StatusOK, body: "synthetic-ca-b"},
 	} {
-		request, err := http.NewRequest(http.MethodGet, "http://broker/__rheic/proxy/ca/"+tc.service, nil)
+		request, err := http.NewRequest(http.MethodGet, "http://broker/__gyrel/proxy/ca/"+tc.service, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1343,7 +1343,7 @@ func TestUnixProxyCAEndpointBindsTokenToRequestedRoute(t *testing.T) {
 		{service: "openai", token: tokenB},
 		{service: "anthropic", token: tokenA},
 	} {
-		request, err := http.NewRequest(http.MethodGet, "http://broker/__rheic/proxy/ca/"+tc.service, nil)
+		request, err := http.NewRequest(http.MethodGet, "http://broker/__gyrel/proxy/ca/"+tc.service, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1366,7 +1366,7 @@ func TestOAuthRouteBlocksOtherPathsBeforeCredentialLookup(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer upstream.Close()
-	dir, err := os.MkdirTemp("/tmp", "rheic-oauth-path-")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-oauth-path-")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/sandbox"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/sandbox"
 
-	runtimeapi "github.com/rheic/sandboxes-runtime"
+	runtimeapi "github.com/gyrel/sandboxes-runtime"
 )
 
 const (
@@ -115,13 +115,13 @@ func (s *Service) skillsStorePath() (string, error) {
 		if !filepath.IsAbs(configured) {
 			return "", fmt.Errorf("%w: XDG_CONFIG_HOME must be absolute", core.ErrConflict)
 		}
-		return filepath.Join(configured, "rheic", "skills"), nil
+		return filepath.Join(configured, "rheic", "skills"), nil // legacy-compat: see RENAME-MAP §2 — persisted skills store path.
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" || !filepath.IsAbs(home) {
 		return "", fmt.Errorf("%w: home directory is unavailable", core.ErrConflict)
 	}
-	return filepath.Join(home, ".config", "rheic", "skills"), nil
+	return filepath.Join(home, ".config", "rheic", "skills"), nil // legacy-compat: see RENAME-MAP §2 — persisted skills store path.
 }
 
 // installSharedSkills links store entries into the agent's skills directory.

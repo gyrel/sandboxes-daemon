@@ -50,7 +50,7 @@ func TestRegistrationEventsRedactInputs(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatal(err)
 		}
-		if record.Event != "rheic.mcp.register" || record.Outcome != "ok" || record.Stored != (i == 1) {
+		if record.Event != "gyrel.mcp.register" || record.Outcome != "ok" || record.Stored != (i == 1) {
 			t.Fatalf("unexpected event: %s", line)
 		}
 	}
@@ -82,7 +82,7 @@ func TestLoadEventRedactsInputs(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &record); err != nil {
 		t.Fatal(err)
 	}
-	if record.Event != "rheic.mcp.load" || record.Outcome != "ok" {
+	if record.Event != "gyrel.mcp.load" || record.Outcome != "ok" {
 		t.Fatalf("unexpected event: %s", output.String())
 	}
 	if strings.Contains(output.String(), "secret-shaped-") {

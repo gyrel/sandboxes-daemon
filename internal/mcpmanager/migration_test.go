@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	core "github.com/rheic/sandboxes-core"
+	core "github.com/gyrel/sandboxes-core"
 )
 
 const legacyRegistryFixture = `[

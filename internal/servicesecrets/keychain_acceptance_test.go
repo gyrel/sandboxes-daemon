@@ -1,4 +1,4 @@
-//go:build darwin && rheic_p04_keychain_live
+//go:build darwin && gyrel_p04_keychain_live
 
 package servicesecrets
 
@@ -25,7 +25,7 @@ func TestP04NativeKeychainScopedCredentialRoundTrip(t *testing.T) {
 		t.Fatalf("unique scoped keychain account already exists: %v", err)
 	}
 
-	const synthetic = "rheic-p04-keychain-synthetic-credential"
+	const synthetic = "gyrel-p04-keychain-synthetic-credential"
 	if _, err := store.Save(ctx, "openai", ScopeSandbox, sandboxName, []byte(synthetic)); err != nil {
 		t.Fatalf("save synthetic value in native host keychain: %v", err)
 	}

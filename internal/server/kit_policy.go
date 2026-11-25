@@ -4,11 +4,11 @@ import (
 	"context"
 	"strings"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/rheic/sandboxes-daemon/internal/service"
+	"github.com/gyrel/sandboxes-daemon/internal/service"
 )
 
 // KitPolicyServer implements the local KitPolicyService RPCs.

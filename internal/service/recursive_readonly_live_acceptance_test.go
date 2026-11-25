@@ -1,4 +1,4 @@
-//go:build darwin && rheic_rro_live
+//go:build darwin && gyrel_rro_live
 
 package service
 
@@ -18,12 +18,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-core/sandbox"
-	daemonnetwork "github.com/rheic/sandboxes-daemon/internal/network"
-	"github.com/rheic/sandboxes-daemon/internal/store"
-	gateway "github.com/rheic/sandboxes-gateway"
-	rt "github.com/rheic/sandboxes-runtime"
-	"github.com/rheic/sandboxes-runtime/ctr"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	daemonnetwork "github.com/gyrel/sandboxes-daemon/internal/network"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
+	gateway "github.com/gyrel/sandboxes-gateway"
+	rt "github.com/gyrel/sandboxes-runtime"
+	"github.com/gyrel/sandboxes-runtime/ctr"
 )
 
 const (
@@ -69,7 +69,7 @@ func TestRecursiveReadOnlyNestedSubmountLiveAcceptanceAgainstOwnedVM(t *testing.
 			t.Errorf("remove owned recursive read-only directory: %v", err)
 		}
 	})
-	if evidenceDir := os.Getenv("RHEIC_CLONE_EVIDENCE_DIR"); evidenceDir != "" {
+	if evidenceDir := os.Getenv("GYREL_CLONE_EVIDENCE_DIR"); evidenceDir != "" {
 		// Registered after the removal cleanup so evidence is captured first.
 		t.Cleanup(func() { copyRROLiveEvidence(t, root, evidenceDir) })
 	}
@@ -419,15 +419,15 @@ func getRROLiveInputs(t *testing.T) rroLiveInputs {
 		}
 		return value
 	}
-	image := os.Getenv("RHEIC_CLONE_IMAGE")
+	image := os.Getenv("GYREL_CLONE_IMAGE")
 	if image == "" {
 		image = "docker.io/library/buildpack-deps:bookworm-scm"
 	}
 	return rroLiveInputs{
-		containerd: get("RHEIC_CLONE_CONTAINERD"), ctr: get("RHEIC_CLONE_CTR"),
-		shim: get("RHEIC_CLONE_SHIM"), kernel: get("RHEIC_CLONE_KERNEL"),
-		rootfs: get("RHEIC_CLONE_ROOTFS"), libkrun: get("RHEIC_CLONE_LIBKRUN"),
-		gvproxy: get("RHEIC_CLONE_GVPROXY"), daemon: get("RHEIC_CLONE_DAEMON"),
+		containerd: get("GYREL_CLONE_CONTAINERD"), ctr: get("GYREL_CLONE_CTR"),
+		shim: get("GYREL_CLONE_SHIM"), kernel: get("GYREL_CLONE_KERNEL"),
+		rootfs: get("GYREL_CLONE_ROOTFS"), libkrun: get("GYREL_CLONE_LIBKRUN"),
+		gvproxy: get("GYREL_CLONE_GVPROXY"), daemon: get("GYREL_CLONE_DAEMON"),
 		image: image,
 	}
 }
@@ -455,8 +455,8 @@ func makeRROLiveWorkspaces(t *testing.T, root string) (repoDir, nestedHostDir, t
 	t.Helper()
 	repoDir = filepath.Join(root, "source-repo")
 	nestedHostDir = filepath.Join(root, "nested-mount-source")
-	trackedContent = "rheic recursive read-only acceptance\n"
-	nestedContent = "rheic nested submount read-only acceptance\n"
+	trackedContent = "gyrel recursive read-only acceptance\n"
+	nestedContent = "gyrel nested submount read-only acceptance\n"
 	if err := os.Mkdir(repoDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +487,7 @@ func makeRROLiveWorkspaces(t *testing.T, root string) (repoDir, nestedHostDir, t
 	}
 	run("init", "-q")
 	run("config", "user.email", "rro-live@example.invalid")
-	run("config", "user.name", "Rheic Recursive Read-Only Live")
+	run("config", "user.name", "Gyrel Recursive Read-Only Live")
 	run("add", "tracked.txt")
 	run("commit", "-q", "-m", "initial")
 	return repoDir, nestedHostDir, trackedContent, nestedContent

@@ -19,6 +19,7 @@ import (
 	"time"
 )
 
+// legacy-compat: see RENAME-MAP §2 — persisted keychain service label; rename deferred.
 const proxyAuthorityService = "com.rheic.registry-proxy-authority.v1"
 const proxyAuthorityAccount = "host-forward-proxy"
 const certificatePEMType = "CERTIFICATE"
@@ -88,7 +89,7 @@ func generateProxyAuthority() (*ProxyAuthority, error) {
 	}
 	now := time.Now().UTC()
 	template := &x509.Certificate{
-		SerialNumber: serial, Subject: pkix.Name{CommonName: "Rheic Sandbox Registry Proxy"},
+		SerialNumber: serial, Subject: pkix.Name{CommonName: "Gyrel Sandbox Registry Proxy"},
 		NotBefore: now.Add(-5 * time.Minute), NotAfter: now.AddDate(10, 0, 0),
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign, BasicConstraintsValid: true, IsCA: true,
 		MaxPathLen: 0, MaxPathLenZero: true,

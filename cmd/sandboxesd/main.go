@@ -17,19 +17,19 @@ import (
 	"syscall"
 	"time"
 
-	gateway "github.com/rheic/sandboxes-gateway"
-	runtime "github.com/rheic/sandboxes-runtime"
-	runtimectr "github.com/rheic/sandboxes-runtime/ctr"
-	"github.com/rheic/slogx"
+	gateway "github.com/gyrel/sandboxes-gateway"
+	runtime "github.com/gyrel/sandboxes-runtime"
+	runtimectr "github.com/gyrel/sandboxes-runtime/ctr"
+	"github.com/gyrel/slogx"
 
-	daemon "github.com/rheic/sandboxes-daemon"
-	"github.com/rheic/sandboxes-daemon/internal/lifecycle"
-	daemonnetwork "github.com/rheic/sandboxes-daemon/internal/network"
-	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
-	"github.com/rheic/sandboxes-daemon/internal/policysync"
-	"github.com/rheic/sandboxes-daemon/internal/service"
-	"github.com/rheic/sandboxes-daemon/internal/settings"
-	"github.com/rheic/sandboxes-daemon/internal/version"
+	daemon "github.com/gyrel/sandboxes-daemon"
+	"github.com/gyrel/sandboxes-daemon/internal/lifecycle"
+	daemonnetwork "github.com/gyrel/sandboxes-daemon/internal/network"
+	"github.com/gyrel/sandboxes-daemon/internal/oauthsession"
+	"github.com/gyrel/sandboxes-daemon/internal/policysync"
+	"github.com/gyrel/sandboxes-daemon/internal/service"
+	"github.com/gyrel/sandboxes-daemon/internal/settings"
+	"github.com/gyrel/sandboxes-daemon/internal/version"
 )
 
 type options struct {

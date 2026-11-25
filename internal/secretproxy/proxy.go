@@ -27,9 +27,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/slogx/events"
 
-	daemonnetwork "github.com/rheic/sandboxes-daemon/internal/network"
+	daemonnetwork "github.com/gyrel/sandboxes-daemon/internal/network"
 )
 
 // Service describes one supported upstream and its auth header.
@@ -47,11 +47,11 @@ type Service struct {
 const (
 	authHeader      = "Authorization"
 	bearerPrefix    = "Bearer "
-	tokenPath       = "/__rheic/proxy/token" //nolint:gosec // internal route path, not a credential
+	tokenPath       = "/__gyrel/proxy/token" //nolint:gosec // internal route path, not a credential
 	tokenPathPrefix = tokenPath + "/"
-	caPath          = "/__rheic/proxy/ca/"
+	caPath          = "/__gyrel/proxy/ca/"
 	// ServiceHeader identifies a host-configured route on the private proxy channel.
-	ServiceHeader   = "X-Rheic-Proxy-Service"
+	ServiceHeader   = "X-Gyrel-Proxy-Service"
 	maxRequestBody  = 64 << 20
 	maxResponseBody = 64 << 20
 )
@@ -359,7 +359,7 @@ type RouteConfig struct {
 // TokenHeader carries the per-VM bearer sent by the guest proxy helper. It is
 // only meaningful on the unix-socket transport, where the socket path is
 // already scoped to one sandbox.
-const TokenHeader = "X-Rheic-Proxy-Token" //nolint:gosec // HTTP header name, not a credential.
+const TokenHeader = "X-Gyrel-Proxy-Token" //nolint:gosec // HTTP header name, not a credential.
 
 // Manager owns proxies keyed by sandbox and service.
 type Manager struct {
@@ -462,7 +462,7 @@ func (m *Manager) StartUnixRoutes(ctx context.Context, sandbox string, routes ma
 
 func enforceResponseLimit(response *http.Response) error {
 	if response.StatusCode == http.StatusSwitchingProtocols {
-		if response.Request == nil || response.Request.Header.Get("X-Rheic-Secret-Proxy") != "openai-oauth" || !strings.EqualFold(response.Header.Get("Upgrade"), "websocket") {
+		if response.Request == nil || response.Request.Header.Get("X-Gyrel-Secret-Proxy") != "openai-oauth" || !strings.EqualFold(response.Header.Get("Upgrade"), "websocket") {
 			return errors.New("proxy upgrade is not permitted")
 		}
 		if _, ok := response.Body.(io.ReadWriteCloser); !ok {
@@ -599,7 +599,7 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 	if snapshot.service.Header != "" {
 		r.Header.Set(snapshot.service.Header, snapshot.service.Prefix+string(credential))
 	}
-	r.Header.Set("X-Rheic-Secret-Proxy", service)
+	r.Header.Set("X-Gyrel-Secret-Proxy", service)
 	w = snapshot.upgradeWriter(w, upgradeGeneration)
 	if snapshot.handler != nil {
 		snapshot.handler.ServeHTTP(w, r)

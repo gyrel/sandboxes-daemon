@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	gateway "github.com/rheic/sandboxes-gateway"
-	"github.com/rheic/sandboxes-gateway/policy"
-	runtime "github.com/rheic/sandboxes-runtime"
+	gateway "github.com/gyrel/sandboxes-gateway"
+	"github.com/gyrel/sandboxes-gateway/policy"
+	runtime "github.com/gyrel/sandboxes-runtime"
 )
 
 type fakeManager struct {

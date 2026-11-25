@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
 )
 
 const (
@@ -35,7 +35,7 @@ const (
 	cloneGitCommand      = "git"
 	cloneGitConfig       = "config"
 	cloneGitLocalFlag    = "--local"
-	cloneGitTrustConfig  = "/tmp/.rheic-clone-gitconfig"
+	cloneGitTrustConfig  = "/tmp/.gyrel-clone-gitconfig"
 	cloneShellCommand    = "/bin/sh"
 	cloneTokenBytes      = 32
 	cloneTokenHexLength  = cloneTokenBytes * 2

@@ -19,7 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/slogx/events"
 )
 
 const (
@@ -29,7 +29,12 @@ const (
 	maxResolverStderr    = 4096
 	maxCachedSources     = 256
 	maxResolverLocks     = 4096
-	secretSourcePrefix   = "\x00rheic-secret-source:v1:"
+	//nolint:gosec // Fixed binary protocol prefix, not a credential.
+	secretSourcePrefix = "\x00gyrel-secret-source:v1:"
+	// legacy-compat: see RENAME-MAP §2 — values written before the Gyrel rename
+	// carry the old prefix; they decode unchanged and are rewritten lazily.
+	//nolint:gosec // Fixed binary protocol prefix, not a credential.
+	legacySecretSourcePrefix = "\x00rheic-secret-source:v1:"
 )
 
 var awsSecretARN = regexp.MustCompile(`^arn:(aws|aws-us-gov|aws-cn):secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$`)
@@ -168,11 +173,15 @@ func encodeSource(source Source) ([]byte, error) {
 }
 
 func decodeSource(value []byte) (Source, bool, error) {
-	if !bytes.HasPrefix(value, []byte(secretSourcePrefix)) {
-		return Source{}, false, nil
+	prefix := secretSourcePrefix
+	if !bytes.HasPrefix(value, []byte(prefix)) {
+		if !bytes.HasPrefix(value, []byte(legacySecretSourcePrefix)) {
+			return Source{}, false, nil
+		}
+		prefix = legacySecretSourcePrefix
 	}
 	var envelope sourceEnvelope
-	if err := json.Unmarshal(value[len(secretSourcePrefix):], &envelope); err != nil {
+	if err := json.Unmarshal(value[len(prefix):], &envelope); err != nil {
 		return Source{}, true, fmt.Errorf("decode secret source: %w", ErrInvalid)
 	}
 	source, err := validateSource(Source{
@@ -371,7 +380,7 @@ func resolveSource(ctx context.Context, source Source) (resolved []byte, retErr 
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, resolverTimeout)
 	defer cancel()
-	tmp, err := os.MkdirTemp("", "rheic-secret-ref-")
+	tmp, err := os.MkdirTemp("", "gyrel-secret-ref-")
 	if err != nil {
 		return nil, errors.New("prepare isolated secret resolver directory")
 	}

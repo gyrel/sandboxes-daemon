@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
-	"github.com/rheic/slogx/events"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
+	"github.com/gyrel/slogx/events"
 
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 // TemplateSave records a template from a stopped or running sandbox. The

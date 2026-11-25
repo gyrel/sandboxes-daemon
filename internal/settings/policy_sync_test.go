@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/policysync"
+	"github.com/gyrel/sandboxes-daemon/internal/policysync"
 )
 
 func TestPolicySyncSettingsDefaultOff(t *testing.T) {
@@ -25,8 +25,8 @@ func TestPolicySyncSettingsValid(t *testing.T) {
 	}
 	body := `policy_sync.url = "https://control.example.test"
 policy_sync.org = "acme.example"
-policy_sync.public_key_file = "/etc/rheic/policy.public"
-policy_sync.token_file = "/etc/rheic/policy.token"
+policy_sync.public_key_file = "/etc/gyrel/policy.public"
+policy_sync.token_file = "/etc/gyrel/policy.token"
 policy_sync.interval = "90s"
 `
 	values, err := Load(writeSettingsFile(t, body))
@@ -34,7 +34,7 @@ policy_sync.interval = "90s"
 		t.Fatal(err)
 	}
 	if values.PolicySyncURL != "https://control.example.test" || values.PolicySyncOrg != "acme.example" ||
-		values.PolicySyncPublicKeyFile != "/etc/rheic/policy.public" || values.PolicySyncTokenFile != "/etc/rheic/policy.token" ||
+		values.PolicySyncPublicKeyFile != "/etc/gyrel/policy.public" || values.PolicySyncTokenFile != "/etc/gyrel/policy.token" ||
 		values.PolicySyncInterval != 90*time.Second {
 		t.Fatalf("policy sync values = %+v", values)
 	}
@@ -46,14 +46,14 @@ func TestPolicySyncSettingsFailClosed(t *testing.T) {
 	}
 	valid := `policy_sync.url = "https://control.example.test"
 policy_sync.org = "acme.example"
-policy_sync.public_key_file = "/etc/rheic/policy.public"
-policy_sync.token_file = "/etc/rheic/policy.token"
+policy_sync.public_key_file = "/etc/gyrel/policy.public"
+policy_sync.token_file = "/etc/gyrel/policy.token"
 `
 	cases := map[string]string{
 		"missing URL":           strings.ReplaceAll(valid, `policy_sync.url = "https://control.example.test"`+"\n", ""),
 		"missing org":           strings.ReplaceAll(valid, `policy_sync.org = "acme.example"`+"\n", ""),
-		"missing public key":    strings.ReplaceAll(valid, `policy_sync.public_key_file = "/etc/rheic/policy.public"`+"\n", ""),
-		"missing token":         strings.ReplaceAll(valid, `policy_sync.token_file = "/etc/rheic/policy.token"`+"\n", ""),
+		"missing public key":    strings.ReplaceAll(valid, `policy_sync.public_key_file = "/etc/gyrel/policy.public"`+"\n", ""),
+		"missing token":         strings.ReplaceAll(valid, `policy_sync.token_file = "/etc/gyrel/policy.token"`+"\n", ""),
 		"interval only":         `policy_sync.interval = "5m"`,
 		"http URL":              strings.Replace(valid, "https://", "http://", 1),
 		"URL path":              strings.Replace(valid, `"https://control.example.test"`, `"https://control.example.test/api"`, 1),

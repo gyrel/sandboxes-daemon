@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"strings"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
-	"github.com/rheic/sandboxes-core/ids"
-	"github.com/rheic/slogx/events"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
+	"github.com/gyrel/sandboxes-core/ids"
+	"github.com/gyrel/slogx/events"
 )
 
 func emitKitCheck(ctx context.Context, kind localv1.KitSourceKind, ref string, sources []string, local, signature bool, reason localv1.CheckKitReason) {

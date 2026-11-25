@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 )
 
 const (

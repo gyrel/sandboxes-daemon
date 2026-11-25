@@ -59,14 +59,14 @@ func TestBoundedResponseBodyRejectsPayloadOverLimit(t *testing.T) {
 func TestEnforceResponseLimitPreservesUpgradeStream(t *testing.T) {
 	local, peer := net.Pipe()
 	defer func() { _ = local.Close(); _ = peer.Close() }()
-	response := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: http.Header{"Upgrade": {"websocket"}}, Request: &http.Request{Header: http.Header{"X-Rheic-Secret-Proxy": {"openai-oauth"}}}}
+	response := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: http.Header{"Upgrade": {"websocket"}}, Request: &http.Request{Header: http.Header{"X-Gyrel-Secret-Proxy": {"openai-oauth"}}}}
 	if err := enforceResponseLimit(response); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := response.Body.(io.ReadWriteCloser); !ok {
 		t.Fatal("upgrade lost write capability")
 	}
-	other := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: response.Header, Request: &http.Request{Header: http.Header{"X-Rheic-Secret-Proxy": {"openai"}}}}
+	other := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: response.Header, Request: &http.Request{Header: http.Header{"X-Gyrel-Secret-Proxy": {"openai"}}}}
 	if err := enforceResponseLimit(other); err == nil {
 		t.Fatal("accepted upgrade for another route")
 	}

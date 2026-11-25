@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"strings"
 
-	core "github.com/rheic/sandboxes-core"
+	core "github.com/gyrel/sandboxes-core"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 
-	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
+	"github.com/gyrel/sandboxes-daemon/internal/orgpolicy"
 )
 
 // KitPolicyConfig is the effective kit policy for display. Managed reports

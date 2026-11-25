@@ -30,7 +30,7 @@ func TestResolveProxyHelperPathExplicitRelativeFails(t *testing.T) {
 	skipProxyHelperPermissionChecks(t)
 	directory := t.TempDir()
 	writeProxyHelperCandidate(t, filepath.Join(directory, proxyHelperNamePrefix+runtime.GOARCH))
-	_, err := resolveProxyHelperPath("rheic-proxy-helper-linux-"+runtime.GOARCH, filepath.Join(directory, "sandboxesd"))
+	_, err := resolveProxyHelperPath("gyrel-proxy-helper-linux-"+runtime.GOARCH, filepath.Join(directory, "sandboxesd"))
 	if err == nil || !strings.Contains(err.Error(), "must be absolute") {
 		t.Fatalf("relative explicit helper error = %v", err)
 	}

@@ -52,7 +52,7 @@ func TestSubstituteDecisionEventsRedactBindings(t *testing.T) {
 		fixture.send(t, map[string]string{"X-Vendor-Key": testPlaceholder})
 		_ = fixture.manager.Close()
 		got := logs.String()
-		for _, want := range append(tc.want, `"event":"rheic.secret.substitute"`) {
+		for _, want := range append(tc.want, `"event":"gyrel.secret.substitute"`) {
 			if !strings.Contains(got, want) {
 				t.Fatalf("%s: missing %s in %s", tc.name, want, got)
 			}
@@ -76,7 +76,7 @@ func TestSubstituteEventsAbsentWithoutBindingDecision(t *testing.T) {
 		},
 		"empty resolver result": func(context.Context) ([]Substitution, error) { return nil, nil },
 		"placeholder not used": func(context.Context) ([]Substitution, error) {
-			return []Substitution{{Placeholder: "rheic-placeholder-not-sent", Value: []byte("one")}}, nil
+			return []Substitution{{Placeholder: "gyrel-placeholder-not-sent", Value: []byte("one")}}, nil
 		},
 	}
 	for name, resolve := range cases {
@@ -84,7 +84,7 @@ func TestSubstituteEventsAbsentWithoutBindingDecision(t *testing.T) {
 		fixture := startSubstituteChannel(t, "https://api.example.test", resolve)
 		fixture.send(t, map[string]string{"X-Vendor-Key": testPlaceholder})
 		_ = fixture.manager.Close()
-		if strings.Contains(logs.String(), `"event":"rheic.secret.substitute"`) {
+		if strings.Contains(logs.String(), `"event":"gyrel.secret.substitute"`) {
 			t.Fatalf("%s: unexpected substitution event: %s", name, logs.String())
 		}
 	}

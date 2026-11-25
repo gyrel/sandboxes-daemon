@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/controlplane"
+	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
 )
 
 func TestGenerateAndSignPolicyOffline(t *testing.T) {
@@ -182,12 +182,12 @@ func TestOIDCConfigRequiresAllOrNoneFlags(t *testing.T) {
 		t.Fatal("partial OIDC options were accepted")
 	}
 	config, err := oidcConfigFromOptions(serverOptions{
-		oidcIssuer: "https://idp.example.test", oidcAudience: "rheic", oidcJWKSURL: "https://idp.example.test/jwks",
+		oidcIssuer: "https://idp.example.test", oidcAudience: "gyrel", oidcJWKSURL: "https://idp.example.test/jwks",
 	})
 	if err != nil {
 		t.Fatalf("complete OIDC options rejected: %v", err)
 	}
-	if config == nil || config.Issuer != "https://idp.example.test" || config.Audience != "rheic" {
+	if config == nil || config.Issuer != "https://idp.example.test" || config.Audience != "gyrel" {
 		t.Fatalf("OIDC config=%+v", config)
 	}
 }

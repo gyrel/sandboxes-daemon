@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	core "github.com/rheic/sandboxes-core"
+	core "github.com/gyrel/sandboxes-core"
 
-	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/customsecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 type customMemoryVault struct{ items map[string]string }
@@ -220,23 +220,23 @@ func TestCustomSecretSubstitutionBindsExactHostsAndScopes(t *testing.T) {
 		}
 	}
 	mustSet(CustomSecretSetRequest{Service: "global-key", Scope: servicesecrets.ScopeGlobal, Value: []byte("global-value-canary"),
-		Placeholder: "rheic-global-ph-0001", Hosts: []string{"*.example.test"}})
+		Placeholder: "gyrel-global-ph-0001", Hosts: []string{"*.example.test"}})
 	mustSet(CustomSecretSetRequest{Service: "dev-key", Scope: servicesecrets.ScopeSandbox, SandboxName: "dev", Value: []byte("dev-value-canary"),
-		Placeholder: "rheic-dev-ph-0002", Hosts: []string{"api.example.test"}})
+		Placeholder: "gyrel-dev-ph-0002", Hosts: []string{"api.example.test"}})
 	mustSet(CustomSecretSetRequest{Service: "other-key", Scope: servicesecrets.ScopeSandbox, SandboxName: "other", Value: []byte("other-value-canary"),
-		Placeholder: "rheic-other-ph-0003", Hosts: []string{"api.example.test"}})
+		Placeholder: "gyrel-other-ph-0003", Hosts: []string{"api.example.test"}})
 
 	cases := []struct {
 		sandbox, host string
 		want          []string
 	}{
-		{"dev", "api.example.test", []string{"rheic-dev-ph-0002=dev-value-canary", "rheic-global-ph-0001=global-value-canary"}},
-		{"dev", "cli.example.test", []string{"rheic-global-ph-0001=global-value-canary"}},
+		{"dev", "api.example.test", []string{"gyrel-dev-ph-0002=dev-value-canary", "gyrel-global-ph-0001=global-value-canary"}},
+		{"dev", "cli.example.test", []string{"gyrel-global-ph-0001=global-value-canary"}},
 		{"dev", "example.test", nil},
 		{"dev", "a.b.example.test", nil},
 		{"dev", "api.example.test.evil.test", nil},
-		{"other", "api.example.test", []string{"rheic-other-ph-0003=other-value-canary", "rheic-global-ph-0001=global-value-canary"}},
-		{"unlisted", "api.example.test", []string{"rheic-global-ph-0001=global-value-canary"}},
+		{"other", "api.example.test", []string{"gyrel-other-ph-0003=other-value-canary", "gyrel-global-ph-0001=global-value-canary"}},
+		{"unlisted", "api.example.test", []string{"gyrel-global-ph-0001=global-value-canary"}},
 	}
 	for _, tc := range cases {
 		got := placeholdersOf(svc.resolveForTest(t, tc.sandbox, tc.host))
@@ -267,7 +267,7 @@ func TestCustomSecretRemovalInvalidatesFutureSubstitution(t *testing.T) {
 	ctx := context.Background()
 	svc, vault, _ := newCustomSecretTestService(t)
 	if _, _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "dev-key", Scope: servicesecrets.ScopeSandbox,
-		SandboxName: "dev", Value: []byte("removal-value-canary"), Placeholder: "rheic-removal-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
+		SandboxName: "dev", Value: []byte("removal-value-canary"), Placeholder: "gyrel-removal-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := svc.resolveForTest(t, "dev", "api.example.test"); len(got) != 1 {
@@ -293,7 +293,7 @@ func TestCustomSecretMissingKeychainRecordFailsClosedAtSubstitution(t *testing.T
 	ctx := context.Background()
 	svc, vault, _ := newCustomSecretTestService(t)
 	if _, _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "orphan-key", Scope: servicesecrets.ScopeGlobal,
-		Value: []byte("orphan-value-canary"), Placeholder: "rheic-orphan-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
+		Value: []byte("orphan-value-canary"), Placeholder: "gyrel-orphan-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
 		t.Fatal(err)
 	}
 	vault.items = map[string]string{}
@@ -307,11 +307,11 @@ func TestCustomCreateEnvCarriesPlaceholdersOnlyForApplicableSecrets(t *testing.T
 	svc, _, _ := newCustomSecretTestService(t)
 	for _, request := range []CustomSecretSetRequest{
 		{Service: "global-env", Scope: servicesecrets.ScopeGlobal, Value: []byte("global-env-value-canary"),
-			Placeholder: "rheic-global-env-1", Env: "GLOBAL_KEY", Hosts: []string{"api.example.test"}},
+			Placeholder: "gyrel-global-env-1", Env: "GLOBAL_KEY", Hosts: []string{"api.example.test"}},
 		{Service: "dev-env", Scope: servicesecrets.ScopeSandbox, SandboxName: "dev", Value: []byte("dev-env-value-canary"),
-			Placeholder: "rheic-dev-env-2", Env: "DEV_KEY", Hosts: []string{"api.dev.example.test"}},
+			Placeholder: "gyrel-dev-env-2", Env: "DEV_KEY", Hosts: []string{"api.dev.example.test"}},
 		{Service: "other-env", Scope: servicesecrets.ScopeSandbox, SandboxName: "other", Value: []byte("other-env-value-canary"),
-			Placeholder: "rheic-other-env-3", Env: "OTHER_KEY", Hosts: []string{"api.other.example.test"}},
+			Placeholder: "gyrel-other-env-3", Env: "OTHER_KEY", Hosts: []string{"api.other.example.test"}},
 	} {
 		if _, _, _, err := svc.SetCustomSecret(ctx, request); err != nil {
 			t.Fatal(err)
@@ -321,7 +321,7 @@ func TestCustomCreateEnvCarriesPlaceholdersOnlyForApplicableSecrets(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"PATH=/usr/bin", "DEV_KEY=rheic-dev-env-2", "GLOBAL_KEY=rheic-global-env-1"}
+	want := []string{"PATH=/usr/bin", "DEV_KEY=gyrel-dev-env-2", "GLOBAL_KEY=gyrel-global-env-1"}
 	if !sameStringSet(env, want) {
 		t.Fatalf("env = %v, want %v", env, want)
 	}
@@ -339,9 +339,9 @@ func TestCustomSecretSandboxCleanupRemovesOnlyOwnedEntries(t *testing.T) {
 	ctx := context.Background()
 	svc, vault, _ := newCustomSecretTestService(t)
 	for _, request := range []CustomSecretSetRequest{
-		{Service: "global-clean", Scope: servicesecrets.ScopeGlobal, Value: []byte("global-clean-value"), Placeholder: "rheic-global-clean-1", Hosts: []string{"api.example.test"}},
-		{Service: "dev-clean", Scope: servicesecrets.ScopeSandbox, SandboxName: "dev", Value: []byte("dev-clean-value"), Placeholder: "rheic-dev-clean-2", Hosts: []string{"api.example.test"}},
-		{Service: "other-clean", Scope: servicesecrets.ScopeSandbox, SandboxName: "other", Value: []byte("other-clean-value"), Placeholder: "rheic-other-clean-3", Hosts: []string{"api.example.test"}},
+		{Service: "global-clean", Scope: servicesecrets.ScopeGlobal, Value: []byte("global-clean-value"), Placeholder: "gyrel-global-clean-1", Hosts: []string{"api.example.test"}},
+		{Service: "dev-clean", Scope: servicesecrets.ScopeSandbox, SandboxName: "dev", Value: []byte("dev-clean-value"), Placeholder: "gyrel-dev-clean-2", Hosts: []string{"api.example.test"}},
+		{Service: "other-clean", Scope: servicesecrets.ScopeSandbox, SandboxName: "other", Value: []byte("other-clean-value"), Placeholder: "gyrel-other-clean-3", Hosts: []string{"api.example.test"}},
 	} {
 		if _, _, _, err := svc.SetCustomSecret(ctx, request); err != nil {
 			t.Fatal(err)
@@ -369,7 +369,7 @@ func TestCustomSecretLargeValueIsChunkedAndSubstitutable(t *testing.T) {
 	svc, vault, _ := newCustomSecretTestService(t)
 	large := strings.Repeat("L", 6000)
 	if _, _, _, err := svc.SetCustomSecret(ctx, CustomSecretSetRequest{Service: "large-key", Scope: servicesecrets.ScopeGlobal,
-		Value: []byte(large), Placeholder: "rheic-large-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
+		Value: []byte(large), Placeholder: "gyrel-large-ph-1", Hosts: []string{"api.example.test"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(vault.items) < 3 {
@@ -430,7 +430,7 @@ func TestCustomSecretRotationKeepsPlaceholderUnlessReplaced(t *testing.T) {
 	if got := svc.resolveForTest(t, "dev", "api.example.test"); len(got) != 1 || string(got[0].Value) != "rotation-value-two" || got[0].Placeholder != first {
 		t.Fatalf("rotated binding = %v", placeholdersOf(got))
 	}
-	request.Placeholder = "rheic-explicit-after-rotation"
+	request.Placeholder = "gyrel-explicit-after-rotation"
 	request.Value = []byte("rotation-value-three")
 	_, third, _, err := svc.SetCustomSecret(ctx, request)
 	if err != nil || third != request.Placeholder {

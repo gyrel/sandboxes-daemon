@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
 
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 type execTestRuntime struct {

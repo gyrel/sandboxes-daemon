@@ -13,6 +13,8 @@ import (
 	"unicode/utf8"
 )
 
+// legacy-compat: see RENAME-MAP §2 — persisted signing-domain separator; renaming
+// invalidates already-signed policy bundles; architect ruling required.
 const policySigningDomain = "rheic-policy-payload\x00v1\x00"
 
 // PolicySigningBytes returns the version-1 canonical bytes signed for a policy

@@ -1,5 +1,5 @@
 // Package policysync pulls signed organization policy bundles from a
-// self-hosted rheic-server and persists only locally verified bundles.
+// self-hosted gyrel-server and persists only locally verified bundles.
 //
 // The client pins the Ed25519 policy public key, re-verifies the canonical
 // signature itself, and refuses expired bundles or revisions that would roll
@@ -26,8 +26,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/controlplane"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 const (

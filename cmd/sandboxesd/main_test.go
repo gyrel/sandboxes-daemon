@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rheic/sandboxes-daemon/internal/settings"
+	"github.com/gyrel/sandboxes-daemon/internal/settings"
 
-	"github.com/rheic/slogx"
+	"github.com/gyrel/slogx"
 )
 
 func TestApplyPolicyOverride(t *testing.T) {

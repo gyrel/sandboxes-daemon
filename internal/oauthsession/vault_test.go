@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
 )
 
 type testVault struct {

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
+	core "github.com/gyrel/sandboxes-core"
 )
 
 // CustomSecretIndex is the non-secret inventory row of one custom secret. It
