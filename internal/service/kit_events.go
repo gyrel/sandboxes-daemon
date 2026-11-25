@@ -31,6 +31,10 @@ func emitKitCheck(ctx context.Context, kind localv1.KitSourceKind, ref string, s
 		p.Reason = events.KitCheckReasonLocalkitdisabled
 	case localv1.CheckKitReason_CHECK_KIT_REASON_SIGNATURE_REQUIRED:
 		p.Reason = events.KitCheckReasonSignaturerequired
+	case localv1.CheckKitReason_CHECK_KIT_REASON_INVALID_REFERENCE:
+		p.Reason = events.KitCheckReasonInvalidreference
+	case localv1.CheckKitReason_CHECK_KIT_REASON_POLICY_UNAVAILABLE:
+		p.Reason = events.KitCheckReasonPolicyunavailable
 	default:
 		return
 	}

@@ -26,6 +26,8 @@ func TestKitCheckEventsRedactInputs(t *testing.T) {
 		{localv1.CheckKitReason_CHECK_KIT_REASON_SOURCE_NOT_ALLOWED, `"reason":"SourceNotAllowed"`},
 		{localv1.CheckKitReason_CHECK_KIT_REASON_LOCAL_DISABLED, `"reason":"LocalKitDisabled"`},
 		{localv1.CheckKitReason_CHECK_KIT_REASON_SIGNATURE_REQUIRED, `"reason":"SignatureRequired"`},
+		{localv1.CheckKitReason_CHECK_KIT_REASON_INVALID_REFERENCE, `"reason":"InvalidReference"`},
+		{localv1.CheckKitReason_CHECK_KIT_REASON_POLICY_UNAVAILABLE, `"reason":"PolicyUnavailable"`},
 	} {
 		output.Reset()
 		emitKitCheck(ctx, localv1.KitSourceKind_KIT_SOURCE_KIND_GIT, "synthetic-secret-canary", []string{"git"}, false, false, tc.reason)
