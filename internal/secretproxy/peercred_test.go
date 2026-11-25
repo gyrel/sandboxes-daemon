@@ -3,9 +3,12 @@
 package secretproxy
 
 import (
+	"bytes"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +25,10 @@ func mustTempDir(t *testing.T) string {
 }
 
 func TestPeerCheckingListenerRejectsForeignOwner(t *testing.T) {
+	var out bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&out, nil)))
+	defer slog.SetDefault(old)
 	inner, err := net.Listen("unix", filepath.Join(mustTempDir(t), "peer.sock"))
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +66,11 @@ func TestPeerCheckingListenerRejectsForeignOwner(t *testing.T) {
 	case err := <-acceptErr:
 		t.Fatalf("accept returned error instead of skipping peer: %v", err)
 	case <-time.After(2 * time.Second):
+	}
+	_ = listener.Close()
+	<-acceptErr
+	if !strings.Contains(out.String(), "rheic.peercred.reject") || strings.Contains(out.String(), inner.Addr().String()) {
+		t.Fatalf("unexpected event: %s", out.String())
 	}
 	if rejected.Load() != 1 {
 		t.Fatalf("rejected=%d want 1", rejected.Load())

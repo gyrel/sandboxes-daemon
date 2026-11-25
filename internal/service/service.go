@@ -28,6 +28,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rheic/slogx/events"
+
 	core "github.com/rheic/sandboxes-core"
 	"github.com/rheic/sandboxes-core/operation"
 
@@ -3457,6 +3459,10 @@ func (s *Service) Reconcile(ctx context.Context) (int, error) {
 			return changed, err
 		}
 		changed++
+	}
+	event, eventErr := events.DaemonReconcile(events.OutcomeOK, events.DaemonReconcileParams{Scanned: uint64(len(all))})
+	if eventErr == nil {
+		event.Emit(ctx, slog.Default(), events.Standard{})
 	}
 	return changed, nil
 }

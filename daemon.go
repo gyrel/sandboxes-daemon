@@ -3,15 +3,19 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"time"
 
 	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
 	runtime "github.com/rheic/sandboxes-runtime"
+	"github.com/rheic/slogx/events"
 	"google.golang.org/grpc"
 
 	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
@@ -28,10 +32,12 @@ import (
 
 // Config is the daemon configuration.
 type Config struct {
-	SocketPath   string
-	StateDir     string
-	Backend      runtime.Backend
-	DefaultImage string
+	SocketPath          string
+	RuntimeBundleDigest string
+	ShutdownSignal      func() string
+	StateDir            string
+	Backend             runtime.Backend
+	DefaultImage        string
 	// IPv6Enabled accepts IPv6 CIDR rules only when the gateway datapath was
 	// configured with the experimental IPv6 capability. It defaults to false.
 	IPv6Enabled bool
@@ -106,12 +112,12 @@ func configureService(ctx context.Context, cfg *Config, svc *service.Service) (f
 // recoverLostGateways stops sandboxes whose gateway exited: the guest packet
 // socket points at the dead process, so the sandbox cannot reach the network
 // until it is started again.
-func recoverLostGateways(ctx context.Context, svc *service.Service, events <-chan string) {
+func recoverLostGateways(ctx context.Context, svc *service.Service, gatewayEvents <-chan string) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case name := <-events:
+		case name := <-gatewayEvents:
 			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			err := svc.StopSandboxByName(stopCtx, name)
 			cancel()
@@ -126,10 +132,20 @@ func recoverLostGateways(ctx context.Context, svc *service.Service, events <-cha
 
 // Run starts the daemon and blocks until ctx is canceled.
 //
-//nolint:gocritic,gocyclo,cyclop,funlen // Config is constructed once at the process boundary; startup is one linear sequence.
+//nolint:gocritic,gocyclo,cyclop,funlen,gocognit // Config is constructed once at the process boundary; startup is one linear sequence.
 func Run(ctx context.Context, cfg Config) (runErr error) {
+	started := time.Now()
 	if cfg.SocketPath == "" || cfg.StateDir == "" {
 		return fmt.Errorf("socket path and state dir are required")
+	}
+	sum := sha256.Sum256([]byte(cfg.SocketPath))
+	kind := events.DaemonStartListenKindUnix
+	if goruntime.GOOS == "windows" {
+		kind = events.DaemonStartListenKindPipe
+	}
+	start, eventErr := events.DaemonStart(events.OutcomeOK, events.DaemonStartParams{ListenKind: kind, SocketPathHash: events.Hash(hex.EncodeToString(sum[:12])), UID: effectiveUID(), RuntimeBundleDigest: events.Hash(cfg.RuntimeBundleDigest), ManagedVerify: events.DaemonStartManagedVerifyOk})
+	if eventErr == nil {
+		start.Emit(ctx, slog.Default(), events.Standard{})
 	}
 	if err := prepareDaemonStateDirectory(cfg.StateDir); err != nil {
 		return fmt.Errorf("prepare state dir: %w", err)
@@ -197,6 +213,20 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	defer close(runDone)
 	go stopGRPCOnCancel(ctx, runDone, grpcServer)
 
+	ready, eventErr := events.DaemonReady(events.OutcomeOK, events.DaemonReadyParams{StartupMs: uint64(max(0, time.Since(started).Milliseconds())), RecoveredCount: uint64(max(0, changed))})
+	if eventErr == nil {
+		ready.Emit(ctx, slog.Default(), events.Standard{})
+	}
+	defer func() {
+		signal := ""
+		if cfg.ShutdownSignal != nil {
+			signal = cfg.ShutdownSignal()
+		}
+		event, err := events.DaemonShutdown(events.OutcomeOK, events.DaemonShutdownParams{Signal: events.ID(signal)})
+		if err == nil {
+			event.Emit(context.WithoutCancel(ctx), slog.Default(), events.Standard{})
+		}
+	}()
 	slog.Info("daemon listening", "socket", cfg.SocketPath, "state", cfg.StateDir)
 	if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 		return fmt.Errorf("serve: %w", err)
@@ -321,4 +351,12 @@ func configureDockerVolume(svc *service.Service, stateDir string) {
 	if value := os.Getenv("DOCKER_SANDBOXES_MKFS_EXT4"); value != "" {
 		svc.MkfsExt4 = value
 	}
+}
+
+func effectiveUID() uint64 {
+	uid := os.Geteuid()
+	if uid < 0 {
+		return 0
+	}
+	return uint64(uid)
 }
