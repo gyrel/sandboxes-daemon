@@ -29,3 +29,11 @@ The daemon start event is emitted before the state directory is prepared, so it 
 The async queue is bounded (capacity 2048). A write that overflows the queue is dropped and counted; a monitor samples the counter once a minute and, when records were dropped, emits `rheic.obs.log_dropped` (`component=daemon`, `dropped_count`, `queue_len=2048`). The event is emitted to the stderr handler captured before the fan-out, never through the file sink, so reporting a dropped record cannot itself drop and recurse.
 
 Rotation caps are configurable through the host settings file as `log.maxSizeMiB` (default 8), `log.maxFiles` (default 5) and `log.totalCapMiB` (default 64). Values must be positive; upper bounds are 4096 MiB per file, 256 files, and 65536 MiB total. A daemon restart applies changes.
+
+## Canary coverage
+
+| Event contour | Coverage |
+| --- | --- |
+| Daemon start, ready, shutdown | One event each; synthetic socket and state directory secrets are absent from event JSON. Ordinary daemon logs are outside this event-specific check. |
+| Daemon reconcile | Two sandbox records are scanned; all four catalog counts are present, and sandbox names are absent from captured JSONL. |
+| Peer credential rejection | One rejected peer; UID appears as a numeric `peer_uid` only, and the socket path and token are absent from the captured line. |
