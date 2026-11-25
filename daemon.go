@@ -21,6 +21,7 @@ import (
 	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
 	"github.com/rheic/sandboxes-daemon/internal/lifecycle"
 	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
+	"github.com/rheic/sandboxes-daemon/internal/obslog"
 	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
 	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
 	"github.com/rheic/sandboxes-daemon/internal/server"
@@ -80,6 +81,11 @@ type Config struct {
 	// runner performs one attempt at startup and then a jittered periodic
 	// attempt until the daemon context is canceled.
 	PolicySync *PolicySyncConfig
+	// Log rotation caps the daemon's own file sink ($STATE/daemon.log). Zero
+	// values select the documented defaults (8 MiB per file, 5 files, 64 MiB).
+	LogMaxSizeMiB  uint64
+	LogMaxFiles    int
+	LogTotalCapMiB uint64
 }
 
 // configureService applies host configuration, wires credential storage and
@@ -156,6 +162,18 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 	}
 	defer func() { _ = lock.Close() }()
 	defer func() { runErr = errors.Join(runErr, runCleanup(cfg.Cleanup)) }()
+
+	sink, err := obslog.Install(ctx, obslog.Config{
+		StateDir:    cfg.StateDir,
+		MaxSizeMiB:  cfg.LogMaxSizeMiB,
+		MaxFiles:    cfg.LogMaxFiles,
+		TotalCapMiB: cfg.LogTotalCapMiB,
+	})
+	if err != nil {
+		return fmt.Errorf("open log sink: %w", err)
+	}
+	defer func() { runErr = errors.Join(runErr, sink.Close()) }()
+
 	st, err := store.Open(ctx, filepath.Join(cfg.StateDir, "sandboxes.db"))
 	if err != nil {
 		return err
@@ -222,7 +240,7 @@ func Run(ctx context.Context, cfg Config) (runErr error) {
 		if cfg.ShutdownSignal != nil {
 			signal = cfg.ShutdownSignal()
 		}
-		event, err := events.DaemonShutdown(events.OutcomeOK, events.DaemonShutdownParams{Signal: events.ID(signal)})
+		event, err := events.DaemonShutdown(events.OutcomeOK, events.DaemonShutdownParams{Signal: events.ID(signal), FlushOk: sink.Flush() == nil})
 		if err == nil {
 			event.Emit(context.WithoutCancel(ctx), slog.Default(), events.Standard{})
 		}

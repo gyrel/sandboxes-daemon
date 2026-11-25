@@ -60,6 +60,49 @@ func TestRunStartsAndStops(t *testing.T) {
 	}
 }
 
+func TestRunFileLog(t *testing.T) {
+	dir := t.TempDir()
+	// Keep the socket name short: the macOS unix socket path limit (104 bytes)
+	// is easy to exceed once the test name and temp-dir suffix are prepended.
+	socket := filepath.Join(dir, "d.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(ctx, Config{SocketPath: socket, StateDir: dir})
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("socket was not created")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("daemon did not stop")
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "daemon.log"))
+	if err != nil {
+		t.Fatalf("read daemon.log: %v", err)
+	}
+	for _, want := range []string{"daemon listening", "rheic.daemon.shutdown", `"flush_ok":true`} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("daemon.log missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestRunShutdownClosesActiveWatch(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "rsbx-watch-test-")
 	if err != nil {

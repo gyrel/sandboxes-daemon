@@ -10,6 +10,7 @@ import (
 	core "github.com/rheic/sandboxes-core"
 	"github.com/rheic/sandboxes-core/sandbox"
 	runtime "github.com/rheic/sandboxes-runtime"
+	"github.com/rheic/slogx/events"
 
 	"github.com/rheic/sandboxes-daemon/internal/store"
 )
@@ -24,6 +25,7 @@ func (s *Service) TemplateSave(ctx context.Context, idOrName, tag, outputPath st
 	}
 	tb, err := s.templateBackend()
 	if err != nil {
+		emitTemplateSaved(ctx, events.OutcomeUnsupported, runtime.TemplateInfo{})
 		return runtime.TemplateInfo{}, err
 	}
 	sb, err := s.Get(ctx, idOrName)
@@ -61,11 +63,14 @@ func (s *Service) TemplateSave(ctx context.Context, idOrName, tag, outputPath st
 		OutputPath: outputPath,
 	})
 	if err != nil {
+		emitTemplateSaved(ctx, events.OutcomeFailed, runtime.TemplateInfo{})
 		return runtime.TemplateInfo{}, err
 	}
 	if err := s.store.PutTemplate(ctx, storeTemplate(info, sb)); err != nil {
+		emitTemplateSaved(ctx, events.OutcomeFailed, info)
 		return runtime.TemplateInfo{}, fmt.Errorf("%w: record template: %w", core.ErrConflict, err)
 	}
+	emitTemplateSaved(ctx, events.OutcomeOK, info)
 	return info, nil
 }
 
@@ -106,10 +111,12 @@ func agentFromMeta(sb sandbox.Sandbox) string {
 func (s *Service) TemplateLoad(ctx context.Context, tarPath, name string) (runtime.TemplateInfo, error) {
 	tb, err := s.templateBackend()
 	if err != nil {
+		emitTemplateLoaded(ctx, events.OutcomeUnsupported, runtime.TemplateInfo{})
 		return runtime.TemplateInfo{}, err
 	}
 	info, err := tb.LoadTemplate(ctx, runtime.TemplateLoadSpec{TarPath: tarPath, Name: name})
 	if err != nil {
+		emitTemplateLoaded(ctx, events.OutcomeFailed, runtime.TemplateInfo{})
 		return runtime.TemplateInfo{}, err
 	}
 	// Boot document readback may lag the import; the record stays valid with
@@ -117,8 +124,10 @@ func (s *Service) TemplateLoad(ctx context.Context, tarPath, name string) (runti
 	if err := s.store.PutTemplate(ctx, store.TemplateRecord{
 		Name: info.Name, Digest: info.Digest, SizeBytes: info.SizeBytes, Layers: info.Layers,
 	}); err != nil {
+		emitTemplateLoaded(ctx, events.OutcomeFailed, info)
 		return runtime.TemplateInfo{}, fmt.Errorf("%w: record loaded template: %w", core.ErrConflict, err)
 	}
+	emitTemplateLoaded(ctx, events.OutcomeOK, info)
 	return info, nil
 }
 
