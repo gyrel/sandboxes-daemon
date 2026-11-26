@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.104 — 2026-11-26
+
+### Fixed
+
+- Strip the product header namespace from brokered egress: the tunnel route
+  marker now travels as a request-context value (never on the wire), and
+  guest-forged `X-Gyrel-*` / `X-Rheic-*` headers are dropped before upstream.
+
 ## v0.0.103 — 2026-11-26
 
 ### Fixed
