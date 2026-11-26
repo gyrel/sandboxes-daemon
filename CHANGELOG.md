@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.0.103 — 2026-11-26
+
+### Fixed
+
+- Write structured JSON daemon logs so the diagnostic archive guard can distinguish startup field names from their digest values.
+
 ## Unreleased
 
 ### Changed
