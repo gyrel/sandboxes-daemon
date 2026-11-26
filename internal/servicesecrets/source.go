@@ -33,7 +33,6 @@ const (
 	secretSourcePrefix = "\x00gyrel-secret-source:v1:"
 	// legacy-compat: see RENAME-MAP §2 — values written before the Gyrel rename
 	// carry the old prefix; they decode unchanged and are rewritten lazily.
-	//nolint:gosec // Fixed binary protocol prefix, not a credential.
 	legacySecretSourcePrefix = "\x00rheic-secret-source:v1:"
 )
 
