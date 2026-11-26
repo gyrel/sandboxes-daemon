@@ -2,7 +2,9 @@
 
 The daemon accepts gRPC metadata keys `gyrel-op-id`, `gyrel-req-id`, and `gyrel-parent-req-id`. It validates their expected prefixes and canonical formats before placing the operation and request IDs in the handler context. Invalid or missing values are regenerated and produce `gyrel.obs.id_rejected` at debug level without logging the supplied value. Parent IDs are available through the server package's context accessor. Correlation IDs are not identity or authorization material.
 
-Correlation context persists for the lifetime of an individual RPC stream. Propagation across gateway, runtime and guest boundaries, and continuity across separate resumed RPCs, require additional integration.
+Correlation context persists for the lifetime of an individual RPC stream. Propagation across runtime and guest boundaries, and continuity across separate resumed RPCs, require additional integration.
+
+Gateway audit stamping is wired: the network adapter forwards the validated operation and request IDs on every policy-affecting push — create-time attach and start (`internal/network/gateway.go:56`) and policy reload (`internal/network/gateway.go:127`) — after confirming each ID with `ids.Validate` (`internal/network/gateway.go:176`). gvproxy stamps these IDs onto the sandbox's audit lines; invalid or absent IDs are omitted at render time and never fabricated. A reload that omits its own IDs reuses the handle's last-known IDs, so correlation survives internal reconciliations.
 
 Journal recovery emits `gyrel.journal.recover` for each recognized finding left in place. The event contains a mapped reason, a SHA-256 resource hash, and correlation IDs when available. Unknown reasons are not emitted. The resource kind is currently reported as `unknown` because the runtime finding does not expose it.
 
