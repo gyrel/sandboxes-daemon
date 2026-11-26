@@ -571,7 +571,7 @@ func TestUnixProxyAliasRouteRefreshRotatesCredentialAndRevokeRemovesRoute(t *tes
 	var requests []upstreamRequest
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		requests = append(requests, upstreamRequest{route: r.Header.Get("X-Gyrel-Secret-Proxy"), auth: r.Header.Get("Authorization")})
+		requests = append(requests, upstreamRequest{route: r.Header.Get("X-Test-Route"), auth: r.Header.Get("Authorization")})
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -615,6 +615,7 @@ func TestUnixProxyAliasRouteRefreshRotatesCredentialAndRevokeRemovesRoute(t *tes
 		}
 		req.Header.Set(ServiceHeader, route)
 		req.Header.Set(TokenHeader, token)
+		req.Header.Set("X-Test-Route", route)
 		resp, doErr := client.Do(req)
 		if doErr != nil {
 			t.Fatal(doErr)

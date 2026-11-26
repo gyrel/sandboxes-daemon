@@ -1,6 +1,7 @@
 package secretproxy
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -56,17 +57,22 @@ func TestBoundedResponseBodyRejectsPayloadOverLimit(t *testing.T) {
 	}
 }
 
+func proxyServiceRequest(service string) *http.Request {
+	request := &http.Request{Header: http.Header{}}
+	return request.WithContext(context.WithValue(request.Context(), proxyServiceKeyType{}, service))
+}
+
 func TestEnforceResponseLimitPreservesUpgradeStream(t *testing.T) {
 	local, peer := net.Pipe()
 	defer func() { _ = local.Close(); _ = peer.Close() }()
-	response := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: http.Header{"Upgrade": {"websocket"}}, Request: &http.Request{Header: http.Header{"X-Gyrel-Secret-Proxy": {"openai-oauth"}}}}
+	response := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: http.Header{"Upgrade": {"websocket"}}, Request: proxyServiceRequest("openai-oauth")}
 	if err := enforceResponseLimit(response); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := response.Body.(io.ReadWriteCloser); !ok {
 		t.Fatal("upgrade lost write capability")
 	}
-	other := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: response.Header, Request: &http.Request{Header: http.Header{"X-Gyrel-Secret-Proxy": {"openai"}}}}
+	other := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: response.Header, Request: proxyServiceRequest("openai")}
 	if err := enforceResponseLimit(other); err == nil {
 		t.Fatal("accepted upgrade for another route")
 	}
@@ -77,5 +83,14 @@ func TestEnforceResponseLimitPreservesUpgradeStream(t *testing.T) {
 	invalid := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: io.NopCloser(strings.NewReader("")), Header: response.Header, Request: response.Request}
 	if err := enforceResponseLimit(invalid); err == nil {
 		t.Fatal("accepted non-writable upgrade")
+	}
+}
+
+func TestEnforceResponseLimitRejectsUpgradeWithoutServiceMarker(t *testing.T) {
+	local, peer := net.Pipe()
+	defer func() { _ = local.Close(); _ = peer.Close() }()
+	response := &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: local, Header: http.Header{"Upgrade": {"websocket"}}, Request: &http.Request{Header: http.Header{}}}
+	if err := enforceResponseLimit(response); err == nil {
+		t.Fatal("accepted upgrade without a route marker")
 	}
 }
