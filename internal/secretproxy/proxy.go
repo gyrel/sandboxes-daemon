@@ -58,6 +58,11 @@ const (
 
 var errResponseTooLarge = errors.New("proxy response exceeds configured limit")
 
+// proxyServiceKeyType keys the request-context value that identifies the
+// brokered route to host-side handlers. The route name stays in process memory
+// and is never written to the upstream wire.
+type proxyServiceKeyType struct{}
+
 type boundedResponseBody struct {
 	body      io.ReadCloser
 	remaining int64
@@ -462,7 +467,11 @@ func (m *Manager) StartUnixRoutes(ctx context.Context, sandbox string, routes ma
 
 func enforceResponseLimit(response *http.Response) error {
 	if response.StatusCode == http.StatusSwitchingProtocols {
-		if response.Request == nil || response.Request.Header.Get("X-Gyrel-Secret-Proxy") != "openai-oauth" || !strings.EqualFold(response.Header.Get("Upgrade"), "websocket") {
+		if response.Request == nil {
+			return errors.New("proxy upgrade is not permitted")
+		}
+		service, _ := response.Request.Context().Value(proxyServiceKeyType{}).(string)
+		if service != "openai-oauth" || !strings.EqualFold(response.Header.Get("Upgrade"), "websocket") {
 			return errors.New("proxy upgrade is not permitted")
 		}
 		if _, ok := response.Body.(io.ReadWriteCloser); !ok {
@@ -599,7 +608,7 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 	if snapshot.service.Header != "" {
 		r.Header.Set(snapshot.service.Header, snapshot.service.Prefix+string(credential))
 	}
-	r.Header.Set("X-Gyrel-Secret-Proxy", service)
+	r = r.WithContext(context.WithValue(r.Context(), proxyServiceKeyType{}, service))
 	w = snapshot.upgradeWriter(w, upgradeGeneration)
 	if snapshot.handler != nil {
 		snapshot.handler.ServeHTTP(w, r)
@@ -609,13 +618,20 @@ func serveProxyRequest(w http.ResponseWriter, r *http.Request, p *proxy) {
 }
 
 // dropGuestCredentialHeaders removes guest-controlled channel and auth headers
-// before the host adds its own credential.
+// before the host adds its own credential. It also drops every header in the
+// product namespaces so guest-forged identity markers never reach upstream.
 func dropGuestCredentialHeaders(r *http.Request) {
 	r.Header.Del(TokenHeader)
 	r.Header.Del(ServiceHeader)
 	r.Header.Del("Proxy-Authorization")
 	r.Header.Del("Authorization")
 	r.Header.Del("X-Api-Key")
+	for name := range r.Header {
+		canonical := strings.ToLower(http.CanonicalHeaderKey(name))
+		if strings.HasPrefix(canonical, "x-gyrel-") || strings.HasPrefix(canonical, "x-rheic-") {
+			delete(r.Header, name)
+		}
+	}
 }
 
 func allowedServicePath(target *url.URL, prefix string) bool {
