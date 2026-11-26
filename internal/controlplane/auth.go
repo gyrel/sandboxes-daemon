@@ -33,7 +33,7 @@ func (p Principal) hasRole(allowed ...Role) bool {
 func (s *Server) requireRole(w http.ResponseWriter, r *http.Request, allowed ...Role) (Principal, bool) {
 	principal, ok := s.authenticate(r)
 	if !ok {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="rheic-control-plane"`)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="gyrel-control-plane"`)
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return Principal{}, false
 	}

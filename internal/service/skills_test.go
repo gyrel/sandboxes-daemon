@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	runtimeapi "github.com/rheic/sandboxes-runtime"
+	runtimeapi "github.com/gyrel/sandboxes-runtime"
 
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func newSkillsTestService(t *testing.T, backend runtimeapi.Backend) *Service {
@@ -104,7 +104,7 @@ func TestResolveSkillsMountRequiresRuntimeAndExistingStore(t *testing.T) {
 func TestInstallSharedSkillsUsesGuestHelper(t *testing.T) {
 	backend := &fakeRuntime{}
 	svc := newSkillsTestService(t, backend)
-	if err := svc.installSharedSkills(context.Background(), runtimeapi.Handle{ID: "rheic-dev"}, "codex"); err != nil {
+	if err := svc.installSharedSkills(context.Background(), runtimeapi.Handle{ID: "gyrel-dev"}, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{runtimeapi.SkillsHelperGuestPath, "link-skills", "--agent", "codex", "--store", runtimeapi.SkillsStoreGuestPath}
@@ -120,7 +120,7 @@ func TestInstallSharedSkillsUsesGuestHelper(t *testing.T) {
 
 func TestInstallSharedSkillsRequiresNativeExec(t *testing.T) {
 	svc := newSkillsTestService(t, noExecRuntime{})
-	if err := svc.installSharedSkills(context.Background(), runtimeapi.Handle{ID: "rheic-dev"}, "codex"); err == nil || !strings.Contains(err.Error(), "native exec") {
+	if err := svc.installSharedSkills(context.Background(), runtimeapi.Handle{ID: "gyrel-dev"}, "codex"); err == nil || !strings.Contains(err.Error(), "native exec") {
 		t.Fatalf("got %v", err)
 	}
 }

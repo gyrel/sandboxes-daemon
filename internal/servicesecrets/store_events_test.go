@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rheic/sandboxes-core/ids"
+	"github.com/gyrel/sandboxes-core/ids"
 )
 
 type failingBackend struct{ err error }
@@ -46,7 +46,7 @@ func TestSecretWriteEventsRedactValues(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		`"event":"rheic.secret.write"`, `"outcome":"ok"`, `"placeholder_issued":false`,
+		`"event":"gyrel.secret.write"`, `"outcome":"ok"`, `"placeholder_issued":false`,
 		`"vault_backend":"` + wantBackendName() + `"`, op, req,
 	} {
 		if !strings.Contains(got, want) {
@@ -68,7 +68,7 @@ func TestSecretWriteEventsRedactValues(t *testing.T) {
 		t.Fatal("failing backend accepted the write")
 	}
 	got = output.String()
-	for _, want := range []string{`"event":"rheic.secret.write"`, `"outcome":"failed"`} {
+	for _, want := range []string{`"event":"gyrel.secret.write"`, `"outcome":"failed"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
 		}
@@ -94,7 +94,7 @@ func TestSecretWriteEventOnSourceSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := output.String()
-	if !strings.Contains(got, `"event":"rheic.secret.write"`) || !strings.Contains(got, `"outcome":"ok"`) {
+	if !strings.Contains(got, `"event":"gyrel.secret.write"`) || !strings.Contains(got, `"outcome":"ok"`) {
 		t.Fatalf("source write not recorded: %s", got)
 	}
 	if strings.Contains(got, "synthetic-reference-canary") {

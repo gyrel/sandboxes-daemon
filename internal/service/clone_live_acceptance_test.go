@@ -1,4 +1,4 @@
-//go:build darwin && rheic_clone_live
+//go:build darwin && gyrel_clone_live
 
 package service
 
@@ -19,13 +19,13 @@ import (
 	"testing"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/sandbox"
-	daemonnetwork "github.com/rheic/sandboxes-daemon/internal/network"
-	"github.com/rheic/sandboxes-daemon/internal/store"
-	gateway "github.com/rheic/sandboxes-gateway"
-	rt "github.com/rheic/sandboxes-runtime"
-	"github.com/rheic/sandboxes-runtime/ctr"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	daemonnetwork "github.com/gyrel/sandboxes-daemon/internal/network"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
+	gateway "github.com/gyrel/sandboxes-gateway"
+	rt "github.com/gyrel/sandboxes-runtime"
+	"github.com/gyrel/sandboxes-runtime/ctr"
 )
 
 const cloneLiveAcceptanceTimeout = 12 * time.Minute
@@ -59,7 +59,7 @@ func TestCloneLiveAcceptanceAgainstOwnedVM(t *testing.T) {
 			t.Errorf("remove owned clone acceptance directory: %v", err)
 		}
 	})
-	if evidenceDir := os.Getenv("RHEIC_CLONE_EVIDENCE_DIR"); evidenceDir != "" {
+	if evidenceDir := os.Getenv("GYREL_CLONE_EVIDENCE_DIR"); evidenceDir != "" {
 		// Registered after the removal cleanup so evidence is captured first.
 		t.Cleanup(func() { copyCloneLiveEvidence(t, root, evidenceDir) })
 	}
@@ -300,7 +300,7 @@ func TestCloneLiveAcceptanceAgainstOwnedVM(t *testing.T) {
 
 	// 5. The source workspace mount must be read-only.
 	_, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID,
-		[]string{"/bin/sh", "-c", "printf probe > /run/sandbox/source/.rheic-clone-write-probe"}, nil)
+		[]string{"/bin/sh", "-c", "printf probe > /run/sandbox/source/.gyrel-clone-write-probe"}, nil)
 	// A read-only mount makes the write fail inside the guest, so a non-zero
 	// exit is the expected control result rather than a transport error.
 	if err != nil && code == 0 {
@@ -313,14 +313,14 @@ func TestCloneLiveAcceptanceAgainstOwnedVM(t *testing.T) {
 		t.Fatalf("write probe failed for a reason other than a read-only mount: %q", stderr)
 	}
 	_, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID,
-		[]string{"/bin/sh", "-c", "test ! -e /run/sandbox/source/.rheic-clone-write-probe"}, nil)
+		[]string{"/bin/sh", "-c", "test ! -e /run/sandbox/source/.gyrel-clone-write-probe"}, nil)
 	if err != nil || code != 0 {
 		t.Fatalf("write probe left an artifact on the source mount: code=%d err=%v stderr=%q", code, err, stderr)
 	}
 
 	// 6. A new guest commit proves the clone is writable and private.
 	_, stderr, code, err = execCloneLiveGuest(ctx, svc, sandboxID, []string{
-		"git", "-C", workdir, "-c", "user.email=clone-live@example.invalid", "-c", "user.name=Rheic Clone Live",
+		"git", "-C", workdir, "-c", "user.email=clone-live@example.invalid", "-c", "user.name=Gyrel Clone Live",
 		"commit", "--allow-empty", "-q", "-m", "guest",
 	}, nil)
 	if err != nil || code != 0 {
@@ -428,15 +428,15 @@ func getCloneLiveInputs(t *testing.T) cloneLiveInputs {
 		}
 		return value
 	}
-	image := os.Getenv("RHEIC_CLONE_IMAGE")
+	image := os.Getenv("GYREL_CLONE_IMAGE")
 	if image == "" {
 		image = "docker.io/library/buildpack-deps:bookworm-scm"
 	}
 	return cloneLiveInputs{
-		containerd: get("RHEIC_CLONE_CONTAINERD"), ctr: get("RHEIC_CLONE_CTR"),
-		shim: get("RHEIC_CLONE_SHIM"), kernel: get("RHEIC_CLONE_KERNEL"),
-		rootfs: get("RHEIC_CLONE_ROOTFS"), libkrun: get("RHEIC_CLONE_LIBKRUN"),
-		gvproxy: get("RHEIC_CLONE_GVPROXY"), daemon: get("RHEIC_CLONE_DAEMON"),
+		containerd: get("GYREL_CLONE_CONTAINERD"), ctr: get("GYREL_CLONE_CTR"),
+		shim: get("GYREL_CLONE_SHIM"), kernel: get("GYREL_CLONE_KERNEL"),
+		rootfs: get("GYREL_CLONE_ROOTFS"), libkrun: get("GYREL_CLONE_LIBKRUN"),
+		gvproxy: get("GYREL_CLONE_GVPROXY"), daemon: get("GYREL_CLONE_DAEMON"),
 		image: image,
 	}
 }
@@ -476,8 +476,8 @@ func makeCloneLiveRepository(t *testing.T, root string) (repoDir, head, branch s
 	}
 	run("init", "-q")
 	run("config", "user.email", "clone-live@example.invalid")
-	run("config", "user.name", "Rheic Clone Live")
-	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("rheic clone live acceptance\n"), 0o600); err != nil {
+	run("config", "user.name", "Gyrel Clone Live")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("gyrel clone live acceptance\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	run("add", "README.md")

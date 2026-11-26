@@ -28,27 +28,27 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/slogx/events"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/operation"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/operation"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
-	"github.com/rheic/sandboxes-core/sandbox"
-	gatewaypolicy "github.com/rheic/sandboxes-gateway/policy"
-	"github.com/rheic/sandboxes-gateway/registryauth"
-	runtime "github.com/rheic/sandboxes-runtime"
-	"github.com/rheic/sandboxes-runtime/ctr"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	gatewaypolicy "github.com/gyrel/sandboxes-gateway/policy"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
+	runtime "github.com/gyrel/sandboxes-runtime"
+	"github.com/gyrel/sandboxes-runtime/ctr"
 
-	"github.com/rheic/sandboxes-daemon/internal/approvals"
-	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
-	"github.com/rheic/sandboxes-daemon/internal/mcpmanager"
-	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
-	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/approvals"
+	"github.com/gyrel/sandboxes-daemon/internal/customsecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/mcpmanager"
+	"github.com/gyrel/sandboxes-daemon/internal/oauthsession"
+	"github.com/gyrel/sandboxes-daemon/internal/orgpolicy"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 const (
@@ -3248,7 +3248,7 @@ func (s *Service) startDockerProfile(ctx context.Context, handle runtime.Handle,
 export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY"
 export NO_PROXY=localhost,127.0.0.1,::1
 export no_proxy="$NO_PROXY"
-export SSL_CERT_FILE=/tmp/rheic-proxy-ca-bundle.pem
+export SSL_CERT_FILE=/tmp/gyrel-proxy-ca-bundle.pem
 `
 	}
 	script := `mkdir -p /sys/fs/cgroup

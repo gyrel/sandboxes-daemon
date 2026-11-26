@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/sandbox"
-	gatewaypolicy "github.com/rheic/sandboxes-gateway/policy"
-	runtime "github.com/rheic/sandboxes-runtime"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	gatewaypolicy "github.com/gyrel/sandboxes-gateway/policy"
+	runtime "github.com/gyrel/sandboxes-runtime"
 
-	"github.com/rheic/sandboxes-daemon/internal/controlplane"
-	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
+	"github.com/gyrel/sandboxes-daemon/internal/orgpolicy"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 var orgPolicyTestNow = time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)

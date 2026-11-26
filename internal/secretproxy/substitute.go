@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/slogx/events"
 )
 
 // Substitution replaces one guest-visible placeholder in request headers with a

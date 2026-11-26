@@ -12,9 +12,10 @@ import (
 
 	keyring "github.com/zalando/go-keyring"
 
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/slogx/events"
 )
 
+// legacy-compat: see RENAME-MAP §2 — persisted keychain service label; rename deferred.
 const vaultService = "com.rheic.service-secrets.v1"
 
 var (

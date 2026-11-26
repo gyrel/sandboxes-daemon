@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rheic/sandboxes-gateway/registryauth"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
 )
 
 // PullProxy is a host-side registry handler bound to an identity
@@ -81,7 +81,7 @@ const maxCachedRealms = 256
 
 // brokerTokenPath is the guest-visible token endpoint on the configured
 // registry authority. It is a fixed protocol path, not a credential.
-const brokerTokenPath = "/__rheic/registry-token" //nolint:gosec // fixed protocol path, not a credential.
+const brokerTokenPath = "/__gyrel/registry-token" //nolint:gosec // fixed protocol path, not a credential.
 
 var forwardedPullHeaders = []string{"Accept", "Range", "If-None-Match", "If-Modified-Since"}
 

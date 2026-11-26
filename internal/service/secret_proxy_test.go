@@ -11,13 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
 
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestStripProxyCreateEnv(t *testing.T) {
@@ -48,8 +48,8 @@ func TestStripProxyCreateEnv(t *testing.T) {
 		t.Fatalf("multiple services filtered=%v services=%v err=%v", filtered, serviceNames, err)
 	}
 	filtered, serviceNames, err = stripProxyCreateEnv([]string{
-		"GH_TOKEN=${proxy:github}", "RHEIC_PROXY_GITHUB_WEB=${proxy:github-web}",
-		"RHEIC_PROXY_GITHUB_COPILOT_API=${proxy:github-copilot-api}",
+		"GH_TOKEN=${proxy:github}", "GYREL_PROXY_GITHUB_WEB=${proxy:github-web}",
+		"GYREL_PROXY_GITHUB_COPILOT_API=${proxy:github-copilot-api}",
 	})
 	if err != nil || len(filtered) != 0 || strings.Join(serviceNames, ",") != "github,github-copilot-api,github-web" {
 		t.Fatalf("fixed host aliases filtered=%v services=%v err=%v", filtered, serviceNames, err)
@@ -99,18 +99,18 @@ func TestAgentCredentialAliasesHaveFixedHostsAndCredentialScopes(t *testing.T) {
 		service string
 	}{
 		"github":             {"api.github.com", "GH_TOKEN", githubCredentialService},
-		"github-web":         {"github.com", "RHEIC_PROXY_GITHUB_WEB", githubCredentialService},
-		"github-raw":         {"raw.githubusercontent.com", "RHEIC_PROXY_GITHUB_RAW", githubCredentialService},
-		"github-gist":        {"gist.github.com", "RHEIC_PROXY_GITHUB_GIST", githubCredentialService},
-		"github-copilot":     {"copilot.github.com", "RHEIC_PROXY_GITHUB_COPILOT", githubCredentialService},
-		"github-copilot-api": {"api.githubcopilot.com", "RHEIC_PROXY_GITHUB_COPILOT_API", githubCredentialService},
+		"github-web":         {"github.com", "GYREL_PROXY_GITHUB_WEB", githubCredentialService},
+		"github-raw":         {"raw.githubusercontent.com", "GYREL_PROXY_GITHUB_RAW", githubCredentialService},
+		"github-gist":        {"gist.github.com", "GYREL_PROXY_GITHUB_GIST", githubCredentialService},
+		"github-copilot":     {"copilot.github.com", "GYREL_PROXY_GITHUB_COPILOT", githubCredentialService},
+		"github-copilot-api": {"api.githubcopilot.com", "GYREL_PROXY_GITHUB_COPILOT_API", githubCredentialService},
 		"cursor":             {"api2.cursor.sh", "CURSOR_API_KEY", cursorCredentialService},
-		"cursor-api3":        {"api3.cursor.sh", "RHEIC_PROXY_CURSOR_API3", cursorCredentialService},
-		"cursor-repo42":      {"repo42.cursor.sh", "RHEIC_PROXY_CURSOR_REPO42", cursorCredentialService},
-		"cursor-web":         {"cursor.com", "RHEIC_PROXY_CURSOR_WEB", cursorCredentialService},
+		"cursor-api3":        {"api3.cursor.sh", "GYREL_PROXY_CURSOR_API3", cursorCredentialService},
+		"cursor-repo42":      {"repo42.cursor.sh", "GYREL_PROXY_CURSOR_REPO42", cursorCredentialService},
+		"cursor-web":         {"cursor.com", "GYREL_PROXY_CURSOR_WEB", cursorCredentialService},
 		"droid":              {"api.factory.ai", "FACTORY_API_KEY", droidCredentialService},
-		"droid-app":          {"app.factory.ai", "RHEIC_PROXY_DROID_APP", droidCredentialService},
-		"droid-relay":        {"relay.factory.ai", "RHEIC_PROXY_DROID_RELAY", droidCredentialService},
+		"droid-app":          {"app.factory.ai", "GYREL_PROXY_DROID_APP", droidCredentialService},
+		"droid-relay":        {"relay.factory.ai", "GYREL_PROXY_DROID_RELAY", droidCredentialService},
 	}
 	ports := make(map[uint16]string, len(want))
 	for name, expected := range want {
@@ -194,7 +194,7 @@ func TestProxyEnvironmentUsesHostBrokerAndSurvivesRestart(t *testing.T) {
 	if strings.Contains(strings.Join(backend.lastExec.Env, "\n"), "sk-synthetic-proxy-secret") {
 		t.Fatalf("secret value entered guest environment: %v", backend.lastExec.Env)
 	}
-	if !containsEnv(backend.lastExec.Env, "OPENAI_API_KEY=rheic-proxy-placeholder") || !containsEnv(backend.lastExec.Env, "OPENAI_BASE_URL=http://127.0.0.1:3128/v1") {
+	if !containsEnv(backend.lastExec.Env, "OPENAI_API_KEY=gyrel-proxy-placeholder") || !containsEnv(backend.lastExec.Env, "OPENAI_BASE_URL=http://127.0.0.1:3128/v1") {
 		t.Fatalf("proxy environment contract=%v", backend.lastExec.Env)
 	}
 	if _, err := svc.Delete(ctx, op.SandboxID, true); err != nil {
@@ -264,9 +264,9 @@ func TestSandboxSupportsMultipleIsolatedServiceSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"OPENAI_API_KEY=rheic-proxy-placeholder",
+		"OPENAI_API_KEY=gyrel-proxy-placeholder",
 		"OPENAI_BASE_URL=http://127.0.0.1:3128/v1",
-		"ANTHROPIC_API_KEY=rheic-proxy-placeholder",
+		"ANTHROPIC_API_KEY=gyrel-proxy-placeholder",
 		"ANTHROPIC_BASE_URL=http://127.0.0.1:43129",
 	} {
 		if !containsEnv(backend.lastExec.Env, want) {
@@ -315,8 +315,8 @@ func TestAliasProxyRouteBuildsAndCredentialRotationReachesLiveRoute(t *testing.T
 		Name:  "alias-run",
 		Image: "alpine:3.22",
 		Env: map[string]string{
-			"RHEIC_PROXY_GITHUB_WEB": "${proxy:github-web}",
-			"RHEIC_PROXY_GITHUB_RAW": "${proxy:github-raw}",
+			"GYREL_PROXY_GITHUB_WEB": "${proxy:github-web}",
+			"GYREL_PROXY_GITHUB_RAW": "${proxy:github-raw}",
 		},
 	})
 	if goruntime.GOOS == "windows" {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 )
 
 func TestApprovalExpiredEventOnRetentionSweep(t *testing.T) {
@@ -36,7 +36,7 @@ func TestApprovalExpiredEventOnRetentionSweep(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		`"event":"rheic.approval.expired"`, `"outcome":"ok"`,
+		`"event":"gyrel.approval.expired"`, `"outcome":"ok"`,
 		`"approval_id":"` + entry.ID + `"`, `"ttl_ms":120000`,
 	} {
 		if !strings.Contains(got, want) {
@@ -66,7 +66,7 @@ func TestApprovalExpiredSkipsPendingEntries(t *testing.T) {
 	if _, ok := store.Get(entry.ID); !ok {
 		t.Fatal("pending entry was swept")
 	}
-	if strings.Contains(output.String(), "rheic.approval.expired") {
+	if strings.Contains(output.String(), "gyrel.approval.expired") {
 		t.Fatalf("pending entry expired: %s", output.String())
 	}
 }

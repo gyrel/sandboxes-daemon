@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	runtime "github.com/rheic/sandboxes-runtime"
-	"github.com/rheic/sandboxes-runtime/ctr"
+	runtime "github.com/gyrel/sandboxes-runtime"
+	"github.com/gyrel/sandboxes-runtime/ctr"
 )
 
 type plainBackend struct{}
@@ -44,14 +44,14 @@ func TestRecoverRuntimeJournalNoCapability(t *testing.T) {
 func TestRecoverRuntimeJournalSummarizesAndPropagates(t *testing.T) {
 	boom := errors.New("state dir unreadable")
 	svc := &Service{backend: recoveringBackend{
-		findings: []ctr.JournalFinding{{ID: "rheic-dev", Reason: "foreign"}},
+		findings: []ctr.JournalFinding{{ID: "gyrel-dev", Reason: "foreign"}},
 		err:      boom,
 	}}
 	summaries, err := svc.RecoverRuntimeJournal(context.Background())
 	if !errors.Is(err, boom) {
 		t.Fatalf("systemic err = %v", err)
 	}
-	if len(summaries) != 1 || summaries[0] != "journal rheic-dev: foreign" {
+	if len(summaries) != 1 || summaries[0] != "journal gyrel-dev: foreign" {
 		t.Fatalf("summaries = %v", summaries)
 	}
 }

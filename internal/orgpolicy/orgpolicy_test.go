@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-core/sandbox"
-	gatewaypolicy "github.com/rheic/sandboxes-gateway/policy"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	gatewaypolicy "github.com/gyrel/sandboxes-gateway/policy"
 
-	"github.com/rheic/sandboxes-daemon/internal/controlplane"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 var orgTestNow = time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)

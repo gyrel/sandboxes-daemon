@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/keychainchunks"
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/keychainchunks"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
 )
 
+// legacy-compat: see RENAME-MAP §2 — persisted keychain service label; rename deferred.
 const oauthVaultService = "com.rheic.oauth.v1"
 const vaultChunkSize = keychainchunks.ChunkSize
 

@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
 )
 
 func TestReadProxyCAResponseRequiresSigningCA(t *testing.T) {
@@ -215,7 +215,7 @@ func TestHelperMultiplexesConfiguredServicesWithoutCredentialMixing(t *testing.T
 	}))
 	defer anthropic.Close()
 
-	dir, err := os.MkdirTemp("/tmp", "rheic-multiproxy")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-multiproxy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestHelperMultiplexesConfiguredServicesWithoutCredentialMixing(t *testing.T
 	if stillAllowed.StatusCode != http.StatusOK || gotAnthropic != "anthropic-secret" {
 		t.Fatalf("revoking OpenAI affected Anthropic: status=%d auth=%q", stillAllowed.StatusCode, gotAnthropic)
 	}
-	unknownRequest, err := http.NewRequest(http.MethodGet, "http://broker/__rheic/proxy/token/unknown", http.NoBody)
+	unknownRequest, err := http.NewRequest(http.MethodGet, "http://broker/__gyrel/proxy/token/unknown", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

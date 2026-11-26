@@ -16,20 +16,20 @@ import (
 	"sort"
 	"strings"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
 
-	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/oauthsession"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
 )
 
 const (
 	proxySocketPort         = uint32(1027)
 	proxySettingPrefix      = "sandbox.proxy-service."
-	proxyGuestHelperPath    = "/tmp/rheic-proxy-helper"
+	proxyGuestHelperPath    = "/tmp/gyrel-proxy-helper"
 	proxyMaxRoutes          = 32
 	openAIServiceName       = "openai"
 	openAIOAuthRoute        = openAIServiceName + "-oauth"
@@ -138,31 +138,31 @@ func configureProviderContract(contract *proxyEnvContract) bool {
 func proxyCredentialRouteEnv(name string) (credentialEnv, baseURLEnv string, guestPort uint16) {
 	switch name {
 	case githubCredentialService:
-		return "GH_TOKEN", "RHEIC_GITHUB_API_BASE_URL", 43135
+		return "GH_TOKEN", "GYREL_GITHUB_API_BASE_URL", 43135
 	case "github-web":
-		return "RHEIC_PROXY_GITHUB_WEB", "RHEIC_PROXY_GITHUB_WEB_BASE_URL", 43136
+		return "GYREL_PROXY_GITHUB_WEB", "GYREL_PROXY_GITHUB_WEB_BASE_URL", 43136
 	case "github-raw":
-		return "RHEIC_PROXY_GITHUB_RAW", "RHEIC_PROXY_GITHUB_RAW_BASE_URL", 43137
+		return "GYREL_PROXY_GITHUB_RAW", "GYREL_PROXY_GITHUB_RAW_BASE_URL", 43137
 	case "github-gist":
-		return "RHEIC_PROXY_GITHUB_GIST", "RHEIC_PROXY_GITHUB_GIST_BASE_URL", 43138
+		return "GYREL_PROXY_GITHUB_GIST", "GYREL_PROXY_GITHUB_GIST_BASE_URL", 43138
 	case "github-copilot":
-		return "RHEIC_PROXY_GITHUB_COPILOT", "RHEIC_PROXY_GITHUB_COPILOT_BASE_URL", 43139
+		return "GYREL_PROXY_GITHUB_COPILOT", "GYREL_PROXY_GITHUB_COPILOT_BASE_URL", 43139
 	case "github-copilot-api":
-		return "RHEIC_PROXY_GITHUB_COPILOT_API", "RHEIC_PROXY_GITHUB_COPILOT_API_BASE_URL", 43140
+		return "GYREL_PROXY_GITHUB_COPILOT_API", "GYREL_PROXY_GITHUB_COPILOT_API_BASE_URL", 43140
 	case cursorCredentialService:
-		return "CURSOR_API_KEY", "RHEIC_CURSOR_API_BASE_URL", 43141
+		return "CURSOR_API_KEY", "GYREL_CURSOR_API_BASE_URL", 43141
 	case "cursor-api3":
-		return "RHEIC_PROXY_CURSOR_API3", "RHEIC_PROXY_CURSOR_API3_BASE_URL", 43142
+		return "GYREL_PROXY_CURSOR_API3", "GYREL_PROXY_CURSOR_API3_BASE_URL", 43142
 	case "cursor-repo42":
-		return "RHEIC_PROXY_CURSOR_REPO42", "RHEIC_PROXY_CURSOR_REPO42_BASE_URL", 43143
+		return "GYREL_PROXY_CURSOR_REPO42", "GYREL_PROXY_CURSOR_REPO42_BASE_URL", 43143
 	case "cursor-web":
-		return "RHEIC_PROXY_CURSOR_WEB", "RHEIC_PROXY_CURSOR_WEB_BASE_URL", 43144
+		return "GYREL_PROXY_CURSOR_WEB", "GYREL_PROXY_CURSOR_WEB_BASE_URL", 43144
 	case droidCredentialService:
-		return "FACTORY_API_KEY", "RHEIC_FACTORY_API_BASE_URL", 43145
+		return "FACTORY_API_KEY", "GYREL_FACTORY_API_BASE_URL", 43145
 	case "droid-app":
-		return "RHEIC_PROXY_DROID_APP", "RHEIC_PROXY_DROID_APP_BASE_URL", 43146
+		return "GYREL_PROXY_DROID_APP", "GYREL_PROXY_DROID_APP_BASE_URL", 43146
 	case "droid-relay":
-		return "RHEIC_PROXY_DROID_RELAY", "RHEIC_PROXY_DROID_RELAY_BASE_URL", 43147
+		return "GYREL_PROXY_DROID_RELAY", "GYREL_PROXY_DROID_RELAY_BASE_URL", 43147
 	default:
 		return "", "", 0
 	}

@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-core/ids"
-	"github.com/rheic/sandboxes-core/sandbox"
-	"github.com/rheic/sandboxes-runtime/ctr"
+	"github.com/gyrel/sandboxes-core/ids"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	"github.com/gyrel/sandboxes-runtime/ctr"
 
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestJournalFindingEventsRedactInputs(t *testing.T) {
@@ -31,7 +31,7 @@ func TestJournalFindingEventsRedactInputs(t *testing.T) {
 	}
 	emitJournalFinding(ctx, ctr.JournalFinding{Reason: "synthetic-secret-reason"})
 	got := output.String()
-	if strings.Count(got, "rheic.journal.recover") != len(reasons)*2 {
+	if strings.Count(got, "gyrel.journal.recover") != len(reasons)*2 {
 		t.Fatalf("unexpected events: %s", got)
 	}
 	for _, secret := range []string{"synthetic-secret-id", "synthetic-secret-path", "synthetic-secret-reason"} {
@@ -78,7 +78,7 @@ func TestReconcileEventCountsAndRedactsSandboxNames(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatal(err)
 		}
-		if record["event"] != "rheic.daemon.reconcile" {
+		if record["event"] != "gyrel.daemon.reconcile" {
 			continue
 		}
 		count++

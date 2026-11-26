@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/oauthsession"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestOpenAIOAuthLogoutRevokesProxyBeforeProviderRequest(t *testing.T) {

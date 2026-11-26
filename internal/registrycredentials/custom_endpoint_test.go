@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-gateway/registryauth"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
 )
 
 func TestProbeRegistryRealmUsesCustomPortRealm(t *testing.T) {

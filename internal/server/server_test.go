@@ -17,19 +17,19 @@ import (
 	"testing"
 	"time"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/service"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/oauthsession"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/service"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 type graceBackend struct{ grace time.Duration }
@@ -422,6 +422,7 @@ func TestAccountStatusReportsPresenceOnlyRefreshMetadata(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	vault := &serverTestVault{values: map[string]string{
+		// legacy-compat: see RENAME-MAP §2 — on-disk keychain service label.
 		"com.rheic.oauth.v1/fixture": `{"tokens":{"access_token":"synthetic-access","token_type":"Bearer","refresh_token":"synthetic-refresh"}}`,
 	}}
 	svc := service.New(st, nil)
@@ -448,6 +449,7 @@ func TestAccountStatusReportsPresenceOnlyRefreshMetadata(t *testing.T) {
 		t.Fatalf("status present=%t refresh=%t coordinated=%t", resp.GetCredentialPresent(), resp.GetRefreshPresent(), resp.GetRefreshCoordinated())
 	}
 	vault.mu.Lock()
+	// legacy-compat: see RENAME-MAP §2 — on-disk keychain service label.
 	vault.values["com.rheic.oauth.v1/fixture"] = `{"tokens":{"access_token":"synthetic-access","token_type":"Bearer"}}`
 	vault.mu.Unlock()
 	resp, err = client.Status(ctx, &localv1.AccountServiceStatusRequest{Provider: "fixture"})

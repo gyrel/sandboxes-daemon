@@ -25,7 +25,7 @@ import (
 
 const (
 	testOIDCIssuer   = "https://issuer.example.test"
-	testOIDCAudience = "rheic-control-plane"
+	testOIDCAudience = "gyrel-control-plane"
 )
 
 type mockIDP struct {

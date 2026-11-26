@@ -6,12 +6,13 @@ import (
 	"errors"
 	"time"
 
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/slogx/events"
 
-	"github.com/rheic/sandboxes-daemon/internal/keychainchunks"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/keychainchunks"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
 )
 
+// legacy-compat: see RENAME-MAP §2 — persisted keychain service label; rename deferred.
 const vaultService = "com.rheic.custom-secrets.v1"
 
 // ErrNotFound reports that no custom secret record exists for the key.

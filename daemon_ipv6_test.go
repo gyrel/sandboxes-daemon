@@ -5,7 +5,7 @@ package daemon
 import (
 	"testing"
 
-	"github.com/rheic/sandboxes-daemon/internal/service"
+	"github.com/gyrel/sandboxes-daemon/internal/service"
 )
 
 func TestApplyConfigPropagatesIPv6Capability(t *testing.T) {

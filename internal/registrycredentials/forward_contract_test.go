@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rheic/sandboxes-gateway/registryauth"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
 )
 
 type contractTransportFactory struct {
@@ -47,7 +47,7 @@ func TestDockerHubForwardContractPullsAndPushesWithoutGuestBearerLeak(t *testing
 		if request.Header.Get("Proxy-Authorization") != "" {
 			t.Error("guest proxy authorization reached registry")
 		}
-		if strings.Contains(request.Header.Get("Authorization"), "rheic-") {
+		if strings.Contains(request.Header.Get("Authorization"), "gyrel-") {
 			t.Error("guest sentinel leaked to registry")
 		}
 		upstreamRequests = append(upstreamRequests, request.Method+" "+request.URL.RequestURI())

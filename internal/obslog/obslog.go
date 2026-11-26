@@ -18,8 +18,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/rheic/slogx/events"
-	"github.com/rheic/slogx/rotate"
+	"github.com/gyrel/slogx/events"
+	"github.com/gyrel/slogx/rotate"
 )
 
 const (
@@ -146,7 +146,7 @@ func (s *Sink) monitor(ctx context.Context) {
 }
 
 // sampleDrops drains the drop counter and, when records were dropped, emits
-// rheic.obs.log_dropped to the stderr logger. The event deliberately bypasses
+// gyrel.obs.log_dropped to the stderr logger. The event deliberately bypasses
 // the file sink: the queue that just overflowed must not be asked to record its
 // own failure, which would recurse (a dropped drop-report would itself bump the
 // counter and trigger another report). The stderr logger was captured before the

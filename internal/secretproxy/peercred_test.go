@@ -72,7 +72,7 @@ func TestPeerCheckingListenerRejectsForeignOwner(t *testing.T) {
 	}
 	_ = listener.Close()
 	<-acceptErr
-	if !strings.Contains(out.String(), "rheic.peercred.reject") || strings.Contains(out.String(), inner.Addr().String()) {
+	if !strings.Contains(out.String(), "gyrel.peercred.reject") || strings.Contains(out.String(), inner.Addr().String()) {
 		t.Fatalf("unexpected event: %s", out.String())
 	}
 	var record map[string]json.RawMessage

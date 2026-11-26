@@ -1,15 +1,15 @@
-module github.com/rheic/sandboxes-daemon
+module github.com/gyrel/sandboxes-daemon
 
 go 1.27.4
 
 require (
 	github.com/Microsoft/go-winio v0.6.4
+	github.com/gyrel/sandboxes-api v0.0.39
+	github.com/gyrel/sandboxes-core v0.1.0
+	github.com/gyrel/sandboxes-gateway v0.1.0
+	github.com/gyrel/sandboxes-runtime v0.1.0
+	github.com/gyrel/slogx v0.3.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/rheic/sandboxes-api v0.0.38
-	github.com/rheic/sandboxes-core v0.0.15
-	github.com/rheic/sandboxes-gateway v0.0.21
-	github.com/rheic/sandboxes-runtime v0.0.64
-	github.com/rheic/slogx v0.2.2
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.50.0
 	google.golang.org/grpc v1.85.0

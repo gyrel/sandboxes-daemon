@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Rename the brand from Rheic to Gyrel (breaking, pre-1.0 alpha policy): module
+  path `github.com/rheic/sandboxes-daemon` → `github.com/gyrel/sandboxes-daemon`
+  and the dependency chain (api v0.0.39, core v0.1.0, gateway v0.1.0, runtime
+  v0.1.0, slogx v0.3.0). gRPC correlation metadata keys `rheic-op-id`,
+  `rheic-req-id`, `rheic-parent-req-id` become `gyrel-*`; event names move to the
+  `gyrel.*` prefix via slogx v0.3.0; `RHEIC_*` test canary environment variables
+  become `GYREL_*`. On-disk identifiers (`com.rheic.*` keychain services,
+  `rheic-keychain-chunks-v1` manifest prefix, `~/.config/rheic/settings.toml`,
+  the skills store, the control-plane `rheic-server.db`, and the policy signing
+  domain `rheic-policy-payload`) are retained for data-migration safety and
+  flagged for a follow-up ruling.
+
 ## v0.0.98 — 2026-11-24
 
 ### Fixed

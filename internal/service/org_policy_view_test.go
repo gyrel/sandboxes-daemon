@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/controlplane"
-	"github.com/rheic/sandboxes-daemon/internal/orgpolicy"
+	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
+	"github.com/gyrel/sandboxes-daemon/internal/orgpolicy"
 )
 
 func TestGetOrgPolicyReturnsEffectiveView(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const proxyHelperNamePrefix = "rheic-proxy-helper-linux-"
+const proxyHelperNamePrefix = "gyrel-proxy-helper-linux-"
 
 // resolveProxyHelperPath returns the guest proxy helper to mount into a
 // sandbox. An explicit path always wins and must pass the existing helper

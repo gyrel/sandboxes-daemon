@@ -1,9 +1,9 @@
 # Self-hosted control-plane preview
 
-![Rheic blue shark logo](../../docs/assets/rheic-shark.png)
+![Gyrel blue shark logo](../../docs/assets/gyrel-shark.png)
 
 
-`rheic-server` serves signed organization policy and accepts structured audit
+`gyrel-server` serves signed organization policy and accepts structured audit
 events over HTTPS. It is a single-operator preview; applying synced policy to
 sandbox operations, audit search/SIEM export, PostgreSQL HA and deployment
 packaging are not implemented yet. The daemon can pull policy as an opt-in
@@ -19,7 +19,7 @@ Generate the offline Ed25519 policy key pair. Keep the private key away from
 the server host:
 
 ```sh
-rheic-server keygen --prefix ./policy-key
+gyrel-server keygen --prefix ./policy-key
 ```
 
 `policy-key.private` has mode `0600`; `policy-key.public` is base64 encoded and
@@ -54,7 +54,7 @@ Export a token from the file into the environment for the examples below; do
 not put it on a command line or in shell history:
 
 ```sh
-export RHEIC_ADMIN_TOKEN="$(jq -r '.credentials[] | select(.role == "admin") | .token' ./credentials.json)"
+export GYREL_ADMIN_TOKEN="$(jq -r '.credentials[] | select(.role == "admin") | .token' ./credentials.json)"
 ```
 
 Static credentials are restricted to their configured `org`. An unscoped
@@ -72,7 +72,7 @@ network policy.
 ## Start the server
 
 ```sh
-rheic-server \
+gyrel-server \
   --listen 127.0.0.1:8443 \
   --db ./state/rheic-server.db \
   --credentials-file ./credentials.json \
@@ -84,7 +84,7 @@ rheic-server \
 The database and its directory are restricted to the current user. The server
 uses SQLite WAL mode, rejects a newer schema, and creates a private snapshot
 before applying a migration to a non-empty database. Without `--db`, it stores
-the database under the operating system's user config directory in `rheic/`.
+the database under the operating system's user config directory in `gyrel/`.
 
 ## Optional OIDC bearer validation
 
@@ -92,10 +92,10 @@ Set all three flags together to accept OIDC JWT bearer tokens in addition to
 static credentials:
 
 ```sh
-rheic-server \
+gyrel-server \
   --credentials-file ./credentials.json \
   --oidc-issuer https://idp.example.test \
-  --oidc-audience rheic-control-plane \
+  --oidc-audience gyrel-control-plane \
   --oidc-jwks-url https://idp.example.test/.well-known/jwks.json \
   ... # database, policy key and TLS flags as above
 ```
@@ -164,13 +164,13 @@ existing policy with a higher revision using this format. Signing is local and
 does not contact the server:
 
 ```sh
-rheic-server sign-policy \
+gyrel-server sign-policy \
   --input ./policy-payload.json \
   --private-key ./policy-key.private \
   --output ./signed-policy.json
 
 curl --fail --cacert ./tls/ca.crt \
-  -H "Authorization: Bearer $RHEIC_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $GYREL_ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
   --data-binary @./signed-policy.json \
   -X PUT https://control.example.test:8443/v1/orgs/acme/policy
@@ -202,7 +202,7 @@ secrets, user paths or request bodies into audit values.
 
 ```sh
 curl --fail --cacert ./tls/ca.crt \
-  -H "Authorization: Bearer $RHEIC_READER_TOKEN" \
+  -H "Authorization: Bearer $GYREL_READER_TOKEN" \
   'https://control.example.test:8443/v1/orgs/acme/audit?limit=100&after=0'
 ```
 

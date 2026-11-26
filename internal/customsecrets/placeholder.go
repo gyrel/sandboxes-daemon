@@ -12,7 +12,7 @@ const (
 	// RandMarker is the template suffix replaced by random characters.
 	RandMarker = "{rand}"
 	// DefaultTemplate is used when a request leaves the placeholder empty.
-	DefaultTemplate = "rheic-" + RandMarker
+	DefaultTemplate = "gyrel-" + RandMarker
 
 	randLength           = 32
 	randAlphabet         = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"

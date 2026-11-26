@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
-	"github.com/rheic/sandboxes-core/ids"
-	"github.com/rheic/slogx/events"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
+	"github.com/gyrel/sandboxes-core/ids"
+	"github.com/gyrel/slogx/events"
 )
 
 func TestKitCheckEventsRedactInputs(t *testing.T) {

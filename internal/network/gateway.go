@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	gateway "github.com/rheic/sandboxes-gateway"
-	"github.com/rheic/sandboxes-gateway/policy"
-	runtime "github.com/rheic/sandboxes-runtime"
+	gateway "github.com/gyrel/sandboxes-gateway"
+	"github.com/gyrel/sandboxes-gateway/policy"
+	runtime "github.com/gyrel/sandboxes-runtime"
 )
 
 // Manager is the subset of the gateway manager used by the adapter.

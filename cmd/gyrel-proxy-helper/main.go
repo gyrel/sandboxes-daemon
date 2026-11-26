@@ -1,9 +1,9 @@
-// Command rheic-proxy-helper runs inside a sandbox and forwards HTTP requests
+// Command gyrel-proxy-helper runs inside a sandbox and forwards HTTP requests
 // over the per-VM vsock channel to the host broker. The broker owns the real
 // service credential; the helper only carries the per-VM token.
 //go:build linux
 
-// rheic-proxy-helper runs inside the Linux guest and uses AF_VSOCK and Linux
+// gyrel-proxy-helper runs inside the Linux guest and uses AF_VSOCK and Linux
 // device/syscall interfaces. It is deliberately not a Windows host executable.
 package main
 
@@ -35,8 +35,8 @@ import (
 )
 
 const (
-	tokenHeader   = "X-Rheic-Proxy-Token"   //nolint:gosec // HTTP header name, not a credential.
-	serviceHeader = "X-Rheic-Proxy-Service" //nolint:gosec // route metadata, not a credential.
+	tokenHeader   = "X-Gyrel-Proxy-Token"   //nolint:gosec // HTTP header name, not a credential.
+	serviceHeader = "X-Gyrel-Proxy-Service" //nolint:gosec // route metadata, not a credential.
 	afVsock       = 40
 )
 
@@ -159,8 +159,8 @@ func serveConfigured(ctx context.Context, listen, serviceHost string, routes []s
 }
 
 const (
-	proxyCAFile = "/tmp/rheic-proxy-ca-bundle.pem"
-	caPath      = "/__rheic/proxy/ca/"
+	proxyCAFile = "/tmp/gyrel-proxy-ca-bundle.pem"
+	caPath      = "/__gyrel/proxy/ca/"
 )
 
 func bootstrapProxyTrust(ctx context.Context, serviceHost string, routes []string, transport http.RoundTripper) error {
@@ -266,7 +266,7 @@ func installProxyCA(ca []byte) error {
 		bundle = append(bundle, '\n')
 	}
 	bundle = append(bundle, ca...)
-	temporary, err := os.CreateTemp(filepath.Dir(proxyCAFile), ".rheic-ca-*")
+	temporary, err := os.CreateTemp(filepath.Dir(proxyCAFile), ".gyrel-ca-*")
 	if err != nil {
 		clear(bundle)
 		return err
@@ -444,7 +444,7 @@ func fetchToken(ctx context.Context, transport http.RoundTripper) (string, error
 }
 
 func fetchTokenForService(ctx context.Context, transport http.RoundTripper, service string) (string, error) {
-	path := "/__rheic/proxy/token"
+	path := "/__gyrel/proxy/token"
 	if service != "" {
 		if !validRouteService(service) {
 			return "", errors.New("invalid proxy service")

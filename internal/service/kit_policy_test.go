@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 )
 
 func TestCheckKitSourceDefaults(t *testing.T) {

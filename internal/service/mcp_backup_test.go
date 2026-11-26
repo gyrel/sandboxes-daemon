@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rheic/sandboxes-daemon/internal/mcpmanager"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/mcpmanager"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 const backupMigrationRegistry = `[

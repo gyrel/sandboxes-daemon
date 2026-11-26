@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtime "github.com/rheic/sandboxes-runtime"
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtime "github.com/gyrel/sandboxes-runtime"
+	"github.com/gyrel/slogx/events"
 
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestTemplateSaveEventsReportComputedFields(t *testing.T) {
@@ -27,7 +27,7 @@ func TestTemplateSaveEventsReportComputedFields(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		`"event":"rheic.template.save"`, `"outcome":"ok"`,
+		`"event":"gyrel.template.save"`, `"outcome":"ok"`,
 		`"template_id":"docker.io/library/evt:v1"`, `"layers":3`, `"bytes":4096`, `"digest":"sha256:aa"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -49,7 +49,7 @@ func TestTemplateSaveEventOutcomes(t *testing.T) {
 		t.Fatal("failing save accepted")
 	}
 	got := output.String()
-	if !strings.Contains(got, `"event":"rheic.template.save"`) || !strings.Contains(got, `"outcome":"failed"`) {
+	if !strings.Contains(got, `"event":"gyrel.template.save"`) || !strings.Contains(got, `"outcome":"failed"`) {
 		t.Fatalf("failed save not recorded: %s", got)
 	}
 	if strings.Contains(got, "synthetic save explosion") {
@@ -69,7 +69,7 @@ func TestTemplateSaveUnsupportedEvent(t *testing.T) {
 		t.Fatal("unsupported backend accepted")
 	}
 	got := output.String()
-	if !strings.Contains(got, `"event":"rheic.template.save"`) || !strings.Contains(got, `"outcome":"unsupported"`) {
+	if !strings.Contains(got, `"event":"gyrel.template.save"`) || !strings.Contains(got, `"outcome":"unsupported"`) {
 		t.Fatalf("unsupported save not recorded: %s", got)
 	}
 }
@@ -83,7 +83,7 @@ func TestTemplateLoadEventReportsComputedFields(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		`"event":"rheic.template.load"`, `"outcome":"ok"`,
+		`"event":"gyrel.template.load"`, `"outcome":"ok"`,
 		`"template_id":"docker.io/library/from-archive:v1"`, `"layers":2`, `"bytes":100`, `"digest":"sha256:beef"`,
 	} {
 		if !strings.Contains(got, want) {

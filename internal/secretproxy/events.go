@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"log/slog"
 
-	"github.com/rheic/sandboxes-core/ids"
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/sandboxes-core/ids"
+	"github.com/gyrel/slogx/events"
 )
 
 // emitSecretSubstitute records one substitution decision. Placeholder values

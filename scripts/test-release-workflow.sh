@@ -86,7 +86,7 @@ check_root() {
   dispatch_release=$(job_body "$candidate" dispatch_release)
   grep -Fq '    needs: create_tag' <<<"$dispatch_release" \
     || fail "release dispatch must depend on tag creation"
-  grep -Fq "if: github.repository == 'rheic/sandboxes-daemon' || github.repository == 'rheic/sandboxes-cli'" <<<"$dispatch_release" \
+  grep -Fq "if: github.repository == 'gyrel/sandboxes-daemon' || github.repository == 'gyrel/sandboxes-cli'" <<<"$dispatch_release" \
     || fail "release dispatch must stay repository-scoped"
   grep -Fq 'TAG: v${{ inputs.version }}' <<<"$dispatch_release" || fail "release dispatch must use the validated version"
   grep -Fq 'ref=$TAG' <<<"$dispatch_release" || fail "release dispatch must target the created tag"
@@ -102,7 +102,7 @@ check_root() {
 
 check_root "$root"
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/rheic-release-workflow.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/gyrel-release-workflow.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/.github/workflows"
 cp "$root/.github/workflows/release.yml" "$root/.github/workflows/release-candidate.yml" "$tmp/.github/workflows/"

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
 )
 
 func TestRelayUpgradeBidirectional(t *testing.T) {
@@ -121,7 +121,7 @@ func TestOAuthWebSocketThroughHelperAndBroker(t *testing.T) {
 		upstreamResult <- err
 	}))
 	defer upstream.Close()
-	dir, err := os.MkdirTemp("/tmp", "rheic-upgrade-test-")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-upgrade-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestOAuthWebSocketThroughHelperAndBroker(t *testing.T) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
-	if _, err = fmt.Fprint(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer rheic-proxy-placeholder\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"); err != nil {
+	if _, err = fmt.Fprint(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer gyrel-proxy-placeholder\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}
 	reader := bufio.NewReader(conn)

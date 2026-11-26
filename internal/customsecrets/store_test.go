@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
 )
 
 var errSyntheticNotFound = errors.New("synthetic not found")
@@ -68,7 +68,7 @@ func newMemoryStore(t *testing.T) (*Store, *memoryVault) {
 func TestStoreRoundTripScopesAndRemoval(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newMemoryStore(t)
-	record := Record{Placeholder: "rheic-placeholder-1234", Value: "synthetic-secret-value-do-not-print"}
+	record := Record{Placeholder: "gyrel-placeholder-1234", Value: "synthetic-secret-value-do-not-print"}
 	if err := store.Save(ctx, "api.example.test", servicesecrets.ScopeGlobal, "", record); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestStoreRoundTripScopesAndRemoval(t *testing.T) {
 	if _, err := store.Load(ctx, "api.example.test", servicesecrets.ScopeSandbox, "dev"); !IsNotFound(err) {
 		t.Fatalf("global record leaked into sandbox scope: %v", err)
 	}
-	sandbox := Record{Placeholder: "rheic-placeholder-5678", Value: "synthetic-sandbox-value-1"}
+	sandbox := Record{Placeholder: "gyrel-placeholder-5678", Value: "synthetic-sandbox-value-1"}
 	if err := store.Save(ctx, "api.example.test", servicesecrets.ScopeSandbox, "dev", sandbox); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestStoreChunksLargeValues(t *testing.T) {
 	ctx := context.Background()
 	store, vault := newMemoryStore(t)
 	value := strings.Repeat("v", 6000)
-	if err := store.Save(ctx, "api.example.test", servicesecrets.ScopeGlobal, "", Record{Placeholder: "rheic-large-placeholder", Value: value}); err != nil {
+	if err := store.Save(ctx, "api.example.test", servicesecrets.ScopeGlobal, "", Record{Placeholder: "gyrel-large-placeholder", Value: value}); err != nil {
 		t.Fatal(err)
 	}
 	if len(vault.values) < 3 {
@@ -120,7 +120,7 @@ func TestStoreKeychainFailuresAreGenericAndNeverEchoBackend(t *testing.T) {
 	ctx := context.Background()
 	store, vault := newMemoryStore(t)
 	vault.fail = errors.New("synthetic backend detail account=api.example.test/global")
-	err := store.Save(ctx, "api.example.test", servicesecrets.ScopeGlobal, "", Record{Placeholder: "rheic-placeholder", Value: "v"})
+	err := store.Save(ctx, "api.example.test", servicesecrets.ScopeGlobal, "", Record{Placeholder: "gyrel-placeholder", Value: "v"})
 	if !errors.Is(err, ErrKeychain) || strings.Contains(err.Error(), "synthetic backend") {
 		t.Fatalf("save err = %v, want generic ErrKeychain", err)
 	}
@@ -129,7 +129,7 @@ func TestStoreKeychainFailuresAreGenericAndNeverEchoBackend(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := store.Save(canceled, "api.example.test", servicesecrets.ScopeGlobal, "", Record{Placeholder: "rheic-placeholder", Value: "v"}); !errors.Is(err, context.Canceled) {
+	if err := store.Save(canceled, "api.example.test", servicesecrets.ScopeGlobal, "", Record{Placeholder: "gyrel-placeholder", Value: "v"}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled save err = %v", err)
 	}
 }

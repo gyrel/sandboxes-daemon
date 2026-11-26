@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
-	"github.com/rheic/sandboxes-core/operation"
-	"github.com/rheic/sandboxes-core/sandbox"
+	core "github.com/gyrel/sandboxes-core"
+	"github.com/gyrel/sandboxes-core/operation"
+	"github.com/gyrel/sandboxes-core/sandbox"
 	_ "modernc.org/sqlite"
 )
 

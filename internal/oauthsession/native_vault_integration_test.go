@@ -10,7 +10,7 @@ import (
 )
 
 func TestNativeVaultSyntheticRoundTrip(t *testing.T) {
-	if os.Getenv("RHEIC_TEST_NATIVE_VAULT") != "1" {
+	if os.Getenv("GYREL_TEST_NATIVE_VAULT") != "1" {
 		t.Skip("native vault integration is opt-in")
 	}
 	var id [16]byte

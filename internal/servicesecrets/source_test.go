@@ -227,3 +227,11 @@ func FuzzValidateSourceReference(f *testing.F) {
 		_, _ = validateSource(Source{Reference: reference})
 	})
 }
+
+func TestDecodeSourceLegacyPrefix(t *testing.T) {
+	encoded := append([]byte(legacySecretSourcePrefix), []byte(`{"reference":"op://vault/item/sec","refresh":"on-demand"}`)...)
+	src, ok, err := decodeSource(encoded)
+	if err != nil || !ok || src.Reference != "op://vault/item/sec" {
+		t.Fatalf("legacy prefix decode: ok=%v err=%v src=%+v", ok, err, src)
+	}
+}

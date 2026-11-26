@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 	"log/slog"
 
-	"github.com/rheic/sandboxes-core/ids"
-	"github.com/rheic/sandboxes-runtime/ctr"
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/sandboxes-core/ids"
+	"github.com/gyrel/sandboxes-runtime/ctr"
+	"github.com/gyrel/slogx/events"
 )
 
 // emitJournalFinding only emits recognized recovery reasons; raw journal IDs,

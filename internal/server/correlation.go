@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/rheic/sandboxes-core/ids"
-	"github.com/rheic/slogx/events"
+	"github.com/gyrel/sandboxes-core/ids"
+	"github.com/gyrel/slogx/events"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -44,9 +44,9 @@ func correlationContext(ctx context.Context) context.Context {
 		}
 		return generate()
 	}
-	op := read("rheic-op-id", "op_", events.ObsIDRejectedFieldOpID, ids.NewOpID)
-	req := read("rheic-req-id", "req_", events.ObsIDRejectedFieldReqID, ids.NewReqID)
-	parent := read("rheic-parent-req-id", "req_", events.ObsIDRejectedFieldParentReqID, ids.NewReqID)
+	op := read("gyrel-op-id", "op_", events.ObsIDRejectedFieldOpID, ids.NewOpID)
+	req := read("gyrel-req-id", "req_", events.ObsIDRejectedFieldReqID, ids.NewReqID)
+	parent := read("gyrel-parent-req-id", "req_", events.ObsIDRejectedFieldParentReqID, ids.NewReqID)
 	ctx = ids.WithOpID(ctx, op)
 	ctx = ids.WithReqID(ctx, req)
 	return context.WithValue(ctx, parentRequestKey{}, parent)

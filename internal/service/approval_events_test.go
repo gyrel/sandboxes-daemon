@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
-	"github.com/rheic/sandboxes-core/ids"
-	"github.com/rheic/slogx/events"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
+	"github.com/gyrel/sandboxes-core/ids"
+	"github.com/gyrel/slogx/events"
 
-	"github.com/rheic/sandboxes-daemon/internal/approvals"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/approvals"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
 )
 
 func correlationContext() context.Context {
@@ -47,7 +47,7 @@ func TestApprovalRequestedEventTable(t *testing.T) {
 		}
 		emitApprovalRequested(ctx, entry, tc.provide)
 		got := output.String()
-		for _, want := range append(tc.want, `"event":"rheic.approval.requested"`, `"outcome":"ok"`) {
+		for _, want := range append(tc.want, `"event":"gyrel.approval.requested"`, `"outcome":"ok"`) {
 			if !strings.Contains(got, want) {
 				t.Fatalf("%s: missing %s in %s", tc.name, want, got)
 			}
@@ -81,7 +81,7 @@ func TestApprovalRespondedProviderMissingStillEmits(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 		got := output.String()
-		for _, want := range []string{`"event":"rheic.approval.responded"`, tc.want, `"result":"FAILED_PRECONDITION"`, `"outcome":"denied"`} {
+		for _, want := range []string{`"event":"gyrel.approval.responded"`, tc.want, `"result":"FAILED_PRECONDITION"`, `"outcome":"denied"`} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("provider-missing path missing %s in %s", want, got)
 			}
@@ -121,7 +121,7 @@ func TestApprovalRespondedDecisionTable(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := output.String()
-		for _, want := range append(tc.want, `"event":"rheic.approval.responded"`) {
+		for _, want := range append(tc.want, `"event":"gyrel.approval.responded"`) {
 			if !strings.Contains(got, want) {
 				t.Fatalf("%v: missing %s in %s", tc.decision, want, got)
 			}
@@ -145,7 +145,7 @@ func TestApprovalProviderRefusalRespondsDenied(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	got := output.String()
-	for _, want := range []string{`"event":"rheic.approval.responded"`, `"decision":"DENY"`, `"outcome":"denied"`, `"result":"ok"`} {
+	for _, want := range []string{`"event":"gyrel.approval.responded"`, `"decision":"DENY"`, `"outcome":"denied"`, `"result":"ok"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
 		}
@@ -168,8 +168,8 @@ func TestApprovalRequestedHostCommandFlow(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		`"event":"rheic.approval.requested"`, `"kind":"host_command"`, `"provider":"os"`,
-		`"event":"rheic.approval.responded"`, `"decision":"APPROVE"`, `"result":"ok"`,
+		`"event":"gyrel.approval.requested"`, `"kind":"host_command"`, `"provider":"os"`,
+		`"event":"gyrel.approval.responded"`, `"decision":"APPROVE"`, `"result":"ok"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
@@ -191,7 +191,7 @@ func TestApprovalRequestedCustomSecretSourceFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := output.String()
-	for _, want := range []string{`"event":"rheic.approval.requested"`, `"kind":"other"`, `"provider":"none"`} {
+	for _, want := range []string{`"event":"gyrel.approval.requested"`, `"kind":"other"`, `"provider":"none"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
 		}

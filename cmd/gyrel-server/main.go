@@ -21,7 +21,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/controlplane"
+	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
 )
 
 func main() {
@@ -59,7 +59,7 @@ type serverOptions struct {
 }
 
 func runServer(args []string) error {
-	flags := flag.NewFlagSet("rheic-server", flag.ContinueOnError)
+	flags := flag.NewFlagSet("gyrel-server", flag.ContinueOnError)
 	defaultDBPath, err := defaultDatabasePath()
 	if err != nil {
 		return err
@@ -98,6 +98,8 @@ func defaultDatabasePath() (string, error) {
 }
 
 func databasePathInConfigDir(configDir string) string {
+	// legacy-compat: see RENAME-MAP §2 — persisted server DB path under the
+	// legacy config directory; rename deferred for data-migration safety.
 	return filepath.Join(configDir, "rheic", "rheic-server.db")
 }
 
@@ -205,7 +207,7 @@ func loadTLSCertificate(certPath, keyPath string) (tls.Certificate, error) {
 }
 
 func generatePolicyKey(args []string) error {
-	flags := flag.NewFlagSet("rheic-server keygen", flag.ContinueOnError)
+	flags := flag.NewFlagSet("gyrel-server keygen", flag.ContinueOnError)
 	prefix := flags.String("prefix", "", "output prefix for .private and .public files")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -233,7 +235,7 @@ func generatePolicyKey(args []string) error {
 }
 
 func signPolicy(args []string) error {
-	flags := flag.NewFlagSet("rheic-server sign-policy", flag.ContinueOnError)
+	flags := flag.NewFlagSet("gyrel-server sign-policy", flag.ContinueOnError)
 	inputPath := flags.String("input", "", "unsigned policy payload JSON")
 	keyPath := flags.String("private-key", "", "offline Ed25519 private key file (mode 0600)")
 	outputPath := flags.String("output", "", "signed bundle output file; stdout when omitted")

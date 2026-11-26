@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
 )
 
 func TestSyntheticCodexThroughHelperAndBroker(t *testing.T) {
-	if os.Getenv("RHEIC_SYNTHETIC_CODEX") != "1" {
+	if os.Getenv("GYREL_SYNTHETIC_CODEX") != "1" {
 		t.Skip("requires an isolated container with Codex 0.165.0")
 	}
 	var calls, websocketCalls, upgradeAttempts atomic.Int32
@@ -35,7 +35,7 @@ func TestSyntheticCodexThroughHelperAndBroker(t *testing.T) {
 		}
 		if r.Method == http.MethodGet {
 			upgradeAttempts.Add(1)
-			if os.Getenv("RHEIC_SYNTHETIC_WS") == "1" {
+			if os.Getenv("GYREL_SYNTHETIC_WS") == "1" {
 				if err := serveSyntheticCodexWebSocket(w, r); err != nil {
 					t.Errorf("synthetic websocket: %v", err)
 					return
@@ -52,10 +52,10 @@ func TestSyntheticCodexThroughHelperAndBroker(t *testing.T) {
 		}
 		calls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"RHEIC_SYNTHETIC_OK\"}]}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"end_turn\":true}}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"GYREL_SYNTHETIC_OK\"}]}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"end_turn\":true}}\n\n")
 	}))
 	defer upstream.Close()
-	dir, err := os.MkdirTemp("/tmp", "rheic-codex-synthetic-")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-codex-synthetic-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,21 +83,21 @@ func TestSyntheticCodexThroughHelperAndBroker(t *testing.T) {
 	defer helper.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "codex", "-c", "openai_base_url=http://127.0.0.1:3128/backend-api/codex", "exec", "--skip-git-repo-check", "--ephemeral", "Reply RHEIC_SYNTHETIC_OK")
+	cmd := exec.CommandContext(ctx, "codex", "-c", "openai_base_url=http://127.0.0.1:3128/backend-api/codex", "exec", "--skip-git-repo-check", "--ephemeral", "Reply GYREL_SYNTHETIC_OK")
 	if err := os.Mkdir(filepath.Join(dir, "codex"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "CODEX_HOME=" + filepath.Join(dir, "codex"), "CODEX_API_KEY=rheic-proxy-placeholder", "NO_COLOR=1", "TERM=dumb"}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "CODEX_HOME=" + filepath.Join(dir, "codex"), "CODEX_API_KEY=gyrel-proxy-placeholder", "NO_COLOR=1", "TERM=dumb"}
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("codex: %v\n%s", err, output)
 	}
-	if !strings.Contains(string(output), "RHEIC_SYNTHETIC_OK") {
+	if !strings.Contains(string(output), "GYREL_SYNTHETIC_OK") {
 		t.Fatalf("output=%s", output)
 	}
 	mode := "http"
-	if os.Getenv("RHEIC_SYNTHETIC_WS") == "1" {
+	if os.Getenv("GYREL_SYNTHETIC_WS") == "1" {
 		mode = "websocket"
 		if websocketCalls.Load() < 1 || calls.Load() != 0 {
 			t.Fatalf("websocket=%d HTTP=%d output=%s", websocketCalls.Load(), calls.Load(), output)
@@ -116,7 +116,7 @@ func recordCodexTransportEvidence(t *testing.T, mode string, upgraded, httpRespo
 	line := fmt.Sprintf("CODEX_TRANSPORT_EVIDENCE transport=%s upgraded_streams=%d http_responses=%d upgrade_attempts=%d\n",
 		mode, upgraded, httpResponses, upgradeAttempts)
 	t.Logf("%s", strings.TrimSpace(line))
-	if path := os.Getenv("RHEIC_CODEX_TRANSPORT_EVIDENCE"); path != "" {
+	if path := os.Getenv("GYREL_CODEX_TRANSPORT_EVIDENCE"); path != "" {
 		if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
 			t.Fatalf("write transport evidence: %v", err)
 		}
@@ -168,7 +168,7 @@ func serveSyntheticCodexWebSocket(w http.ResponseWriter, r *http.Request) error 
 	if !strings.Contains(string(payload), "response.create") {
 		return fmt.Errorf("unexpected fixture frame")
 	}
-	for _, event := range []string{`{"type":"response.output_item.done","item":{"id":"msg_fixture","type":"message","role":"assistant","content":[{"type":"output_text","text":"RHEIC_SYNTHETIC_OK"}]}}`, `{"type":"response.completed","response":{"id":"resp_fixture","end_turn":true}}`} {
+	for _, event := range []string{`{"type":"response.output_item.done","item":{"id":"msg_fixture","type":"message","role":"assistant","content":[{"type":"output_text","text":"GYREL_SYNTHETIC_OK"}]}}`, `{"type":"response.completed","response":{"id":"resp_fixture","end_turn":true}}`} {
 		frame := []byte(event)
 		head := []byte{0x81}
 		if len(frame) < 126 {

@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/rheic/sandboxes-gateway/registryauth"
+	"github.com/gyrel/sandboxes-gateway/registryauth"
 )
 
 func TestExchangeTokenUsesSelectedCredential(t *testing.T) {

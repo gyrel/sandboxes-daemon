@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
 )
 
 func TestSecretWriteEventsRedactRecordMaterial(t *testing.T) {
@@ -20,7 +20,7 @@ func TestSecretWriteEventsRedactRecordMaterial(t *testing.T) {
 	ctx := context.Background()
 
 	store, vault := newMemoryStore(t)
-	record := Record{Placeholder: "rheic-placeholder-canary-9f3c", Value: "synthetic-value-canary-4e77"}
+	record := Record{Placeholder: "gyrel-placeholder-canary-9f3c", Value: "synthetic-value-canary-4e77"}
 	if err := store.Save(ctx, "api.example.test", servicesecrets.ScopeGlobal, "", record); err != nil {
 		t.Fatal(err)
 	}
@@ -33,13 +33,13 @@ func TestSecretWriteEventsRedactRecordMaterial(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		`"event":"rheic.secret.write"`, `"outcome":"ok"`, `"placeholder_issued":true`, `"vault_backend":"` + backend + `"`,
+		`"event":"gyrel.secret.write"`, `"outcome":"ok"`, `"placeholder_issued":true`, `"vault_backend":"` + backend + `"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
 		}
 	}
-	for _, canary := range []string{"rheic-placeholder-canary-9f3c", "synthetic-value-canary-4e77"} {
+	for _, canary := range []string{"gyrel-placeholder-canary-9f3c", "synthetic-value-canary-4e77"} {
 		if strings.Contains(got, canary) {
 			t.Fatalf("write event leaked %q: %s", canary, got)
 		}
@@ -51,7 +51,7 @@ func TestSecretWriteEventsRedactRecordMaterial(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	got = output.String()
-	for _, want := range []string{`"event":"rheic.secret.write"`, `"outcome":"failed"`, `"placeholder_issued":false`} {
+	for _, want := range []string{`"event":"gyrel.secret.write"`, `"outcome":"failed"`, `"placeholder_issued":false`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
 		}

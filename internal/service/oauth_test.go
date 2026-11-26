@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-core/sandbox"
+	"github.com/gyrel/sandboxes-core/sandbox"
 
-	"github.com/rheic/sandboxes-daemon/internal/oauthsession"
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/oauthsession"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestDeviceAccountLoginStoresAndLogoutRevokesHostTokens(t *testing.T) {
@@ -265,6 +265,7 @@ type registrySetFaultVault struct {
 }
 
 func (v *registrySetFaultVault) Set(ctx context.Context, service, account, value string) error {
+	// legacy-compat: see RENAME-MAP §2 — on-disk keychain service label.
 	if service == "com.rheic.registry-credentials.v1" {
 		v.registrySets++
 		if v.registrySets == v.failSetNumber {
@@ -460,6 +461,7 @@ func TestDockerHubPATLoginValidatesAndStoresOnlyPAT(t *testing.T) {
 		clear(credential.Password)
 	}
 	for key, value := range vault.values {
+		// legacy-compat: see RENAME-MAP §2 — on-disk keychain service label.
 		if strings.HasPrefix(key, "com.rheic.oauth.v1/") && (strings.Contains(value, "synthetic-bearer") || strings.Contains(value, "synthetic-pat")) {
 			t.Fatal("short-lived bearer or PAT was persisted in the OAuth account vault entry")
 		}

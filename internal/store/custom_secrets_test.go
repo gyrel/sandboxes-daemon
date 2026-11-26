@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	core "github.com/rheic/sandboxes-core"
+	core "github.com/gyrel/sandboxes-core"
 )
 
 func userVersion(t *testing.T, path string) int {

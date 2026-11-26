@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rheic/sandboxes-core/sandbox"
-	runtimeapi "github.com/rheic/sandboxes-runtime"
+	"github.com/gyrel/sandboxes-core/sandbox"
+	runtimeapi "github.com/gyrel/sandboxes-runtime"
 
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 func TestCreateProgressStoreRoundTrip(t *testing.T) {

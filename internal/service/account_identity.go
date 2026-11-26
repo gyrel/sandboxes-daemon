@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"github.com/rheic/sandboxes-daemon/internal/registrycredentials"
+	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
 )
 
 // AccountUsername returns the stored display label for a signed-in account.

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -96,7 +96,7 @@ func TestRunFileLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read daemon.log: %v", err)
 	}
-	for _, want := range []string{"daemon listening", "rheic.daemon.shutdown", `"flush_ok":true`} {
+	for _, want := range []string{"daemon listening", "gyrel.daemon.shutdown", `"flush_ok":true`} {
 		if !strings.Contains(string(content), want) {
 			t.Fatalf("daemon.log missing %q:\n%s", want, content)
 		}
@@ -367,7 +367,7 @@ func TestDaemonLifecycleEventsRedactConfigPaths(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	counts := map[string]int{"rheic.daemon.start": 0, "rheic.daemon.ready": 0, "rheic.daemon.shutdown": 0}
+	counts := map[string]int{"gyrel.daemon.start": 0, "gyrel.daemon.ready": 0, "gyrel.daemon.shutdown": 0}
 	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
 		var record map[string]any
 		if err := json.Unmarshal([]byte(line), &record); err != nil {

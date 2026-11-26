@@ -10,16 +10,16 @@ import (
 	"strings"
 	"time"
 
-	core "github.com/rheic/sandboxes-core"
+	core "github.com/gyrel/sandboxes-core"
 
-	localv1 "github.com/rheic/sandboxes-api/gen/go/sandboxes/local/v1"
-	"github.com/rheic/slogx/events"
+	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
+	"github.com/gyrel/slogx/events"
 
-	"github.com/rheic/sandboxes-daemon/internal/approvals"
-	"github.com/rheic/sandboxes-daemon/internal/customsecrets"
-	"github.com/rheic/sandboxes-daemon/internal/secretproxy"
-	"github.com/rheic/sandboxes-daemon/internal/servicesecrets"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/approvals"
+	"github.com/gyrel/sandboxes-daemon/internal/customsecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/secretproxy"
+	"github.com/gyrel/sandboxes-daemon/internal/servicesecrets"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 // ErrCustomSecretApprovalUnavailable reports that a reference or command source

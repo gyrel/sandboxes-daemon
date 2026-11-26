@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rheic/sandboxes-daemon/internal/controlplane"
-	"github.com/rheic/sandboxes-daemon/internal/policysync"
-	"github.com/rheic/sandboxes-daemon/internal/store"
+	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
+	"github.com/gyrel/sandboxes-daemon/internal/policysync"
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 )
 
 const testPolicySyncToken = "synthetic-policy-sync-token-000000000000000000000000000000"

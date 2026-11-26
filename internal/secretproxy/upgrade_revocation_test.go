@@ -142,7 +142,7 @@ func proxyHTTPStatus(t *testing.T, socket, path string) int {
 
 func TestPolicyRevisionClosesActiveUpgradeAndKeepsHTTPWorking(t *testing.T) {
 	fixture := newUpgradeFixture(t)
-	dir, err := os.MkdirTemp("/tmp", "rheic-upgrade-")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-upgrade-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestPolicyRevisionClosesActiveUpgradeAndKeepsHTTPWorking(t *testing.T) {
 
 func TestStreamRevocationIsSandboxScoped(t *testing.T) {
 	fixture := newUpgradeFixture(t)
-	dir, err := os.MkdirTemp("/tmp", "rheic-upgrade-")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-upgrade-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestStreamRevocationIsSandboxScoped(t *testing.T) {
 
 func TestUpgradeTrackingCleansUpWhenPeerCloses(t *testing.T) {
 	fixture := newUpgradeFixture(t)
-	dir, err := os.MkdirTemp("/tmp", "rheic-upgrade-")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-upgrade-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestShutdownRejectsConcurrentHijack(t *testing.T) {
 
 func TestCredentialRevocationClosesActiveUpgrade(t *testing.T) {
 	fixture := newUpgradeFixture(t)
-	dir, err := os.MkdirTemp("/tmp", "rheic-upgrade-")
+	dir, err := os.MkdirTemp("/tmp", "gyrel-upgrade-")
 	if err != nil {
 		t.Fatal(err)
 	}
