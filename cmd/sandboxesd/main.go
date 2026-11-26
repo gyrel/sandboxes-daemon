@@ -135,7 +135,7 @@ func run() int {
 	} else {
 		logger := slogx.New(
 			slogx.WithOutput(os.Stderr),
-			slogx.WithFormat(slogx.FormatText),
+			slogx.WithFormat(slogx.FormatJSON),
 			slogx.WithLevel(controller.Leveler().Level()),
 		)
 		slog.SetDefault(slog.New(&controlledHandler{Handler: logger.Handler(), level: controller.Leveler()}))
