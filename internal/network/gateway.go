@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gyrel/sandboxes-core/ids"
 	gateway "github.com/gyrel/sandboxes-gateway"
 	"github.com/gyrel/sandboxes-gateway/policy"
 	runtime "github.com/gyrel/sandboxes-runtime"
@@ -52,12 +53,15 @@ func (a *Adapter) start(ctx context.Context, sandbox string, ports []runtime.Por
 	for _, port := range ports {
 		policyPorts = append(policyPorts, policy.Port{Host: port.Host, Guest: port.Guest, Proto: port.Protocol, HostIP: port.HostIP})
 	}
+	opID, reqID := correlationIDs(ctx)
 	net, err := a.manager.Start(ctx, policy.Policy{
 		// The start policy uses the same monotonic generation as later
 		// reloads so an audit revision never jumps backwards.
 		Revision:  int(time.Now().UnixNano()),
 		SandboxID: sandbox,
 		AuditPath: filepath.Join(a.auditDir, sandbox+".audit.jsonl"),
+		OpID:      opID,
+		ReqID:     reqID,
 		Ports:     policyPorts,
 		Allow:     toPolicyRules(allow, policy.Allow),
 		Deny:      toPolicyRules(deny, policy.Deny),
@@ -120,10 +124,13 @@ func (a *Adapter) UpdatePolicy(ctx context.Context, sandbox string, ports []runt
 	for _, port := range ports {
 		policyPorts = append(policyPorts, policy.Port{Host: port.Host, Guest: port.Guest, Proto: port.Protocol, HostIP: port.HostIP})
 	}
+	opID, reqID := correlationIDs(ctx)
 	return a.manager.Reload(ctx, policy.Policy{
 		Revision:  revision,
 		SandboxID: sandbox,
 		AuditPath: filepath.Join(a.auditDir, sandbox+".audit.jsonl"),
+		OpID:      opID,
+		ReqID:     reqID,
 		Ports:     policyPorts,
 		Allow:     toPolicyRules(allow, policy.Allow),
 		Deny:      toPolicyRules(deny, policy.Deny),
@@ -161,6 +168,21 @@ func (a *Adapter) SetGitDaemon(ctx context.Context, sandbox string, enabled bool
 var _ runtime.NetworkAttester = (*Adapter)(nil)
 var _ runtime.Network = (*Adapter)(nil)
 var _ runtime.GitDaemonForwarder = (*Adapter)(nil)
+
+// correlationIDs returns the operation and request correlation ids carried by
+// ctx, validated against the canonical id charset. Invalid or absent ids are
+// returned empty so the gateway never stamps a fabricated or sanitized value:
+// its own renderer omits empty ids from the generated config.
+func correlationIDs(ctx context.Context) (op, req string) {
+	op, req = ids.FromContext(ctx)
+	if ids.Validate(op) != nil {
+		op = ""
+	}
+	if ids.Validate(req) != nil {
+		req = ""
+	}
+	return op, req
+}
 
 func toPolicyRules(rules []runtime.Rule, action policy.Action) []policy.Rule {
 	out := make([]policy.Rule, 0, len(rules))
