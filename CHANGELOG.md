@@ -49,6 +49,16 @@
 
 ## Unreleased
 
+### Added
+
+- Settings key `network.publish.allowedCIDRs` grants non-loopback host port
+  binds for exact CIDR prefixes (strict `net/netip` parsing, no host bits,
+  single-host `/32` and `/128` accepted). The default stays loopback-only; an
+  absent, empty, or malformed list fails closed with `BIND_FORBIDDEN`. Wildcard
+  bind requests (`0.0.0.0`, `::`) remain forbidden even under `0.0.0.0/0`.
+  Every granted non-loopback publish emits `gyrel.port.publish-granted`, stored
+  ports are re-authorized on each start, and the key is restart-required.
+
 ### Changed
 
 - Rename the brand from Rheic to Gyrel (breaking, pre-1.0 alpha policy): module

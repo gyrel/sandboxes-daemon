@@ -71,6 +71,7 @@ type options struct {
 	kitAllowedSources     []string
 	kitAllowLocalKits     bool
 	kitRequireSignature   bool
+	publishAllowedCIDRs   []string
 	policySyncURL         string
 	policySyncOrg         string
 	policySyncPublicKey   string
@@ -178,6 +179,7 @@ func run() int {
 		KitAllowedSources:        opts.kitAllowedSources,
 		KitAllowLocalKits:        opts.kitAllowLocalKits,
 		KitRequireSignature:      opts.kitRequireSignature,
+		PublishAllowedCIDRs:      opts.publishAllowedCIDRs,
 		Cleanup:                  cleanup,
 		OAuthProviders:           dockerOAuthProviders(),
 		DNSUpstream:              opts.dnsUpstream,
@@ -286,6 +288,7 @@ func (opts *options) applySettings(values *settings.Values) {
 	opts.kitAllowedSources = values.KitAllowedSources
 	opts.kitAllowLocalKits = values.KitAllowLocalKits
 	opts.kitRequireSignature = values.KitRequireSignature
+	opts.publishAllowedCIDRs = values.NetworkPublishAllowedCIDRs
 	opts.policySyncURL = values.PolicySyncURL
 	opts.policySyncOrg = values.PolicySyncOrg
 	opts.policySyncPublicKey = values.PolicySyncPublicKeyFile

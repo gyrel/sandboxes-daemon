@@ -132,13 +132,14 @@ func (s *Service) readyForExec(ctx context.Context, sb sandbox.Sandbox) (sandbox
 }
 
 func (s *Service) startForExec(ctx context.Context, sb sandbox.Sandbox) error {
-	handle, err := s.sandboxStartHandle(ctx, sb)
+	handle, grants, err := s.sandboxStartHandle(ctx, sb)
 	if err != nil {
 		return err
 	}
 	if err := s.backend.Start(ctx, handle); err != nil {
 		return s.markRuntimeUnknown(ctx, sb, err)
 	}
+	s.emitPublishGrants(ctx, sb.ID, grants)
 	if _, err := s.apply(ctx, sb, operation.KindStart, sandbox.Running); err != nil {
 		return s.markRuntimeUnknown(ctx, sb, err)
 	}

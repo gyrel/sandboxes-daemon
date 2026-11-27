@@ -15,6 +15,7 @@ import (
 
 	"github.com/gyrel/sandboxes-daemon/internal/controlplane"
 	"github.com/gyrel/sandboxes-daemon/internal/policysync"
+	"github.com/gyrel/sandboxes-daemon/internal/publishallow"
 	"github.com/gyrel/sandboxes-daemon/internal/registrycredentials"
 )
 
@@ -42,6 +43,10 @@ type Values struct {
 	RegistryPrivateRedirects []string
 	// RegistryPrivateCA is an optional host-side PEM bundle for a private CA.
 	RegistryPrivateCA string
+	// NetworkPublishAllowedCIDRs is the explicit operator grant that permits
+	// non-loopback host port binds. Absent or empty keeps loopback-only. Each
+	// entry is a canonical CIDR with host bits clear.
+	NetworkPublishAllowedCIDRs []string
 	// Kit policy settings. KitAllowedSources is a comma-separated list of
 	// source kinds (directory, zip, git, oci). Empty/absent uses the default
 	// directory+zip set. KitAllowLocalKits defaults to true.
@@ -68,6 +73,17 @@ const (
 	logMaxSizeMiBMax  = 4096
 	logMaxFilesMax    = 256
 	logTotalCapMiBMax = 65536
+)
+
+// Keys that appear in both the parse dispatch and the metadata catalog.
+const (
+	settingDefaultCPUs              = "default_cpus"
+	settingRegistryDockerGrants     = "registry_docker_grants"
+	settingRegistryPrivateHost      = "registry_private_host"
+	settingRegistryPrivateService   = "registry_private_service"
+	settingRegistryPrivateRealms    = "registry_private_realms"
+	settingRegistryPrivateRedirects = "registry_private_redirects"
+	settingRegistryPrivateCA        = "registry_private_ca"
 )
 
 // DefaultPath returns ~/.config/rheic/settings.toml, honoring XDG_CONFIG_HOME.
@@ -118,6 +134,7 @@ func Load(path string) (Values, error) {
 	return values, nil
 }
 
+//nolint:cyclop // flat per-key validation dispatch; helpers own the individual checks.
 func validateValues(values *Values) error {
 	if values.DNSUpstream != "" {
 		host, port, err := net.SplitHostPort(values.DNSUpstream)
@@ -151,7 +168,22 @@ func validateValues(values *Values) error {
 	if err := validateLogRotation(values); err != nil {
 		return err
 	}
+	if err := validatePublishAllowlist(values); err != nil {
+		return err
+	}
 	return validateRegistryPrivate(values)
+}
+
+func validatePublishAllowlist(values *Values) error {
+	if len(values.NetworkPublishAllowedCIDRs) == 0 {
+		return nil
+	}
+	allow, err := publishallow.Parse(values.NetworkPublishAllowedCIDRs)
+	if err != nil {
+		return fmt.Errorf("settings %s: %w", publishallow.SettingKey, err)
+	}
+	values.NetworkPublishAllowedCIDRs = allow.Strings()
+	return nil
 }
 
 func validateLogRotation(values *Values) error {
@@ -292,7 +324,7 @@ func parse(r io.Reader, values *Values) error {
 			}
 		case "default_policy_profile":
 			values.DefaultPolicyProfile = value
-		case "default_cpus", "default_memory_mib":
+		case settingDefaultCPUs, "default_memory_mib":
 			if err := parseDefaultResource(values, key, value); err != nil {
 				return fmt.Errorf("settings line %d: %w", lineNumber, err)
 			}
@@ -323,20 +355,26 @@ func parse(r io.Reader, values *Values) error {
 				return fmt.Errorf("settings line %d: %w", lineNumber, err)
 			}
 			values.PolicySyncInterval = interval
-		case "registry_docker_grants", "registry_private_grants":
+		case settingRegistryDockerGrants, "registry_private_grants":
 			grants, parseErr := parseRepositoryGrants(value)
 			if parseErr != nil {
 				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
 			}
-			if key == "registry_docker_grants" {
+			if key == settingRegistryDockerGrants {
 				values.RegistryDockerGrants = grants
 			} else {
 				values.RegistryPrivateGrants = grants
 			}
-		case "registry_private_host", "registry_private_service", "registry_private_realms", "registry_private_redirects", "registry_private_ca":
+		case settingRegistryPrivateHost, settingRegistryPrivateService, settingRegistryPrivateRealms, settingRegistryPrivateRedirects, settingRegistryPrivateCA:
 			if err := parseRegistryPrivateSetting(values, key, value); err != nil {
 				return fmt.Errorf("settings line %d: %w", lineNumber, err)
 			}
+		case "network.publish.allowedCIDRs", "network.publish.allowed_cidrs":
+			allow, parseErr := publishallow.ParseJSON(value)
+			if parseErr != nil {
+				return fmt.Errorf("settings line %d: %w", lineNumber, parseErr)
+			}
+			values.NetworkPublishAllowedCIDRs = allow.Strings()
 		case "kit.allowed_sources", "kit.allowedSources":
 			sources, parseErr := parseKitAllowedSources(value)
 			if parseErr != nil {
@@ -408,23 +446,23 @@ func parseRepositoryGrants(value string) ([]string, error) {
 
 func parseRegistryPrivateSetting(values *Values, key, value string) error {
 	switch key {
-	case "registry_private_host":
+	case settingRegistryPrivateHost:
 		values.RegistryPrivateHost = strings.ToLower(strings.TrimSpace(value))
-	case "registry_private_service":
+	case settingRegistryPrivateService:
 		values.RegistryPrivateService = strings.TrimSpace(value)
-	case "registry_private_realms":
+	case settingRegistryPrivateRealms:
 		realms, err := parseRegistryRealms(value)
 		if err != nil {
 			return err
 		}
 		values.RegistryPrivateRealms = realms
-	case "registry_private_redirects":
+	case settingRegistryPrivateRedirects:
 		redirects, err := parseRegistryHostList(value)
 		if err != nil {
 			return err
 		}
 		values.RegistryPrivateRedirects = redirects
-	case "registry_private_ca":
+	case settingRegistryPrivateCA:
 		values.RegistryPrivateCA = strings.TrimSpace(value)
 	}
 	return nil
@@ -435,7 +473,7 @@ func parseDefaultResource(values *Values, key, value string) error {
 	if err != nil {
 		return err
 	}
-	if key == "default_cpus" {
+	if key == settingDefaultCPUs {
 		if parsed > 64 {
 			return errors.New("default_cpus must be at most 64")
 		}
