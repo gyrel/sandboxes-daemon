@@ -102,6 +102,22 @@ func TestRedactionHarnessWindowsCoverage(t *testing.T) {
 			wantClean: true,
 		},
 		{
+			// The CI Windows runner exposes its temp root as an 8.3 short
+			// path (RUNNER~1). The tilde must stay inside the path token or
+			// every allow region truncates before the long entropy run in
+			// the subtest directory name.
+			name:      "windows 8.3 short-name root covers entropy descendant",
+			data:      "workspace=C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\TestRedactionHarnesscreate-workspace-root3240923096\\001",
+			allowRoot: `C:\Users\RUNNER~1\AppData\Local\Temp\TestRedactionHarnesscreate-workspace-root3240923096\001`,
+			wantClean: true,
+		},
+		{
+			name:      "windows 8.3 short-name root json-escaped spelling covered",
+			data:      `{"Path":"C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\TestRedactionHarnesscreate-workspace-root3240923096\\001"}`,
+			allowRoot: `C:\Users\RUNNER~1\AppData\Local\Temp\TestRedactionHarnesscreate-workspace-root3240923096\001`,
+			wantClean: true,
+		},
+		{
 			name:      "windows host prefix outside allow root",
 			data:      `{"workspace":"` + windowsRoot + `"}`,
 			allowRoot: otherRoot,
