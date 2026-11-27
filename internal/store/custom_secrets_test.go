@@ -45,7 +45,7 @@ func TestCustomSecretMigrationUpgradesV6WithBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.db.ExecContext(ctx, `DROP TABLE custom_secret_index`); err != nil {
+	if _, err := st.db.ExecContext(ctx, `ALTER TABLE sandboxes DROP COLUMN owner_uid; ALTER TABLE sandboxes DROP COLUMN install_id; DROP TABLE custom_secret_index`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.ExecContext(ctx, `PRAGMA user_version = 6`); err != nil {
@@ -60,8 +60,8 @@ func TestCustomSecretMigrationUpgradesV6WithBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = upgraded.Close() }()
-	if got := userVersion(t, path); got != 7 {
-		t.Fatalf("schema version = %d, want 7", got)
+	if got := userVersion(t, path); got != schemaVersion {
+		t.Fatalf("schema version = %d, want latest", got)
 	}
 	if !tableExists(t, path, "custom_secret_index") {
 		t.Fatal("custom_secret_index was not created")

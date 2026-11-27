@@ -5,7 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
+
+	"google.golang.org/grpc/metadata"
+
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+
+	"github.com/gyrel/sandboxes-daemon/internal/machinecode"
 
 	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 	apiversion "github.com/gyrel/sandboxes-api/version"
@@ -513,12 +520,12 @@ func (s *RegistryCredentialServer) Logout(ctx context.Context, req *localv1.Regi
 // Create creates a sandbox.
 func (s *SandboxServer) Create(ctx context.Context, req *localv1.CreateRequest) (*localv1.CreateResponse, error) {
 	if len(req.GetOauthCredentials()) != 0 {
-		return nil, status.Error(codes.FailedPrecondition, "custom kit OAuth interception is not enabled by this daemon")
+		return nil, refusalStatus(machinecode.PolicyDeny, codes.FailedPrecondition, "custom kit OAuth interception is not enabled by this daemon")
 	}
 	allow := fromProtoRules(req.GetAllow())
 	deny := fromProtoRules(req.GetDeny())
 	if len(allow) != len(req.GetAllow()) || len(deny) != len(req.GetDeny()) {
-		return nil, status.Error(codes.InvalidArgument, "network rules must have valid ports")
+		return nil, refusalStatus(machinecode.SpecInvalid, codes.InvalidArgument, "network rules must have valid ports")
 	}
 	op, err := s.svc.Create(ctx, service.CreateRequest{
 		Name:           req.GetName(),
@@ -540,7 +547,7 @@ func (s *SandboxServer) Create(ctx context.Context, req *localv1.CreateRequest) 
 		Skills:         fromProtoSkills(req.GetSkills()),
 	})
 	if err != nil {
-		return nil, mapError(err)
+		return nil, mapVerbError(err)
 	}
 	return &localv1.CreateResponse{Operation: toProtoOperation(op)}, nil
 }
@@ -556,12 +563,17 @@ func (s *SandboxServer) Get(ctx context.Context, req *localv1.GetRequest) (*loca
 
 // List returns a page of sandboxes.
 func (s *SandboxServer) List(ctx context.Context, req *localv1.ListRequest) (*localv1.ListResponse, error) {
-	items, next, err := s.svc.List(ctx, sandbox.ListOptions{
+	items, next, hidden, err := s.svc.ListWithHiddenCount(ctx, sandbox.ListOptions{
 		PageSize:  int(req.GetPageSize()),
 		PageToken: req.GetPageToken(),
 	})
 	if err != nil {
-		return nil, mapError(err)
+		return nil, mapVerbError(err)
+	}
+	if hidden > 0 && grpc.ServerTransportStreamFromContext(ctx) != nil {
+		if err := grpc.SetHeader(ctx, metadata.Pairs("sandbox-hidden-count", strconv.Itoa(hidden))); err != nil {
+			return nil, mapVerbError(err)
+		}
 	}
 	resp := &localv1.ListResponse{NextPageToken: next, Items: make([]*localv1.Sandbox, 0, len(items))}
 	for i := range items {
@@ -582,11 +594,11 @@ func (s *SandboxServer) Start(ctx context.Context, req *localv1.StartRequest) (*
 // Stop stops a sandbox.
 func (s *SandboxServer) Stop(ctx context.Context, req *localv1.StopRequest) (*localv1.StopResponse, error) {
 	if req.GetGraceSeconds() < 0 || req.GetGraceSeconds() > 3600 {
-		return nil, status.Error(codes.InvalidArgument, "grace_seconds must be between 0 and 3600")
+		return nil, refusalStatus(machinecode.SpecInvalid, codes.InvalidArgument, "grace_seconds must be between 0 and 3600")
 	}
 	op, err := s.svc.StopWithGrace(ctx, req.GetId(), time.Duration(req.GetGraceSeconds())*time.Second)
 	if err != nil {
-		return nil, mapError(err)
+		return nil, mapVerbError(err)
 	}
 	return &localv1.StopResponse{Operation: toProtoOperation(op)}, nil
 }
@@ -613,7 +625,7 @@ func (s *SandboxServer) MutatePolicy(ctx context.Context, req *localv1.MutatePol
 func (s *SandboxServer) UpdatePorts(ctx context.Context, req *localv1.UpdatePortsRequest) (*localv1.UpdatePortsResponse, error) {
 	sb, err := s.svc.UpdatePorts(ctx, req.GetId(), fromProtoPorts(req.GetPorts()))
 	if err != nil {
-		return nil, mapError(err)
+		return nil, mapVerbError(err)
 	}
 	return &localv1.UpdatePortsResponse{Sandbox: toProtoSandbox(sb)}, nil
 }
@@ -622,7 +634,7 @@ func (s *SandboxServer) UpdatePorts(ctx context.Context, req *localv1.UpdatePort
 func (s *SandboxServer) Delete(ctx context.Context, req *localv1.DeleteRequest) (*localv1.DeleteResponse, error) {
 	op, err := s.svc.Delete(ctx, req.GetId(), req.GetForce())
 	if err != nil {
-		return nil, mapError(err)
+		return nil, mapVerbError(err)
 	}
 	return &localv1.DeleteResponse{Operation: toProtoOperation(op)}, nil
 }
@@ -765,7 +777,44 @@ func (s *SandboxServer) SetPolicyProfile(ctx context.Context, req *localv1.SetPo
 	return &localv1.SetPolicyProfileResponse{Profile: profile}, nil
 }
 
+func refusalStatus(reason machinecode.Code, code codes.Code, message string) error {
+	st := status.New(code, message)
+	detailed, err := st.WithDetails(&errdetails.ErrorInfo{Domain: "sandboxes.gyrel", Reason: string(reason)})
+	if err != nil {
+		return status.Errorf(code, "%s: %s", reason, message)
+	}
+	return detailed.Err()
+}
+
+// mapVerbError preserves the legacy transport status and message. When a
+// service failure carries no more specific reason, its outcome is unknown.
+func mapVerbError(err error) error {
+	if err == nil {
+		return nil
+	}
+	mapped := legacyStatus(err)
+	reason, ok := machinecode.Of(err)
+	if !ok {
+		switch {
+		case errors.Is(err, core.ErrNotFound):
+			reason = machinecode.NotFound
+		case errors.Is(err, core.ErrConflict):
+			reason = machinecode.SpecInvalid
+		default:
+			reason = machinecode.UnknownState
+		}
+	}
+	return refusalStatus(reason, status.Code(mapped), err.Error())
+}
+
 func mapError(err error) error {
+	if reason, ok := machinecode.Of(err); ok {
+		return refusalStatus(reason, status.Code(legacyStatus(err)), err.Error())
+	}
+	return legacyStatus(err)
+}
+
+func legacyStatus(err error) error {
 	switch {
 	case err == nil:
 		return nil

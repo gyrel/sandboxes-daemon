@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/gyrel/sandboxes-daemon/internal/store"
 
 	runtime "github.com/gyrel/sandboxes-runtime"
 	"github.com/gyrel/sandboxes-runtime/ctr"
@@ -43,7 +46,12 @@ func TestRecoverRuntimeJournalNoCapability(t *testing.T) {
 
 func TestRecoverRuntimeJournalSummarizesAndPropagates(t *testing.T) {
 	boom := errors.New("state dir unreadable")
-	svc := &Service{backend: recoveringBackend{
+	st, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "sandboxes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc := &Service{store: st, backend: recoveringBackend{
 		findings: []ctr.JournalFinding{{ID: "gyrel-dev", Reason: "foreign"}},
 		err:      boom,
 	}}

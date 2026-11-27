@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gyrel/sandboxes-daemon/internal/ownership"
+
 	core "github.com/gyrel/sandboxes-core"
 	"github.com/gyrel/sandboxes-core/operation"
 	"github.com/gyrel/sandboxes-core/sandbox"
@@ -3942,7 +3944,7 @@ func TestValidSandboxNameMatchesSbxRules(t *testing.T) {
 		strings.Repeat("a", 64): false,
 	}
 	for name, want := range cases {
-		if got := validSandboxName(name); got != want {
+		if got := ownership.ValidName(name); got != want {
 			t.Fatalf("validSandboxName(%q) = %t, want %t", name, got, want)
 		}
 	}
