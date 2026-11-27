@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.108 — 2026-11-28
+
+### Added
+
+- Settings key `network.publish.allowedCIDRs` grants non-loopback host port
+  binds for exact CIDR prefixes (strict `net/netip` parsing, no host bits,
+  single-host `/32` and `/128` accepted). The default stays loopback-only; an
+  absent, empty, or malformed list fails closed with `BIND_FORBIDDEN`. Wildcard
+  bind requests (`0.0.0.0`, `::`) remain forbidden even under `0.0.0.0/0`.
+  Every granted non-loopback publish emits `gyrel.port.publish-granted`, stored
+  ports are re-authorized on each start, and the key is restart-required.
+
 ## v0.0.107 — 2026-11-28
 
 ### Fixed
@@ -48,16 +60,6 @@
 - Write structured JSON daemon logs so the diagnostic archive guard can distinguish startup field names from their digest values.
 
 ## Unreleased
-
-### Added
-
-- Settings key `network.publish.allowedCIDRs` grants non-loopback host port
-  binds for exact CIDR prefixes (strict `net/netip` parsing, no host bits,
-  single-host `/32` and `/128` accepted). The default stays loopback-only; an
-  absent, empty, or malformed list fails closed with `BIND_FORBIDDEN`. Wildcard
-  bind requests (`0.0.0.0`, `::`) remain forbidden even under `0.0.0.0/0`.
-  Every granted non-loopback publish emits `gyrel.port.publish-granted`, stored
-  ports are re-authorized on each start, and the key is restart-required.
 
 ### Changed
 
