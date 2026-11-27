@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.105 — 2026-11-27
+
+### Security
+
+- Sandbox inventory rows now carry persisted ownership (`owner_uid` + `install_id`,
+  schema v8, backfilled in the migration transaction). A single classifier gates
+  Get/List/Stop/Delete/UpdatePorts/reconcile: foreign or malformed records refuse
+  with stable machine codes (`NOT_OWNED`, `PATH_ESCAPE`, `UNKNOWN_STATE`); a
+  database file copied to another installation fails closed for every row.
+  List reports hidden-row counts via the `sandbox-hidden-count` response header.
+- Refusals across the eight verb RPC paths attach stable reason codes carried in
+  `google.rpc.ErrorInfo` alongside legacy gRPC codes.
+
 ## v0.0.104 — 2026-11-26
 
 ### Fixed
