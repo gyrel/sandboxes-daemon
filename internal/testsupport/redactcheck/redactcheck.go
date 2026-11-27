@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -95,7 +96,10 @@ var secretRules = []secretRule{
 }
 
 var (
-	base64Run = regexp.MustCompile(`[A-Za-z0-9+/=_-]{40,}`)
+	// Padding is allowed only at the end so a key=value label in front of a
+	// path does not become part of the base64 run. This keeps a path match
+	// starting at the path itself, where allow-root offset coverage applies.
+	base64Run = regexp.MustCompile(`[A-Za-z0-9+/_-]{40,}={0,2}`)
 	absPath   = regexp.MustCompile(`(?:^|[\s"'` + "`" + `=:,;(\[{])((?:/[A-Za-z0-9._@+%-]+)+/?)`)
 )
 
@@ -108,6 +112,9 @@ var knownHostPrefixes = []struct {
 	{RuleGyrelTempPath, "/tmp/gyrel-"},
 	{RulePrivatePath, "/private/"},
 	{RuleHomePath, "/home/"},
+	// Windows profile roots. The drive-letter comparison is folded so a path
+	// produced with a lowercase drive (c:\users\...) is still recognized.
+	{RuleUsersPath, `C:\Users\`},
 }
 
 type span struct {
@@ -120,7 +127,12 @@ type scanner struct {
 	opts     Options
 	findings []Finding
 	spans    []span
-	seen     map[string]struct{}
+	// allowSpans cover every representation of Options.AllowRoot. Findings
+	// that are not host-path rules are suppressed when their offset falls in
+	// one of these spans; host-path findings keep the exact-root allowlist
+	// semantics enforced by allowed.
+	allowSpans []span
+	seen       map[string]struct{}
 }
 
 // ScanString scans text. It is the string form of Scan.
@@ -139,6 +151,7 @@ func Scan(data []byte, opts Options) []Finding {
 		opts: normalizeOptions(opts),
 		seen: make(map[string]struct{}),
 	}
+	s.markAllowRootSpans()
 	s.findKnownHostPaths()
 	s.findGenericHostPaths()
 	s.findSecrets()
@@ -197,6 +210,56 @@ func trimRoot(root string) string {
 	return strings.TrimRight(root, "/")
 }
 
+// markAllowRootSpans records every occurrence of the test-owned allow root in
+// each separator spelling. It runs before any detection rule so entropy and
+// secret matches that fall inside those bytes can be discarded instead of
+// relying on a platform-specific prefix list.
+func (s *scanner) markAllowRootSpans() {
+	root := s.opts.AllowRoot
+	if root == "" {
+		return
+	}
+	variants := []string{root, filepath.ToSlash(root), filepath.FromSlash(root)}
+	seen := make(map[string]struct{}, len(variants))
+	for _, variant := range variants {
+		if variant == "" {
+			continue
+		}
+		if _, ok := seen[variant]; ok {
+			continue
+		}
+		seen[variant] = struct{}{}
+		needle := []byte(variant)
+		for start := 0; start < len(s.data); {
+			index := bytes.Index(s.data[start:], needle)
+			if index < 0 {
+				break
+			}
+			begin := start + index
+			s.allowSpans = append(s.allowSpans, span{start: begin, end: begin + len(needle)})
+			start = begin + len(needle)
+		}
+	}
+}
+
+func (s *scanner) inAllowSpan(offset int) bool {
+	for _, covered := range s.allowSpans {
+		if offset >= covered.start && offset < covered.end {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *scanner) allowSpanContains(start, end int) bool {
+	for _, covered := range s.allowSpans {
+		if start >= covered.start && end <= covered.end {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *scanner) findKnownHostPaths() {
 	if s.opts.HomeDir != "" {
 		s.findPrefix(RuleUserHome, s.opts.HomeDir)
@@ -211,12 +274,13 @@ func (s *scanner) findPrefix(rule, prefix string) {
 		return
 	}
 	needle := []byte(prefix)
+	fold := driveLetterPrefix(prefix)
 	for start := 0; start < len(s.data); {
-		index := bytes.Index(s.data[start:], needle)
+		index := indexPrefix(s.data, needle, start, fold)
 		if index < 0 {
 			return
 		}
-		offset := start + index
+		offset := index
 		path, end := readPath(s.data, offset)
 		if path == "" {
 			start = offset + len(needle)
@@ -233,6 +297,47 @@ func (s *scanner) findPrefix(rule, prefix string) {
 		}
 		start = end
 	}
+}
+
+func indexPrefix(data, needle []byte, start int, fold bool) int {
+	if !fold {
+		index := bytes.Index(data[start:], needle)
+		if index < 0 {
+			return -1
+		}
+		return start + index
+	}
+	if len(needle) == 0 || start < 0 || start+len(needle) > len(data) {
+		return -1
+	}
+	for i := start; i <= len(data)-len(needle); i++ {
+		matched := true
+		for j := range needle {
+			if foldASCII(data[i+j]) != foldASCII(needle[j]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return i
+		}
+	}
+	return -1
+}
+
+func driveLetterPrefix(prefix string) bool {
+	return len(prefix) >= 2 && prefix[1] == ':' && isASCIIAlpha(prefix[0])
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+func foldASCII(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }
 
 func (s *scanner) findGenericHostPaths() {
@@ -259,7 +364,10 @@ func (s *scanner) findSecrets() {
 		if !mixedCaseAndDigits(s.data[match[0]:match[1]]) {
 			continue
 		}
-		if s.covered(match[0], match[1]) {
+		// Suppress only runs fully contained in an exact test-owned allow-root
+		// span. A run that continues past the covered root is still reported,
+		// so a token appended to the root cannot hide inside it.
+		if s.allowSpanContains(match[0], match[1]) {
 			continue
 		}
 		s.add(RuleHighEntropyB64, match[0])
@@ -267,6 +375,14 @@ func (s *scanner) findSecrets() {
 }
 
 func (s *scanner) add(rule string, offset int) {
+	// Secret-shaped matches inside the exact test-owned temp root are false
+	// positives produced by the root's own spelling. High-entropy runs use
+	// allowSpanContains instead, so a run crossing the root boundary is not
+	// hidden. Host-path rules keep allowed's exact-root semantics so a
+	// descendant remains a finding.
+	if rule != RuleHighEntropyB64 && !hostPathRule(rule) && s.inAllowSpan(offset) {
+		return
+	}
 	key := fmt.Sprintf("%s:%d", rule, offset)
 	if _, exists := s.seen[key]; exists {
 		return
@@ -277,6 +393,15 @@ func (s *scanner) add(rule string, offset int) {
 		Line:   1 + bytes.Count(s.data[:offset], []byte{'\n'}),
 		Offset: int64(offset),
 	})
+}
+
+func hostPathRule(rule string) bool {
+	switch rule {
+	case RuleUserHome, RuleUsersPath, RuleVarFoldersPath, RuleGyrelTempPath, RulePrivatePath, RuleHomePath, RuleAbsolutePath:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *scanner) allowed(path string) bool {
@@ -325,7 +450,9 @@ func cleanPath(path string) string {
 
 func pathStop(b byte) bool {
 	switch b {
-	case 0, ' ', '\t', '\n', '\r', '\v', '\f', '"', '\'', '`', '<', '>', '(', ')', '[', ']', '{', '}', ',', ';', '\\':
+	// Backslash is a path separator on Windows, not a terminator. Treating it
+	// as ordinary path data lets a C:\... path scan as one unit.
+	case 0, ' ', '\t', '\n', '\r', '\v', '\f', '"', '\'', '`', '<', '>', '(', ')', '[', ']', '{', '}', ',', ';':
 		return true
 	default:
 		return false
