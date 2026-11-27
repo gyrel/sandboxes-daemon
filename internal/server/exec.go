@@ -5,11 +5,12 @@ import (
 	"errors"
 	"io"
 
+	"github.com/gyrel/sandboxes-daemon/internal/machinecode"
+
 	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 	runtime "github.com/gyrel/sandboxes-runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type execResult struct {
@@ -20,7 +21,7 @@ type execResult struct {
 // Exec streams a non-interactive command's output with bounded backpressure.
 func (s *SandboxServer) Exec(req *localv1.ExecRequest, stream grpc.ServerStreamingServer[localv1.ExecResponse]) error {
 	if req.GetSandboxId() == "" || len(req.GetArgv()) == 0 || len(req.GetArgv()) > 256 {
-		return status.Error(codes.InvalidArgument, "sandbox ID and command are required")
+		return refusalStatus(machinecode.SpecInvalid, codes.InvalidArgument, "sandbox ID and command are required")
 	}
 	frames := make(chan *localv1.ExecResponse, 4)
 	result := make(chan execResult, 1)
@@ -52,10 +53,10 @@ func (s *SandboxServer) Exec(req *localv1.ExecRequest, stream grpc.ServerStreami
 
 func finishExecStream(stream grpc.ServerStreamingServer[localv1.ExecResponse], res execResult) error {
 	if res.err != nil {
-		return mapError(res.err)
+		return mapVerbError(res.err)
 	}
 	if res.code < 0 || res.code > 255 {
-		return status.Error(codes.Internal, "invalid guest exit status")
+		return refusalStatus(machinecode.UnknownState, codes.Internal, "invalid guest exit status")
 	}
 	return stream.Send(&localv1.ExecResponse{Frame: &localv1.ExecResponse_ExitCode{ExitCode: int32(res.code)}})
 }

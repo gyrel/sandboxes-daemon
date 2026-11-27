@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gyrel/sandboxes-daemon/internal/machinecode"
+
 	core "github.com/gyrel/sandboxes-core"
 	"github.com/gyrel/sandboxes-core/operation"
 	"github.com/gyrel/sandboxes-core/sandbox"
@@ -41,7 +43,7 @@ func (s *Service) exec(ctx context.Context, id string, req runtime.ExecRequest, 
 	executor, ok := s.backend.(runtime.Executor)
 	if !ok {
 		release()
-		return 0, fmt.Errorf("%w: runtime does not support exec", core.ErrConflict)
+		return 0, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: runtime does not support exec", core.ErrConflict))
 	}
 	sb, err = s.readyForExec(ctx, sb)
 	if err != nil {
@@ -73,7 +75,7 @@ func (s *Service) exec(ctx context.Context, id string, req runtime.ExecRequest, 
 		s.execMu.Unlock()
 		release()
 		cancel()
-		return 0, fmt.Errorf("%w: too many active exec sessions", core.ErrConflict)
+		return 0, machinecode.Attach(machinecode.QuotaExceeded, fmt.Errorf("%w: too many active exec sessions", core.ErrConflict))
 	}
 	if s.execSessions[id] == nil {
 		s.execSessions[id] = make(map[*execSession]struct{})
@@ -100,7 +102,7 @@ func (s *Service) runSession(ctx context.Context, executor runtime.Executor, han
 	}
 	native, ok := s.backend.(runtime.InteractiveExecutor)
 	if !ok {
-		return 0, fmt.Errorf("%w: runtime does not support interactive exec", core.ErrConflict)
+		return 0, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: runtime does not support interactive exec", core.ErrConflict))
 	}
 	interactive.ExecRequest = req
 	return native.ExecInteractive(ctx, handle, *interactive)
@@ -117,7 +119,7 @@ func (s *Service) readyForExec(ctx context.Context, sb sandbox.Sandbox) (sandbox
 		}
 		sb = updated
 	} else if sb.State != sandbox.Running {
-		return sandbox.Sandbox{}, fmt.Errorf("%w: sandbox is not ready for exec", core.ErrConflict)
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.Busy, fmt.Errorf("%w: sandbox is not ready for exec", core.ErrConflict))
 	}
 	if sb.Meta == nil {
 		sb.Meta = &sandbox.Meta{}
@@ -150,7 +152,7 @@ func (s *Service) runExec(ctx context.Context, fallback runtime.Executor, handle
 	if len(req.Env) > 0 || req.User != "" {
 		native, ok := s.backend.(runtime.NativeExecutor)
 		if !ok {
-			return 0, fmt.Errorf("%w: runtime does not support exec environment or user overrides", core.ErrConflict)
+			return 0, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: runtime does not support exec environment or user overrides", core.ErrConflict))
 		}
 		return native.ExecNative(ctx, handle, req)
 	}
@@ -205,7 +207,7 @@ func (s *Service) resolveSecretEnv(ctx context.Context, sb sandbox.Sandbox, env 
 
 func (s *Service) resolveEnvEntry(ctx context.Context, sb sandbox.Sandbox, key, value string) (string, string, error) {
 	if strings.Contains(value, secretRefPrefix) {
-		return "", "", fmt.Errorf("%w: secret environment references expose credentials to guest processes; use a supported host proxy route", core.ErrConflict)
+		return "", "", machinecode.Attach(machinecode.PolicyDeny, fmt.Errorf("%w: secret environment references expose credentials to guest processes; use a supported host proxy route", core.ErrConflict))
 	}
 	if strings.Contains(value, proxyRefPrefix) || strings.Contains(value, oauthRefPrefix) {
 		return s.resolveProxyEnvEntry(ctx, sb, key, value)
@@ -219,15 +221,15 @@ func (s *Service) resolveProxyEnvEntry(ctx context.Context, sb sandbox.Sandbox, 
 		if err == nil {
 			err = fmt.Errorf("%w: invalid proxy reference for %s", core.ErrConflict, key)
 		}
-		return "", "", err
+		return "", "", machinecode.Attach(machinecode.EnvInvalid, err)
 	}
 	contract, ok := proxyContract(name)
 	if !ok || key != contract.credentialEnv {
-		return "", "", fmt.Errorf("%w: proxy reference is not supported for %s", core.ErrConflict, key)
+		return "", "", machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: proxy reference is not supported for %s", core.ErrConflict, key))
 	}
 	configuredValue, err := s.store.GetSetting(ctx, proxyServiceSettingKey(sb.ID))
 	if err != nil || !containsString(decodeProxyServices(configuredValue), name) {
-		return "", "", fmt.Errorf("%w: sandbox was not created with the %s proxy channel", core.ErrConflict, name)
+		return "", "", machinecode.Attach(machinecode.PolicyDeny, fmt.Errorf("%w: sandbox was not created with the %s proxy channel", core.ErrConflict, name))
 	}
 	return key + "=gyrel-proxy-placeholder", name, nil
 }
@@ -236,12 +238,12 @@ func (s *Service) finishProxyEnv(ctx context.Context, sb sandbox.Sandbox, env, o
 	for _, serviceName := range proxyServices {
 		contract, ok := proxyContract(serviceName)
 		if !ok {
-			return nil, fmt.Errorf("%w: unsupported service proxy route", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: unsupported service proxy route", core.ErrConflict))
 		}
 		for _, entry := range env {
 			key, _, _ := strings.Cut(entry, "=")
 			if key == contract.baseURLEnv {
-				return nil, fmt.Errorf("%w: %s is managed by the service proxy", core.ErrConflict, contract.baseURLEnv)
+				return nil, machinecode.Attach(machinecode.PolicyDeny, fmt.Errorf("%w: %s is managed by the service proxy", core.ErrConflict, contract.baseURLEnv))
 			}
 		}
 	}
@@ -286,7 +288,7 @@ func (s *Service) cancelExecSessions(ctx context.Context, id string) error {
 		select {
 		case <-session.done:
 		case <-waitCtx.Done():
-			return fmt.Errorf("wait for exec sessions: %w", waitCtx.Err())
+			return machinecode.Attach(machinecode.SessionUnreaped, fmt.Errorf("wait for exec sessions: %w", waitCtx.Err()))
 		}
 	}
 	return nil

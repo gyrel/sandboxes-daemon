@@ -5,12 +5,13 @@ import (
 	"errors"
 	"io"
 
+	"github.com/gyrel/sandboxes-daemon/internal/machinecode"
+
 	runtime "github.com/gyrel/sandboxes-runtime"
 
 	localv1 "github.com/gyrel/sandboxes-api/gen/go/sandboxes/local/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const maxExecSessionInput = 32 * 1024
@@ -19,11 +20,11 @@ const maxExecSessionInput = 32 * 1024
 func (s *SandboxServer) ExecSession(stream grpc.BidiStreamingServer[localv1.ExecSessionRequest, localv1.ExecSessionResponse]) error {
 	first, err := stream.Recv()
 	if err != nil {
-		return status.Error(codes.InvalidArgument, "missing session opening frame")
+		return refusalStatus(machinecode.SpecInvalid, codes.InvalidArgument, "missing session opening frame")
 	}
 	protocol := &execSessionProtocol{}
 	if err := protocol.accept(first); err != nil {
-		return status.Error(codes.InvalidArgument, err.Error())
+		return refusalStatus(machinecode.SpecInvalid, codes.InvalidArgument, err.Error())
 	}
 	open := first.GetOpen()
 	ctx, cancel := context.WithCancel(stream.Context())
@@ -70,10 +71,10 @@ func sendSessionOutput(ctx context.Context, stream grpc.BidiStreamingServer[loca
 
 func finishSession(stream grpc.BidiStreamingServer[localv1.ExecSessionRequest, localv1.ExecSessionResponse], result execResult) error {
 	if result.err != nil {
-		return mapError(result.err)
+		return mapVerbError(result.err)
 	}
 	if result.code < 0 || result.code > 255 {
-		return status.Error(codes.Internal, "invalid guest exit status")
+		return refusalStatus(machinecode.UnknownState, codes.Internal, "invalid guest exit status")
 	}
 	return stream.Send(&localv1.ExecSessionResponse{Frame: &localv1.ExecSessionResponse_ExitCode{ExitCode: int32(result.code)}})
 }
@@ -91,7 +92,7 @@ func receiveSessionInput(ctx context.Context, stream grpc.BidiStreamingServer[lo
 			return
 		}
 		if err := protocol.accept(frame); err != nil {
-			result <- status.Error(codes.InvalidArgument, err.Error())
+			result <- refusalStatus(machinecode.SpecInvalid, codes.InvalidArgument, err.Error())
 			return
 		}
 		switch value := frame.GetFrame().(type) {

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +17,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gyrel/sandboxes-daemon/internal/lifecycle"
+	"github.com/gyrel/sandboxes-daemon/internal/ownership"
+
+	"github.com/gyrel/sandboxes-daemon/internal/machinecode"
 
 	core "github.com/gyrel/sandboxes-core"
 	"github.com/gyrel/sandboxes-core/operation"
@@ -24,9 +31,10 @@ import (
 
 // Store is the SQLite implementation of the daemon repositories.
 type Store struct {
-	db   *sql.DB
-	ops  *OperationStore
-	path string
+	db           *sql.DB
+	ops          *OperationStore
+	path         string
+	installation string
 }
 
 // OperationStore is the SQLite operation journal adapter.
@@ -39,7 +47,7 @@ var _ operation.Store = (*OperationStore)(nil)
 
 // schemaVersion is the latest SQLite schema understood by this daemon. It is
 // stored in PRAGMA user_version and must only increase.
-const schemaVersion = 7
+const schemaVersion = 8
 
 type columnDefinition struct {
 	name       string
@@ -66,6 +74,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 	s := &Store{db: db, ops: &OperationStore{db: db}, path: path}
 	if err := s.prepareSchema(ctx, path); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s.installation, err = lifecycle.EnsureInstallationID(filepath.Dir(path))
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -272,6 +285,13 @@ func (s *Store) FinalizeMCPRegistryMigration(ctx context.Context) error {
 func (s *Store) Operations() *OperationStore { return s.ops }
 
 func (s *Store) migrate(ctx context.Context) error {
+	var version int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version >= 7 {
+		return s.migrateOwnership(ctx)
+	}
 	for _, stmt := range schemaStatements() {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate: %w", err)
@@ -286,10 +306,39 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateCustomSecrets(ctx); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
-		return fmt.Errorf("record schema version: %w", err)
+	return s.migrateOwnership(ctx)
+}
+
+// A copied v8 database retains its original identity and refuses NOT_OWNED
+// on every foreign row. Alpha has no import/export workflow.
+func (s *Store) migrateOwnership(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer func() { _ = tx.Rollback() }()
+	var version int
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version == schemaVersion {
+		return nil
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE sandboxes ADD COLUMN owner_uid INTEGER NOT NULL DEFAULT -2",
+		"ALTER TABLE sandboxes ADD COLUMN install_id TEXT NOT NULL DEFAULT ''",
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE sandboxes SET owner_uid=?, install_id=?", os.Geteuid(), s.installation); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 8"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // schemaStatements is the ordered forward-only DDL list.
@@ -526,9 +575,9 @@ func (s *Store) Create(ctx context.Context, sb sandbox.Sandbox) error {
 	}
 	agent, profile, detached, lastUsed := metaValues(sb)
 	_, err = s.db.ExecContext(ctx, `INSERT INTO sandboxes
-		(id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sb.ID, sb.Name, sb.State, sb.Generation, sb.Image, sb.Workspace, workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile, detached, lastUsed, sb.CPUs, sb.MemoryMiB, toUnix(sb.StoppedAt), sb.Error,
+		(owner_uid, install_id, id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		os.Geteuid(), s.installation, sb.ID, sb.Name, sb.State, sb.Generation, sb.Image, sb.Workspace, workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile, detached, lastUsed, sb.CPUs, sb.MemoryMiB, toUnix(sb.StoppedAt), sb.Error,
 		toUnix(sb.CreatedAt), toUnix(sb.UpdatedAt))
 	return mapSQLError(err)
 }
@@ -544,32 +593,70 @@ func (s *Store) GetByName(ctx context.Context, name string) (sandbox.Sandbox, er
 }
 
 func (s *Store) getSandbox(ctx context.Context, where string, arg any) (sandbox.Sandbox, error) {
+	return s.scanOwned(s.db.QueryRowContext(ctx, sandboxSelect+" WHERE "+where, arg))
+}
+
+const sandboxSelect = `SELECT owner_uid, install_id, (typeof(id) = 'text' AND
+ typeof(name) = 'text' AND
+ typeof(state) = 'text' AND
+ typeof(generation) = 'integer' AND
+ typeof(image) = 'text' AND
+ typeof(workspace) = 'text' AND
+ typeof(workspaces) = 'text' AND
+ typeof(clone_options) = 'text' AND
+ typeof(clone_info) = 'text' AND
+ typeof(ports) = 'text' AND
+ typeof(allow_rules) = 'text' AND
+ typeof(deny_rules) = 'text' AND
+ typeof(agent) = 'text' AND
+ typeof(policy_profile) = 'text' AND
+ typeof(detached) = 'integer' AND
+ typeof(last_used_at) = 'integer' AND
+ typeof(cpus) = 'integer' AND
+ typeof(memory_mib) = 'integer' AND
+ typeof(stopped_at) = 'integer' AND
+ typeof(error) = 'text' AND
+ typeof(created_at) = 'integer' AND
+ typeof(updated_at) = 'integer' AND
+ typeof(owner_uid) = 'integer' AND
+ typeof(install_id) = 'text'), id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at
+		FROM sandboxes `
+
+func (s *Store) scanOwned(row interface{ Scan(...any) error }) (sandbox.Sandbox, error) {
 	var sb sandbox.Sandbox
 	var created, updated, stoppedAt int64
 	var workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile string
 	var detached, lastUsed int64
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at
-		FROM sandboxes WHERE `+where, arg).Scan(
+	var uid int
+	var installation string
+	var typed bool
+	err := row.Scan(&uid, &installation, &typed,
 		&sb.ID, &sb.Name, &sb.State, &sb.Generation, &sb.Image, &sb.Workspace, &workspaces, &cloneOptions, &cloneInfo, &ports, &allow, &deny, &agent, &profile, &detached, &lastUsed, &sb.CPUs, &sb.MemoryMiB, &stoppedAt, &sb.Error, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sandbox.Sandbox{}, core.ErrNotFound
 	}
 	if err != nil {
-		return sandbox.Sandbox{}, err
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
 	}
 	if err := decodeWorkspaces(workspaces, &sb); err != nil {
-		return sandbox.Sandbox{}, err
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
 	}
 	if err := decodeCloneOptions(cloneOptions, &sb); err != nil {
-		return sandbox.Sandbox{}, err
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
 	}
 	if err := decodeCloneInfo(cloneInfo, &sb); err != nil {
-		return sandbox.Sandbox{}, err
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
 	}
 	if err := decodePorts(ports, &sb); err != nil {
-		return sandbox.Sandbox{}, err
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
 	}
 	if err := decodePolicy(allow, deny, &sb); err != nil {
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
+	}
+	if !typed || sb.Generation < 0 || detached < 0 || detached > 1 {
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, errors.New("invalid sandbox record"))
+	}
+	if err := ownership.Classify(filepath.Dir(s.path), s.installation, sb, uid, installation); err != nil {
 		return sandbox.Sandbox{}, err
 	}
 	decodeMeta(agent, profile, detached, lastUsed, &sb)
@@ -581,6 +668,12 @@ func (s *Store) getSandbox(ctx context.Context, where string, arg any) (sandbox.
 
 // List returns one page of sandboxes.
 func (s *Store) List(ctx context.Context, opts sandbox.ListOptions) ([]sandbox.Sandbox, string, error) {
+	items, next, _, err := s.ListWithHiddenCount(ctx, opts)
+	return items, next, err
+}
+
+// ListWithHiddenCount reports only the aggregate number of hidden rows on this page.
+func (s *Store) ListWithHiddenCount(ctx context.Context, opts sandbox.ListOptions) ([]sandbox.Sandbox, string, int, error) {
 	pageSize := opts.PageSize
 	if pageSize <= 0 {
 		pageSize = 50
@@ -590,54 +683,56 @@ func (s *Store) List(ctx context.Context, opts sandbox.ListOptions) ([]sandbox.S
 	}
 	offset, err := decodeOffset(opts.PageToken)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at
-		FROM sandboxes ORDER BY created_at, id LIMIT ? OFFSET ?`, pageSize+1, offset)
+	rows, err := s.db.QueryContext(ctx, sandboxSelect+" ORDER BY created_at, id LIMIT ? OFFSET ?", pageSize+1, offset)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
 	defer func() { _ = rows.Close() }()
-
 	var out []sandbox.Sandbox
+	scanned, hidden := 0, 0
 	for rows.Next() {
-		var sb sandbox.Sandbox
-		var created, updated, stoppedAt int64
-		var workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile string
-		var detached, lastUsed int64
-		if err := rows.Scan(&sb.ID, &sb.Name, &sb.State, &sb.Generation, &sb.Image, &sb.Workspace, &workspaces, &cloneOptions, &cloneInfo, &ports, &allow, &deny, &agent, &profile, &detached, &lastUsed, &sb.CPUs, &sb.MemoryMiB, &stoppedAt, &sb.Error, &created, &updated); err != nil {
-			return nil, "", err
+		scanned++
+		if scanned > pageSize {
+			break
 		}
-		if err := decodeWorkspaces(workspaces, &sb); err != nil {
-			return nil, "", err
+		sb, err := s.scanOwned(rows)
+		if err != nil {
+			if _, ok := machinecode.Of(err); !ok {
+				return nil, "", 0, err
+			}
+			hidden++
+			continue
 		}
-		if err := decodeCloneOptions(cloneOptions, &sb); err != nil {
-			return nil, "", err
-		}
-		if err := decodeCloneInfo(cloneInfo, &sb); err != nil {
-			return nil, "", err
-		}
-		if err := decodePorts(ports, &sb); err != nil {
-			return nil, "", err
-		}
-		if err := decodePolicy(allow, deny, &sb); err != nil {
-			return nil, "", err
-		}
-		decodeMeta(agent, profile, detached, lastUsed, &sb)
-		sb.StoppedAt = fromUnix(stoppedAt)
-		sb.CreatedAt = fromUnix(created)
-		sb.UpdatedAt = fromUnix(updated)
 		out = append(out, sb)
 	}
+	if hidden > 0 {
+		slog.InfoContext(ctx, "sandbox inventory entries hidden", "count", hidden)
+	}
 	if err := rows.Err(); err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
 	next := ""
-	if len(out) > pageSize {
-		out = out[:pageSize]
+	if scanned > pageSize {
 		next = encodeOffset(offset + pageSize)
 	}
-	return out, next, nil
+	return out, next, hidden, nil
+}
+
+// CheckRecoveryInventory gates the runtime's all-or-nothing journal sweep.
+func (s *Store) CheckRecoveryInventory(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, sandboxSelect)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		if _, err := s.scanOwned(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // Update updates a sandbox.
@@ -825,9 +920,9 @@ func (s *Store) CreateSandboxWithOperation(ctx context.Context, sb sandbox.Sandb
 	}
 	agent, profile, detached, lastUsed := metaValues(sb)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sandboxes
-		(id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sb.ID, sb.Name, sb.State, sb.Generation, sb.Image, sb.Workspace, workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile, detached, lastUsed, sb.CPUs, sb.MemoryMiB, toUnix(sb.StoppedAt), sb.Error,
+		(owner_uid, install_id, id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		os.Geteuid(), s.installation, sb.ID, sb.Name, sb.State, sb.Generation, sb.Image, sb.Workspace, workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile, detached, lastUsed, sb.CPUs, sb.MemoryMiB, toUnix(sb.StoppedAt), sb.Error,
 		toUnix(sb.CreatedAt), toUnix(sb.UpdatedAt)); err != nil {
 		return mapSQLError(err)
 	}
@@ -955,11 +1050,11 @@ func decodeOffset(token string) (int, error) {
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
-		return 0, fmt.Errorf("invalid page token: %w", err)
+		return 0, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("invalid page token: %w", err))
 	}
 	n, err := strconv.Atoi(string(raw))
 	if err != nil || n < 0 {
-		return 0, fmt.Errorf("invalid page token")
+		return 0, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("invalid page token"))
 	}
 	return n, nil
 }
@@ -994,7 +1089,7 @@ func decodeCloneOptions(value string, sb *sandbox.Sandbox) error {
 		return nil
 	}
 	var clone sandbox.CloneOptions
-	if err := json.Unmarshal([]byte(value), &clone); err != nil {
+	if err := decodeStrict(value, &clone); err != nil {
 		return fmt.Errorf("decode clone options: %w", err)
 	}
 	ensureMeta(sb).Clone = &sandbox.CloneState{Options: clone}
@@ -1050,7 +1145,7 @@ func decodeCloneInfo(value string, sb *sandbox.Sandbox) error {
 	if sb.Meta == nil || sb.Meta.Clone == nil {
 		return errors.New("clone info exists without clone options")
 	}
-	if err := json.Unmarshal([]byte(value), &sb.Meta.Clone.Info); err != nil {
+	if err := decodeStrict(value, &sb.Meta.Clone.Info); err != nil {
 		return fmt.Errorf("decode clone info: %w", err)
 	}
 	return nil
@@ -1063,7 +1158,7 @@ func decodeWorkspaces(value string, sb *sandbox.Sandbox) error {
 		}
 		return nil
 	}
-	if err := json.Unmarshal([]byte(value), &sb.Workspaces); err != nil {
+	if err := decodeStrict(value, &sb.Workspaces); err != nil {
 		return fmt.Errorf("decode workspaces: %w", err)
 	}
 	if len(sb.Workspaces) == 0 && sb.Workspace != "" {
@@ -1087,7 +1182,7 @@ func decodePorts(value string, sb *sandbox.Sandbox) error {
 	if value == "" || value == "[]" {
 		return nil
 	}
-	if err := json.Unmarshal([]byte(value), &sb.Ports); err != nil {
+	if err := decodeStrict(value, &sb.Ports); err != nil {
 		return fmt.Errorf("decode ports: %w", err)
 	}
 	return nil
@@ -1111,17 +1206,29 @@ func encodePolicy(policy *sandbox.NetworkPolicy) (string, string, error) {
 func decodePolicy(allow, deny string, sb *sandbox.Sandbox) error {
 	var policy sandbox.NetworkPolicy
 	if allow != "" && allow != "[]" {
-		if err := json.Unmarshal([]byte(allow), &policy.Allow); err != nil {
+		if err := decodeStrict(allow, &policy.Allow); err != nil {
 			return fmt.Errorf("decode allow rules: %w", err)
 		}
 	}
 	if deny != "" && deny != "[]" {
-		if err := json.Unmarshal([]byte(deny), &policy.Deny); err != nil {
+		if err := decodeStrict(deny, &policy.Deny); err != nil {
 			return fmt.Errorf("decode deny rules: %w", err)
 		}
 	}
 	if len(policy.Allow) > 0 || len(policy.Deny) > 0 {
 		sb.Policy = &policy
+	}
+	return nil
+}
+
+func decodeStrict(value string, dst any) error {
+	dec := json.NewDecoder(strings.NewReader(value))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return errors.New("trailing sandbox JSON")
 	}
 	return nil
 }

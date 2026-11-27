@@ -28,6 +28,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gyrel/sandboxes-daemon/internal/machinecode"
+	"github.com/gyrel/sandboxes-daemon/internal/ownership"
+
 	"github.com/gyrel/slogx/events"
 
 	core "github.com/gyrel/sandboxes-core"
@@ -212,9 +215,6 @@ func (s *Service) approveHostCommand(ctx context.Context, service string, scope 
 }
 
 const dockerHubRegistry = "docker.io"
-
-// reservedSandboxName mirrors the sbx reserved sandbox name.
-const reservedSandboxName = "default"
 
 // OAuthProvider contains trusted, daemon-side OAuth configuration. Never
 // populate it from an RPC request, guest, workspace, or sandbox metadata.
@@ -1386,25 +1386,25 @@ type CreateRequest struct {
 //nolint:gocyclo,cyclop,gocognit,funlen,maintidx // Create is the orchestration boundary for validation, idempotency, runtime startup and persistence.
 func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Operation, error) {
 	name := strings.TrimSpace(req.Name)
-	if !validSandboxName(name) {
-		return operation.Operation{}, fmt.Errorf("%w: invalid sandbox name", core.ErrConflict)
+	if !ownership.ValidName(name) {
+		return operation.Operation{}, machinecode.Attach(machinecode.NameInvalid, fmt.Errorf("%w: invalid sandbox name", core.ErrConflict))
 	}
 	workspace, workspaces, err := normalizeCreateWorkspaces(req)
 	if err != nil {
-		return operation.Operation{}, err
+		return operation.Operation{}, machinecode.Attach(machinecode.SpecInvalid, err)
 	}
 	cloneOptions := req.Clone
 	if cloneOptions != nil {
 		normalized, normalizeErr := normalizeCloneOptions(cloneOptions, workspaces)
 		if normalizeErr != nil {
-			return operation.Operation{}, normalizeErr
+			return operation.Operation{}, machinecode.Attach(machinecode.SpecInvalid, normalizeErr)
 		}
 		cloneOptions = normalized
 	}
 	req.Clone = cloneOptions
 	if cloneOptions != nil {
 		if err := s.requireCloneCapabilities(ctx); err != nil {
-			return operation.Operation{}, err
+			return operation.Operation{}, machinecode.Attach(machinecode.SpecInvalid, err)
 		}
 	}
 	release, err := s.acquireCreateGates(ctx, name, req.IdempotencyKey)
@@ -1413,7 +1413,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	}
 	defer release()
 	if err := s.requireOrgPolicy(ctx); err != nil {
-		return operation.Operation{}, err
+		return operation.Operation{}, machinecode.Attach(machinecode.PolicyDeny, err)
 	}
 	image, cpus, memoryMiB, env, err := s.resolveCreateResources(req)
 	if err != nil {
@@ -1421,7 +1421,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	}
 	env, proxyServiceNames, err := stripProxyCreateEnv(env)
 	if err != nil {
-		return operation.Operation{}, err
+		return operation.Operation{}, machinecode.Attach(machinecode.EnvInvalid, err)
 	}
 	env, err = s.customCreateEnv(ctx, name, env)
 	if err != nil {
@@ -1457,7 +1457,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 		}
 	}
 	if len(proxyServiceNames) != 0 && s.backend == nil {
-		return operation.Operation{}, fmt.Errorf("%w: service proxy requires a VM runtime", core.ErrConflict)
+		return operation.Operation{}, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: service proxy requires a VM runtime", core.ErrConflict))
 	}
 	profile, ports, allow, deny, err := s.normalizeCreatePolicy(ctx, req)
 	if err != nil {
@@ -1639,16 +1639,16 @@ func (s *Service) createRuntimeSandbox(ctx context.Context, cfg *runtime.Config,
 	if len(proxyConfig.routes) > 1 {
 		proxyBackend, ok := s.backend.(proxyRoutesRuntime)
 		if !ok {
-			return runtime.Handle{}, fmt.Errorf("%w: runtime backend does not support multiple service proxy routes", core.ErrConflict)
+			return runtime.Handle{}, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: runtime backend does not support multiple service proxy routes", core.ErrConflict))
 		}
 		return proxyBackend.CreateWithProxyRouteArgs(ctx, cfg, proxyConfig.helperPath, proxyConfig.routes)
 	}
 	proxyBackend, ok := s.backend.(proxyRuntime)
 	if !ok {
-		return runtime.Handle{}, fmt.Errorf("%w: runtime backend does not support the service proxy helper", core.ErrConflict)
+		return runtime.Handle{}, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: runtime backend does not support the service proxy helper", core.ErrConflict))
 	}
 	if proxyConfig.guestPort == 0 || proxyConfig.serviceHost == "" {
-		return runtime.Handle{}, fmt.Errorf("%w: unsupported single proxy route", core.ErrConflict)
+		return runtime.Handle{}, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: unsupported single proxy route", core.ErrConflict))
 	}
 	return proxyBackend.CreateWithProxy(ctx, cfg, proxyConfig.helperPath, proxyConfig.guestPort, proxyConfig.serviceHost)
 }
@@ -1686,7 +1686,7 @@ func (s *Service) resolveCreateResources(req CreateRequest) (string, uint32, uin
 		memoryMiB = 1024
 	}
 	if cpus > 64 || memoryMiB < 128 || memoryMiB > 65536 {
-		return "", 0, 0, nil, fmt.Errorf("%w: invalid CPU or memory request", core.ErrConflict)
+		return "", 0, 0, nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: invalid CPU or memory request", core.ErrConflict))
 	}
 	env, err := normalizeCreateEnv(req.Env)
 	if err != nil {
@@ -1766,13 +1766,13 @@ func runtimeWorkspaces(workspaces []sandbox.Workspace) []runtime.Workspace {
 
 func normalizePorts(ports []sandbox.Port) ([]sandbox.Port, error) {
 	if len(ports) > 32 {
-		return nil, fmt.Errorf("%w: too many ports", core.ErrConflict)
+		return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: too many ports", core.ErrConflict))
 	}
 	seen := make(map[string]struct{}, len(ports))
 	out := make([]sandbox.Port, 0, len(ports))
 	for _, port := range ports {
 		if port.Host == 0 || port.Guest == 0 {
-			return nil, fmt.Errorf("%w: host and guest ports must be non-zero", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: host and guest ports must be non-zero", core.ErrConflict))
 		}
 		protocol, hostIP, err := normalizePortEndpoint(port.Protocol, port.HostIP)
 		if err != nil {
@@ -1782,7 +1782,7 @@ func normalizePorts(ports []sandbox.Port) ([]sandbox.Port, error) {
 		port.HostIP = hostIP
 		key := port.Protocol + ":" + port.HostIP + ":" + strconv.Itoa(int(port.Host))
 		if _, exists := seen[key]; exists {
-			return nil, fmt.Errorf("%w: duplicate host port", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: duplicate host port", core.ErrConflict))
 		}
 		seen[key] = struct{}{}
 		out = append(out, port)
@@ -1813,7 +1813,7 @@ func normalizePortEndpoint(protocol, hostIP string) (string, string, error) {
 			protocol = udpProtocol
 		}
 	default:
-		return "", "", fmt.Errorf("%w: port protocol must be tcp, udp, tcp4, udp4, tcp6 or udp6", core.ErrConflict)
+		return "", "", machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: port protocol must be tcp, udp, tcp4, udp4, tcp6 or udp6", core.ErrConflict))
 	}
 	if hostIP == "" {
 		hostIP = "127.0.0.1"
@@ -1823,14 +1823,14 @@ func normalizePortEndpoint(protocol, hostIP string) (string, string, error) {
 	}
 	ip := net.ParseIP(hostIP)
 	if ip == nil || !ip.IsLoopback() {
-		return "", "", fmt.Errorf("%w: host IP must be loopback (127.0.0.1 or ::1)", core.ErrConflict)
+		return "", "", machinecode.Attach(machinecode.BindForbidden, fmt.Errorf("%w: host IP must be loopback (127.0.0.1 or ::1)", core.ErrConflict))
 	}
 	family := "4"
 	if ip.To4() == nil {
 		family = "6"
 	}
 	if explicitFamily != "" && explicitFamily != family {
-		return "", "", fmt.Errorf("%w: host IP family does not match port protocol", core.ErrConflict)
+		return "", "", machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: host IP family does not match port protocol", core.ErrConflict))
 	}
 	return protocol, ip.String(), nil
 }
@@ -1884,7 +1884,7 @@ func checkHostPorts(ports []sandbox.Port) error {
 			return err
 		}
 		if err := closeProbe(); err != nil {
-			return fmt.Errorf("release host port %d probe: %w", port.Host, err)
+			return machinecode.Attach(machinecode.ProbeUnavailable, fmt.Errorf("release host port %d probe: %w", port.Host, err))
 		}
 	}
 	return nil
@@ -1918,9 +1918,9 @@ func probeHostPort(port sandbox.Port) (func() error, error) {
 func hostPortProbeError(port sandbox.Port, err error) error {
 	message := strings.ToLower(err.Error())
 	if strings.Contains(message, "address already in use") || strings.Contains(message, "address in use") {
-		return fmt.Errorf("%w: host port %s:%d/%s is already in use", core.ErrConflict, port.HostIP, port.Host, port.Protocol)
+		return machinecode.Attach(machinecode.PortInUse, fmt.Errorf("%w: host port %s:%d/%s is already in use", core.ErrConflict, port.HostIP, port.Host, port.Protocol))
 	}
-	return fmt.Errorf("%w: host port %s:%d/%s is unavailable: %w", core.ErrConflict, port.HostIP, port.Host, port.Protocol, err)
+	return machinecode.Attach(machinecode.ProbeUnavailable, fmt.Errorf("%w: host port %s:%d/%s is unavailable: %w", core.ErrConflict, port.HostIP, port.Host, port.Protocol, err))
 }
 
 func normalizeCreateRules(req CreateRequest, ipv6Enabled bool) ([]sandbox.NetworkRule, []sandbox.NetworkRule, error) {
@@ -1937,7 +1937,7 @@ func normalizeCreateRules(req CreateRequest, ipv6Enabled bool) ([]sandbox.Networ
 
 func normalizeRules(rules []sandbox.NetworkRule, ipv6Enabled bool) ([]sandbox.NetworkRule, error) {
 	if len(rules) > 64 {
-		return nil, fmt.Errorf("%w: too many network rules", core.ErrConflict)
+		return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: too many network rules", core.ErrConflict))
 	}
 	out := make([]sandbox.NetworkRule, 0, len(rules))
 	seen := make(map[string]struct{}, len(rules))
@@ -1947,23 +1947,23 @@ func normalizeRules(rules []sandbox.NetworkRule, ipv6Enabled bool) ([]sandbox.Ne
 			rule.Protocol = tcpProtocol
 		}
 		if rule.Protocol != tcpProtocol && rule.Protocol != udpProtocol {
-			return nil, fmt.Errorf("%w: network rule protocol must be tcp or udp", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: network rule protocol must be tcp or udp", core.ErrConflict))
 		}
 		rule.Domain = normalizeDomainPattern(rule.Domain)
 		switch {
 		case rule.Domain != "" && rule.CIDR != "":
-			return nil, fmt.Errorf("%w: network rule must specify either domain or CIDR, not both", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: network rule must specify either domain or CIDR, not both", core.ErrConflict))
 		case rule.Domain != "":
 			if err := validateDomainPattern(rule.Domain); err != nil {
-				return nil, fmt.Errorf("%w: %w", core.ErrConflict, err)
+				return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: %w", core.ErrConflict, err))
 			}
 		default:
 			if err := validateRuleCIDR(rule.CIDR, ipv6Enabled); err != nil {
-				return nil, err
+				return nil, machinecode.Attach(machinecode.SpecInvalid, err)
 			}
 		}
 		if err := normalizeHTTPConditions(&rule); err != nil {
-			return nil, err
+			return nil, machinecode.Attach(machinecode.SpecInvalid, err)
 		}
 		key := policyRuleKey(rule)
 		if _, exists := seen[key]; exists {
@@ -2187,29 +2187,6 @@ func workspacesEqual(a, b []sandbox.Workspace) bool {
 // characters, starting with a letter or number, letters/numbers/hyphens and
 // periods only, and the reserved name "default". Validation runs at creation
 // time; already-stored names keep loading so existing state stays reachable.
-func validSandboxName(name string) bool {
-	if len(name) < 2 || len(name) > 63 || name == reservedSandboxName {
-		return false
-	}
-	if !isNameStartByte(name[0]) {
-		return false
-	}
-	for i := 1; i < len(name); i++ {
-		if !isNameByte(name[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func isNameStartByte(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-}
-
-func isNameByte(c byte) bool {
-	return isNameStartByte(c) || c == '-' || c == '.'
-}
-
 func (s *Service) abortCreate(ctx context.Context, sb *sandbox.Sandbox, handle runtime.Handle, runtimeCreated bool, createErr error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
@@ -2258,7 +2235,7 @@ func (s *Service) cleanupCreateIntent(ctx context.Context, sb sandbox.Sandbox) e
 func (s *Service) ensureNameAvailable(ctx context.Context, name string) error {
 	_, err := s.store.GetByName(ctx, name)
 	if err == nil {
-		return fmt.Errorf("%w: sandbox name already exists", core.ErrConflict)
+		return machinecode.Attach(machinecode.NameConflict, fmt.Errorf("%w: sandbox name already exists", core.ErrConflict))
 	}
 	if errors.Is(err, core.ErrNotFound) {
 		return nil
@@ -2312,7 +2289,7 @@ func normalizeCreateEnv(input map[string]string) ([]string, error) {
 		return nil, nil
 	}
 	if len(input) > maxCreateEnvEntries {
-		return nil, fmt.Errorf("%w: too many environment entries", core.ErrConflict)
+		return nil, machinecode.Attach(machinecode.EnvInvalid, fmt.Errorf("%w: too many environment entries", core.ErrConflict))
 	}
 	keys := make([]string, 0, len(input))
 	for key := range input {
@@ -2324,21 +2301,21 @@ func normalizeCreateEnv(input map[string]string) ([]string, error) {
 	for _, key := range keys {
 		value := input[key]
 		if !validCreateEnvName(key) {
-			return nil, fmt.Errorf("%w: invalid environment name", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.EnvInvalid, fmt.Errorf("%w: invalid environment name", core.ErrConflict))
 		}
 		if strings.Contains(value, secretRefPrefix) {
-			return nil, fmt.Errorf("%w: secret environment references expose credentials to guest processes; use a supported host proxy route", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.EnvInvalid, fmt.Errorf("%w: secret environment references expose credentials to guest processes; use a supported host proxy route", core.ErrConflict))
 		}
 		if strings.ContainsRune(value, '\x00') {
-			return nil, fmt.Errorf("%w: environment value contains NUL", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.EnvInvalid, fmt.Errorf("%w: environment value contains NUL", core.ErrConflict))
 		}
 		entry := key + "=" + value
 		if len(entry) > maxCreateEnvEntry {
-			return nil, fmt.Errorf("%w: environment entry is too large", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.EnvInvalid, fmt.Errorf("%w: environment entry is too large", core.ErrConflict))
 		}
 		total += len(entry)
 		if total > maxCreateEnvTotal {
-			return nil, fmt.Errorf("%w: environment is too large", core.ErrConflict)
+			return nil, machinecode.Attach(machinecode.EnvInvalid, fmt.Errorf("%w: environment is too large", core.ErrConflict))
 		}
 		env = append(env, entry)
 	}
@@ -2849,7 +2826,7 @@ func normalizePolicyProfile(profile string) (string, []sandbox.NetworkRule, erro
 			{Protocol: "udp", CIDR: anyIPv4CIDR, Port: 53},
 		}, nil
 	default:
-		return "", nil, fmt.Errorf("%w: unknown policy profile", core.ErrConflict)
+		return "", nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: unknown policy profile", core.ErrConflict))
 	}
 }
 
@@ -3396,7 +3373,7 @@ func (s *Service) replayCreate(ctx context.Context, key string, intent createInt
 	}
 	sb, err := s.store.Get(ctx, op.SandboxID)
 	if errors.Is(err, core.ErrNotFound) {
-		return operation.Operation{}, fmt.Errorf("%w: idempotency key refers to a removed sandbox", core.ErrConflict)
+		return operation.Operation{}, machinecode.Attach(machinecode.Stale, fmt.Errorf("%w: idempotency key refers to a removed sandbox", core.ErrConflict))
 	}
 	if err != nil {
 		return operation.Operation{}, err
@@ -3408,7 +3385,7 @@ func (s *Service) replayCreate(ctx context.Context, key string, intent createInt
 		return operation.Operation{}, proxyErr
 	}
 	if op.Kind != operation.KindCreate || !matchesCreateIntent(sb, intent) || proxyService != intent.proxyService {
-		return operation.Operation{}, fmt.Errorf("%w: idempotency key was used for a different request", core.ErrConflict)
+		return operation.Operation{}, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: idempotency key was used for a different request", core.ErrConflict))
 	}
 	return op, nil
 }
@@ -3462,6 +3439,12 @@ func (s *Service) Reconcile(ctx context.Context) (int, error) {
 	}
 	for i := range unfinished {
 		op := unfinished[i]
+		if _, err := s.store.Get(ctx, op.SandboxID); err != nil {
+			if _, refused := machinecode.Of(err); refused || errors.Is(err, core.ErrNotFound) {
+				continue
+			}
+			return changed, err
+		}
 		if err := s.journal.Fail(ctx, op.ID, "daemon restarted"); err != nil {
 			return changed, err
 		}
@@ -3581,6 +3564,11 @@ func (s *Service) List(ctx context.Context, opts sandbox.ListOptions) ([]sandbox
 	return s.store.List(ctx, opts)
 }
 
+// ListWithHiddenCount includes the per-page aggregate for the transport.
+func (s *Service) ListWithHiddenCount(ctx context.Context, opts sandbox.ListOptions) ([]sandbox.Sandbox, string, int, error) {
+	return s.store.ListWithHiddenCount(ctx, opts)
+}
+
 // Start transitions a sandbox to running.
 func (s *Service) Start(ctx context.Context, id string) (operation.Operation, error) {
 	release, err := s.acquireLifecycle(ctx, id)
@@ -3603,7 +3591,7 @@ func (s *Service) Start(ctx context.Context, id string) (operation.Operation, er
 		return operation.Operation{}, fmt.Errorf("%w: sandbox is already running", core.ErrConflict)
 	}
 	if sb.State == sandbox.Deleting || sb.State == sandbox.Deleted {
-		return operation.Operation{}, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict)
+		return operation.Operation{}, machinecode.Attach(machinecode.Busy, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict))
 	}
 	if err := s.requireOrgPolicy(ctx); err != nil {
 		return operation.Operation{}, err
@@ -3674,7 +3662,7 @@ func (s *Service) UpdatePorts(ctx context.Context, id string, ports []sandbox.Po
 		return sandbox.Sandbox{}, err
 	}
 	if sb.State == sandbox.Deleting || sb.State == sandbox.Deleted {
-		return sandbox.Sandbox{}, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict)
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.Busy, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict))
 	}
 	normalized, err := normalizePorts(ports)
 	if err != nil {
@@ -3695,7 +3683,7 @@ func (s *Service) UpdatePorts(ctx context.Context, id string, ports []sandbox.Po
 	if sb.State == sandbox.Running {
 		updater, ok := s.backend.(runtime.PortUpdater)
 		if !ok {
-			return sandbox.Sandbox{}, fmt.Errorf("%w: runtime does not support live port updates", core.ErrConflict)
+			return sandbox.Sandbox{}, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: runtime does not support live port updates", core.ErrConflict))
 		}
 		handle := s.backend.Handle(sb.Name)
 		handle.Ports = runtimePorts(normalized)
@@ -3703,7 +3691,7 @@ func (s *Service) UpdatePorts(ctx context.Context, id string, ports []sandbox.Po
 			return sandbox.Sandbox{}, s.markRuntimeUnknown(ctx, sb, err)
 		}
 	} else if sb.State != sandbox.Stopped {
-		return sandbox.Sandbox{}, fmt.Errorf("%w: sandbox is not ready for a port update", core.ErrConflict)
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.Busy, fmt.Errorf("%w: sandbox is not ready for a port update", core.ErrConflict))
 	}
 	sb.Ports = normalized
 	sb.UpdatedAt = s.now().UTC()
@@ -3768,7 +3756,7 @@ func (s *Service) updatePolicyLocked(ctx context.Context, id string, allow, deny
 		return sandbox.Sandbox{}, err
 	}
 	if sb.State == sandbox.Deleting || sb.State == sandbox.Deleted {
-		return sandbox.Sandbox{}, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict)
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.Busy, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict))
 	}
 	if err := s.requireOrgPolicy(ctx); err != nil {
 		return sandbox.Sandbox{}, err
@@ -3861,7 +3849,7 @@ func (s *Service) Stop(ctx context.Context, id string) (operation.Operation, err
 // Zero selects the default of five seconds.
 func (s *Service) StopWithGrace(ctx context.Context, id string, grace time.Duration) (operation.Operation, error) {
 	if grace < 0 || grace > time.Hour {
-		return operation.Operation{}, fmt.Errorf("%w: invalid stop grace period", core.ErrConflict)
+		return operation.Operation{}, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: invalid stop grace period", core.ErrConflict))
 	}
 	if grace == 0 {
 		grace = 5 * time.Second
@@ -3876,7 +3864,7 @@ func (s *Service) StopWithGrace(ctx context.Context, id string, grace time.Durat
 		return operation.Operation{}, err
 	}
 	if sb.State == sandbox.Deleting || sb.State == sandbox.Deleted {
-		return operation.Operation{}, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict)
+		return operation.Operation{}, machinecode.Attach(machinecode.Busy, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict))
 	}
 	if err := s.cancelExecSessions(ctx, id); err != nil {
 		return operation.Operation{}, err
@@ -3931,7 +3919,7 @@ func (s *Service) Delete(ctx context.Context, id string, force bool) (operation.
 		return operation.Operation{}, err
 	}
 	if !force && (sb.State == sandbox.Running || sb.State == sandbox.Unknown || sb.State == sandbox.Creating || sb.State == sandbox.Stopping) {
-		return operation.Operation{}, fmt.Errorf("%w: sandbox may be running; force is required", core.ErrConflict)
+		return operation.Operation{}, machinecode.Attach(machinecode.Busy, fmt.Errorf("%w: sandbox may be running; force is required", core.ErrConflict))
 	}
 	if err := s.cancelExecSessions(ctx, id); err != nil {
 		return operation.Operation{}, err
@@ -3974,12 +3962,12 @@ func (s *Service) finishDelete(ctx context.Context, sb *sandbox.Sandbox, markRun
 		UpdatedAt:  now,
 	}
 	if err := s.cleanupDeletedSandbox(ctx, *sb); err != nil {
-		return s.failedDeleteOperation(ctx, *sb, opID, err)
+		return s.failedDeleteOperation(ctx, *sb, opID, machinecode.Attach(machinecode.PartialRemoval, err))
 	}
 	if err := s.store.DeleteSandboxWithOperation(ctx, sb.ID, op); err != nil {
 		return operation.Operation{}, err
 	}
-	return op, cloneStopErr
+	return op, machinecode.Attach(machinecode.PartialRemoval, cloneStopErr)
 }
 
 func (s *Service) failedDeleteOperation(ctx context.Context, sb sandbox.Sandbox, opID string, cause error) (operation.Operation, error) {
@@ -4060,6 +4048,7 @@ func (s *Service) cleanupDeletedSandbox(ctx context.Context, sb sandbox.Sandbox)
 }
 
 func (s *Service) markRuntimeUnknown(ctx context.Context, sb sandbox.Sandbox, cause error) error {
+	cause = machinecode.Attach(machinecode.UnknownState, cause)
 	sb.State = sandbox.Unknown
 	sb.Error = "runtime operation failed; actual state is unknown"
 	sb.Generation++
@@ -4179,6 +4168,9 @@ func (s *Service) RecoverRuntimeJournal(ctx context.Context) ([]string, error) {
 	rec, ok := s.backend.(ctr.JournalRecoverer)
 	if !ok {
 		return nil, nil
+	}
+	if err := s.store.CheckRecoveryInventory(ctx); err != nil {
+		return nil, err
 	}
 	findings, err := rec.Recover(ctx)
 	summaries := make([]string, 0, len(findings))
