@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	neturl "net/url"
@@ -1379,12 +1380,16 @@ type CreateRequest struct {
 	Env map[string]string
 	// Skills selects create-time shared skills delivery.
 	Skills *SkillsOptions
+	Labels map[string]string
 }
 
 // Create creates a stopped sandbox and a completed create operation.
 //
 //nolint:gocyclo,cyclop,gocognit,funlen,maintidx // Create is the orchestration boundary for validation, idempotency, runtime startup and persistence.
 func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Operation, error) {
+	if err := sandbox.ValidateLabels(req.Labels); err != nil {
+		return operation.Operation{}, machinecode.Attach(machinecode.LabelInvalid, fmt.Errorf("%w: %w", core.ErrConflict, err))
+	}
 	name := strings.TrimSpace(req.Name)
 	if !ownership.ValidName(name) {
 		return operation.Operation{}, machinecode.Attach(machinecode.NameInvalid, fmt.Errorf("%w: invalid sandbox name", core.ErrConflict))
@@ -1479,7 +1484,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	intent := createIntent{
 		name: name, image: image, workspace: workspace, workspaces: workspaces, clone: cloneOptions, ports: ports,
 		allow: allow, deny: deny, agent: req.Agent, detached: req.Detached, cpus: cpus, memoryMiB: memoryMiB,
-		proxyService: encodeProxyServices(proxyServiceNames),
+		proxyService: encodeProxyServices(proxyServiceNames), labels: req.Labels,
 	}
 	if existing, found, err := s.replayCreateIfRequested(ctx, req.IdempotencyKey, intent); err != nil {
 		return operation.Operation{}, err
@@ -1503,6 +1508,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	// by an interrupted create; without it a crash between runtime and database
 	// writes would leave an untracked VM.
 	sb := newSandboxRecord(sbID, name, sandbox.Creating, image, workspace, workspaces, ports, allow, deny, req.Agent, req.Detached, profile, cpus, memoryMiB, now)
+	if len(req.Labels) != 0 {
+		sb.Labels = maps.Clone(req.Labels)
+	}
 	if cloneOptions != nil {
 		sb.Meta.Clone = &sandbox.CloneState{Options: *cloneOptions}
 	}
@@ -3364,6 +3372,7 @@ type createIntent struct {
 	cpus         uint32
 	memoryMiB    uint32
 	proxyService string
+	labels       map[string]string
 }
 
 func (s *Service) replayCreate(ctx context.Context, key string, intent createIntent) (operation.Operation, error) {
@@ -3392,7 +3401,7 @@ func (s *Service) replayCreate(ctx context.Context, key string, intent createInt
 
 func matchesCreateIntent(sb sandbox.Sandbox, intent createIntent) bool {
 	return sb.Name == intent.name && sb.Image == intent.image && sb.Workspace == intent.workspace &&
-		sb.CPUs == intent.cpus && sb.MemoryMiB == intent.memoryMiB &&
+		sb.CPUs == intent.cpus && sb.MemoryMiB == intent.memoryMiB && maps.Equal(sb.Labels, intent.labels) &&
 		workspacesEqual(sb.Workspaces, intent.workspaces) && cloneOptionsEqual(cloneOptionsFromState(sb.Meta.Clone), intent.clone) && portsEqual(sb.Ports, intent.ports) &&
 		rulesEqual(policyAllow(sb.Policy), intent.allow) && rulesEqual(policyDeny(sb.Policy), intent.deny) &&
 		sandboxAgent(sb) == intent.agent && sandboxDetached(sb) == intent.detached

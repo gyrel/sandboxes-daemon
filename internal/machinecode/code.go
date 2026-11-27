@@ -17,6 +17,7 @@ const (
 	NameInvalid      Code = "NAME_INVALID"
 	NameConflict     Code = "NAME_CONFLICT"
 	EnvInvalid       Code = "ENV_INVALID"
+	LabelInvalid     Code = "LABEL_INVALID"
 	Busy             Code = "BUSY"
 	QuotaExceeded    Code = "QUOTA_EXCEEDED"
 	BindForbidden    Code = "BIND_FORBIDDEN"
@@ -27,7 +28,7 @@ const (
 
 // All returns the registered reasons in declaration order.
 func All() []Code {
-	return []Code{NotOwned, PathEscape, PartialRemoval, Stale, SpecInvalid, PolicyDeny, UnknownState, NotFound, NameInvalid, NameConflict, EnvInvalid, Busy, QuotaExceeded, BindForbidden, PortInUse, ProbeUnavailable, SessionUnreaped}
+	return []Code{NotOwned, PathEscape, PartialRemoval, Stale, SpecInvalid, PolicyDeny, UnknownState, NotFound, NameInvalid, NameConflict, EnvInvalid, LabelInvalid, Busy, QuotaExceeded, BindForbidden, PortInUse, ProbeUnavailable, SessionUnreaped}
 }
 
 type refusal struct {

@@ -19,7 +19,7 @@ func TestOwnershipMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if userVersion(t, path) != 8 {
+	if userVersion(t, path) != schemaVersion {
 		t.Fatal("fresh schema version")
 	}
 	for _, id := range []string{"first", "second"} {
@@ -29,6 +29,7 @@ func TestOwnershipMigration(t *testing.T) {
 	}
 	_, err = st.db.ExecContext(ctx, `ALTER TABLE sandboxes DROP COLUMN owner_uid;
  ALTER TABLE sandboxes DROP COLUMN install_id;
+ ALTER TABLE sandboxes DROP COLUMN labels;
  PRAGMA user_version=7;
  CREATE TRIGGER fail_backfill BEFORE UPDATE ON sandboxes BEGIN SELECT RAISE(ABORT,'fixture'); END`)
 	if err != nil {

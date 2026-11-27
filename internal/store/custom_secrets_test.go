@@ -45,7 +45,7 @@ func TestCustomSecretMigrationUpgradesV6WithBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.db.ExecContext(ctx, `ALTER TABLE sandboxes DROP COLUMN owner_uid; ALTER TABLE sandboxes DROP COLUMN install_id; DROP TABLE custom_secret_index`); err != nil {
+	if _, err := st.db.ExecContext(ctx, `ALTER TABLE sandboxes DROP COLUMN owner_uid; ALTER TABLE sandboxes DROP COLUMN install_id; ALTER TABLE sandboxes DROP COLUMN labels; DROP TABLE custom_secret_index`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.ExecContext(ctx, `PRAGMA user_version = 6`); err != nil {

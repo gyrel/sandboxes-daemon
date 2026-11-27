@@ -47,7 +47,7 @@ var _ operation.Store = (*OperationStore)(nil)
 
 // schemaVersion is the latest SQLite schema understood by this daemon. It is
 // stored in PRAGMA user_version and must only increase.
-const schemaVersion = 8
+const schemaVersion = 9
 
 type columnDefinition struct {
 	name       string
@@ -290,7 +290,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if version >= 7 {
-		return s.migrateOwnership(ctx)
+		return s.migrateSandboxMetadata(ctx)
 	}
 	for _, stmt := range schemaStatements() {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -306,12 +306,12 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.migrateCustomSecrets(ctx); err != nil {
 		return err
 	}
-	return s.migrateOwnership(ctx)
+	return s.migrateSandboxMetadata(ctx)
 }
 
-// A copied v8 database retains its original identity and refuses NOT_OWNED
-// on every foreign row. Alpha has no import/export workflow.
-func (s *Store) migrateOwnership(ctx context.Context) error {
+// migrateSandboxMetadata upgrades ownership and labels in one transaction.
+// Preserve the original installation identity when upgrading v8 databases.
+func (s *Store) migrateSandboxMetadata(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -324,18 +324,23 @@ func (s *Store) migrateOwnership(ctx context.Context) error {
 	if version == schemaVersion {
 		return nil
 	}
-	for _, stmt := range []string{
-		"ALTER TABLE sandboxes ADD COLUMN owner_uid INTEGER NOT NULL DEFAULT -2",
-		"ALTER TABLE sandboxes ADD COLUMN install_id TEXT NOT NULL DEFAULT ''",
-	} {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+	if version < 8 {
+		for _, stmt := range []string{
+			"ALTER TABLE sandboxes ADD COLUMN owner_uid INTEGER NOT NULL DEFAULT -2",
+			"ALTER TABLE sandboxes ADD COLUMN install_id TEXT NOT NULL DEFAULT ''",
+		} {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE sandboxes SET owner_uid=?, install_id=?", os.Geteuid(), s.installation); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE sandboxes SET owner_uid=?, install_id=?", os.Geteuid(), s.installation); err != nil {
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE sandboxes ADD COLUMN labels TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 8"); err != nil {
+	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 9"); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -553,6 +558,12 @@ func (s *Store) ensureSandboxResourceColumns(ctx context.Context) error {
 
 // Create inserts a sandbox.
 func (s *Store) Create(ctx context.Context, sb sandbox.Sandbox) error {
+	return s.insertSandbox(ctx, s.db, sb)
+}
+
+func (s *Store) insertSandbox(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, sb sandbox.Sandbox) error {
 	workspaces, err := encodeWorkspaces(sb.Workspaces)
 	if err != nil {
 		return err
@@ -573,12 +584,20 @@ func (s *Store) Create(ctx context.Context, sb sandbox.Sandbox) error {
 	if err != nil {
 		return err
 	}
+	var labels string
+	if len(sb.Labels) != 0 {
+		data, err := json.Marshal(sb.Labels)
+		if err != nil {
+			return err
+		}
+		labels = string(data)
+	}
 	agent, profile, detached, lastUsed := metaValues(sb)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sandboxes
-		(owner_uid, install_id, id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = db.ExecContext(ctx, `INSERT INTO sandboxes
+		(owner_uid, install_id, id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at, labels)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		os.Geteuid(), s.installation, sb.ID, sb.Name, sb.State, sb.Generation, sb.Image, sb.Workspace, workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile, detached, lastUsed, sb.CPUs, sb.MemoryMiB, toUnix(sb.StoppedAt), sb.Error,
-		toUnix(sb.CreatedAt), toUnix(sb.UpdatedAt))
+		toUnix(sb.CreatedAt), toUnix(sb.UpdatedAt), labels)
 	return mapSQLError(err)
 }
 
@@ -619,19 +638,20 @@ const sandboxSelect = `SELECT owner_uid, install_id, (typeof(id) = 'text' AND
  typeof(created_at) = 'integer' AND
  typeof(updated_at) = 'integer' AND
  typeof(owner_uid) = 'integer' AND
- typeof(install_id) = 'text'), id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at
+ typeof(labels) = 'text' AND
+ typeof(install_id) = 'text'), id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at, labels
 		FROM sandboxes `
 
 func (s *Store) scanOwned(row interface{ Scan(...any) error }) (sandbox.Sandbox, error) {
 	var sb sandbox.Sandbox
 	var created, updated, stoppedAt int64
-	var workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile string
+	var workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile, labels string
 	var detached, lastUsed int64
 	var uid int
 	var installation string
 	var typed bool
 	err := row.Scan(&uid, &installation, &typed,
-		&sb.ID, &sb.Name, &sb.State, &sb.Generation, &sb.Image, &sb.Workspace, &workspaces, &cloneOptions, &cloneInfo, &ports, &allow, &deny, &agent, &profile, &detached, &lastUsed, &sb.CPUs, &sb.MemoryMiB, &stoppedAt, &sb.Error, &created, &updated)
+		&sb.ID, &sb.Name, &sb.State, &sb.Generation, &sb.Image, &sb.Workspace, &workspaces, &cloneOptions, &cloneInfo, &ports, &allow, &deny, &agent, &profile, &detached, &lastUsed, &sb.CPUs, &sb.MemoryMiB, &stoppedAt, &sb.Error, &created, &updated, &labels)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sandbox.Sandbox{}, core.ErrNotFound
 	}
@@ -651,6 +671,9 @@ func (s *Store) scanOwned(row interface{ Scan(...any) error }) (sandbox.Sandbox,
 		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
 	}
 	if err := decodePolicy(allow, deny, &sb); err != nil {
+		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
+	}
+	if err := decodeLabels(labels, &sb); err != nil {
 		return sandbox.Sandbox{}, machinecode.Attach(machinecode.UnknownState, err)
 	}
 	if !typed || sb.Generation < 0 || detached < 0 || detached > 1 {
@@ -898,33 +921,8 @@ func (s *Store) CreateSandboxWithOperation(ctx context.Context, sb sandbox.Sandb
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	workspaces, err := encodeWorkspaces(sb.Workspaces)
-	if err != nil {
+	if err := s.insertSandbox(ctx, tx, sb); err != nil {
 		return err
-	}
-	cloneOptions, err := encodeCloneOptions(cloneOptions(cloneState(sb.Meta)))
-	if err != nil {
-		return err
-	}
-	cloneInfo, err := encodeCloneInfo(cloneInfo(cloneState(sb.Meta)))
-	if err != nil {
-		return err
-	}
-	ports, err := encodePorts(sb.Ports)
-	if err != nil {
-		return err
-	}
-	allow, deny, err := encodePolicy(sb.Policy)
-	if err != nil {
-		return err
-	}
-	agent, profile, detached, lastUsed := metaValues(sb)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO sandboxes
-		(owner_uid, install_id, id, name, state, generation, image, workspace, workspaces, clone_options, clone_info, ports, allow_rules, deny_rules, agent, policy_profile, detached, last_used_at, cpus, memory_mib, stopped_at, error, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		os.Geteuid(), s.installation, sb.ID, sb.Name, sb.State, sb.Generation, sb.Image, sb.Workspace, workspaces, cloneOptions, cloneInfo, ports, allow, deny, agent, profile, detached, lastUsed, sb.CPUs, sb.MemoryMiB, toUnix(sb.StoppedAt), sb.Error,
-		toUnix(sb.CreatedAt), toUnix(sb.UpdatedAt)); err != nil {
-		return mapSQLError(err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO operations
 		(id, sandbox_id, kind, state, generation, idempotency_key, error, created_at, updated_at)
@@ -1218,6 +1216,31 @@ func decodePolicy(allow, deny string, sb *sandbox.Sandbox) error {
 	if len(policy.Allow) > 0 || len(policy.Deny) > 0 {
 		sb.Policy = &policy
 	}
+	return nil
+}
+
+func decodeLabels(value string, sb *sandbox.Sandbox) error {
+	if value == "" {
+		return nil
+	}
+	var decoded map[string]*string
+	if err := decodeStrict(value, &decoded); err != nil || decoded == nil {
+		return errors.New("invalid sandbox labels JSON")
+	}
+	if len(decoded) == 0 {
+		return nil
+	}
+	labels := make(map[string]string, len(decoded))
+	for key, label := range decoded {
+		if label == nil {
+			return errors.New("invalid sandbox label value")
+		}
+		labels[key] = *label
+	}
+	if err := sandbox.ValidateLabels(labels); err != nil {
+		return err
+	}
+	sb.Labels = labels
 	return nil
 }
 

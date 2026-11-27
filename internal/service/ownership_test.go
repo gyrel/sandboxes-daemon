@@ -125,7 +125,7 @@ func TestOwnershipCopiedDatabase(t *testing.T) {
 	}
 	ids := []string{"sb-first", "sb-second", "sb-third"}
 	for _, id := range ids {
-		if err := st.Create(ctx, sandbox.Sandbox{ID: id, Name: id, State: sandbox.Stopped}); err != nil {
+		if err := st.Create(ctx, sandbox.Sandbox{ID: id, Name: id, State: sandbox.Stopped, Labels: map[string]string{"team": "platform"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
