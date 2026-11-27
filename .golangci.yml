@@ -90,7 +90,7 @@ linters:
         - paramTypeCombine
       settings:
         hugeParam:
-          sizeThreshold: 256
+          sizeThreshold: 264 # Sandbox gained one map field in core v0.1.1.
 
   exclusions:
     generated: lax

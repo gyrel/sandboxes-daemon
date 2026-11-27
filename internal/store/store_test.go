@@ -27,6 +27,7 @@ func TestSandboxAndOperationLifecycle(t *testing.T) {
 		Image: "scratch", CPUs: 4, MemoryMiB: 2048, StoppedAt: now,
 		Workspaces: []sandbox.Workspace{{Path: "/work", ReadOnly: false}, {Path: "/docs", GuestPath: "/mnt/docs", ReadOnly: true}},
 		Ports:      []sandbox.Port{{Host: 8080, Guest: 3000, Protocol: "tcp"}},
+		Labels:     map[string]string{"team": "platform"},
 		Meta: &sandbox.Meta{Agent: "shell", Detached: true, LastUsedAt: now, Clone: &sandbox.CloneState{
 			Options: sandbox.CloneOptions{SourceWorkspacePath: "/work"},
 			Info:    &sandbox.CloneInfo{GuestWorkdir: "/workspace/project", RemoteName: "sandbox-dev", GitEndpoint: &sandbox.GitEndpoint{HostIP: "127.0.0.1", Port: 49152, Repository: "project"}},
@@ -59,7 +60,7 @@ func TestSandboxAndOperationLifecycle(t *testing.T) {
 		t.Fatalf("sandbox = %+v", got)
 	}
 	byName, err := st.GetByName(ctx, "dev")
-	if err != nil || byName.ID != "sb-1" {
+	if err != nil || byName.ID != "sb-1" || byName.Labels["team"] != "platform" {
 		t.Fatalf("by name: %+v, %v", byName, err)
 	}
 

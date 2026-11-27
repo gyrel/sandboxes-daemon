@@ -545,6 +545,7 @@ func (s *SandboxServer) Create(ctx context.Context, req *localv1.CreateRequest) 
 		Privileged:     req.GetPrivileged(),
 		Env:            req.GetEnv(),
 		Skills:         fromProtoSkills(req.GetSkills()),
+		Labels:         req.GetLabels(),
 	})
 	if err != nil {
 		return nil, mapVerbError(err)
@@ -855,6 +856,7 @@ func toProtoSandbox(sb sandbox.Sandbox) *localv1.Sandbox {
 		PolicyProfile:      metaPolicyProfile(sb),
 		LastUsedAtUnix:     metaLastUsed(sb),
 		LastUsedAtUnixNano: metaLastUsedNano(sb),
+		Labels:             sb.Labels,
 	}
 }
 
