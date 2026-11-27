@@ -425,11 +425,63 @@ func assertClean(t *testing.T, scenarioName string, artifacts []redactcheck.Arti
 	t.Helper()
 	findings := redactcheck.ScanArtifacts(artifacts, opts)
 	for _, finding := range findings {
-		t.Errorf("LEAK %s (scenario %s)", finding, scenarioName)
+		t.Errorf("LEAK %s (scenario %s)\n%s", finding, scenarioName, findingContext(finding, artifacts))
 	}
 	if len(findings) != 0 {
 		t.Fatalf("scenario %s produced %d redaction findings across %d artifacts", scenarioName, len(findings), len(artifacts))
 	}
+}
+
+// findingContext renders the artifact bytes around a finding so a CI failure
+// names the exact spelling that escaped the allowlist. Only test-owned artifact
+// data is shown; the finding itself still never retains the matched value.
+func findingContext(finding redactcheck.Finding, artifacts []redactcheck.Artifact) string {
+	var data []byte
+	for _, artifact := range artifacts {
+		if artifact.Name == finding.Artifact {
+			data = artifact.Data
+			break
+		}
+	}
+	return "diagnostic " + diagnosticWindow(data, finding.Offset)
+}
+
+// diagnosticWindow escapes the slice [offset-64, offset+128) of data, clipped
+// to data. Non-printable bytes are escaped so a raw NUL or JSON escape is
+// visible in the failure output.
+func diagnosticWindow(data []byte, offset int64) string {
+	if len(data) == 0 {
+		return "artifact=<empty>"
+	}
+	position := int(offset)
+	if position < 0 {
+		position = 0
+	}
+	if position > len(data) {
+		position = len(data)
+	}
+	start := position - 64
+	if start < 0 {
+		start = 0
+	}
+	end := position + 128
+	if end > len(data) {
+		end = len(data)
+	}
+	return fmt.Sprintf("bytes[%d:%d] offset=%d %s", start, end, offset, escapeNonPrintable(data[start:end]))
+}
+
+func escapeNonPrintable(data []byte) string {
+	var escaped strings.Builder
+	escaped.Grow(len(data))
+	for _, b := range data {
+		if b >= 0x20 && b <= 0x7e {
+			escaped.WriteByte(b)
+			continue
+		}
+		fmt.Fprintf(&escaped, `\x%02x`, b)
+	}
+	return escaped.String()
 }
 
 func TestRedactionHarness(t *testing.T) {

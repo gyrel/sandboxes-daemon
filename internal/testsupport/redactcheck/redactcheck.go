@@ -127,12 +127,13 @@ type scanner struct {
 	opts     Options
 	findings []Finding
 	spans    []span
-	// allowSpans cover every representation of Options.AllowRoot. Findings
-	// that are not host-path rules are suppressed when their offset falls in
-	// one of these spans; host-path findings keep the exact-root allowlist
+	// allowRegions cover every representation of Options.AllowRoot, extended
+	// along the path token that starts at each occurrence. Findings that are
+	// not host-path rules are suppressed when their match starts inside one of
+	// these regions; host-path findings keep the exact-root allowlist
 	// semantics enforced by allowed.
-	allowSpans []span
-	seen       map[string]struct{}
+	allowRegions []span
+	seen         map[string]struct{}
 }
 
 // ScanString scans text. It is the string form of Scan.
@@ -211,24 +212,21 @@ func trimRoot(root string) string {
 }
 
 // markAllowRootSpans records every occurrence of the test-owned allow root in
-// each separator spelling. It runs before any detection rule so entropy and
-// secret matches that fall inside those bytes can be discarded instead of
-// relying on a platform-specific prefix list.
+// each accepted spelling. Each occurrence is extended to the end of the
+// maximal path token starting there: a run of path-grammar bytes. It runs
+// before any detection rule so entropy and secret matches that start inside
+// those bytes can be discarded instead of relying on a platform-specific
+// prefix list.
+//
+// The extension is deliberately one-sided. The prose before the allow root is
+// not test-owned, so a match that begins to the left of the token start is
+// still reported even when it runs into the region; see allowRegionSuppressed.
 func (s *scanner) markAllowRootSpans() {
 	root := s.opts.AllowRoot
 	if root == "" {
 		return
 	}
-	variants := []string{root, filepath.ToSlash(root), filepath.FromSlash(root)}
-	seen := make(map[string]struct{}, len(variants))
-	for _, variant := range variants {
-		if variant == "" {
-			continue
-		}
-		if _, ok := seen[variant]; ok {
-			continue
-		}
-		seen[variant] = struct{}{}
+	for _, variant := range allowRootVariants(root) {
 		needle := []byte(variant)
 		for start := 0; start < len(s.data); {
 			index := bytes.Index(s.data[start:], needle)
@@ -236,24 +234,85 @@ func (s *scanner) markAllowRootSpans() {
 				break
 			}
 			begin := start + index
-			s.allowSpans = append(s.allowSpans, span{start: begin, end: begin + len(needle)})
+			s.allowRegions = append(s.allowRegions, span{
+				start: begin,
+				end:   allowTokenEnd(s.data, begin),
+			})
 			start = begin + len(needle)
 		}
 	}
 }
 
-func (s *scanner) inAllowSpan(offset int) bool {
-	for _, covered := range s.allowSpans {
-		if offset >= covered.start && offset < covered.end {
-			return true
-		}
+// allowRootVariants returns the spellings in which a test-owned root can reach
+// an artifact: native, slash-normalized, backslash-normalized, JSON-escaped
+// (each backslash doubled) and the same four with a lowercase drive letter.
+func allowRootVariants(root string) []string {
+	spellings := []string{
+		root,
+		filepath.ToSlash(root),
+		filepath.FromSlash(root),
+		strings.ReplaceAll(root, `\`, `\\`),
 	}
-	return false
+	out := make([]string, 0, 2*len(spellings))
+	seen := make(map[string]struct{}, 2*len(spellings))
+	add := func(variant string) {
+		if variant == "" {
+			return
+		}
+		if _, ok := seen[variant]; ok {
+			return
+		}
+		seen[variant] = struct{}{}
+		out = append(out, variant)
+	}
+	for _, spelling := range spellings {
+		add(spelling)
+		add(lowercaseDrive(spelling))
+	}
+	return out
 }
 
-func (s *scanner) allowSpanContains(start, end int) bool {
-	for _, covered := range s.allowSpans {
-		if start >= covered.start && end <= covered.end {
+// lowercaseDrive folds an ASCII drive-letter prefix (C: -> c:) so a path
+// rendered with a lowercase drive still matches an uppercase allow root.
+func lowercaseDrive(value string) string {
+	if len(value) < 2 || value[1] != ':' || !isASCIIAlpha(value[0]) {
+		return value
+	}
+	return string(foldASCII(value[0])) + value[1:]
+}
+
+// allowTokenEnd returns the exclusive end of the maximal path token that
+// begins at start. The class is the path grammar accepted by the harness:
+// letters, digits, space, '.', '_', '@', '%', '+', '-', '/', '\', ':', '$',
+// '{' and '}'. JSON-escaped backslashes are pairs of that same backslash byte.
+func allowTokenEnd(data []byte, start int) int {
+	end := start
+	for end < len(data) && allowTokenByte(data[end]) {
+		end++
+	}
+	return end
+}
+
+func allowTokenByte(b byte) bool {
+	switch {
+	case b >= 'A' && b <= 'Z', b >= 'a' && b <= 'z', b >= '0' && b <= '9':
+		return true
+	}
+	switch b {
+	case ' ', '.', '_', '@', '%', '+', '-', '/', '\\', ':', '$', '{', '}':
+		return true
+	default:
+		return false
+	}
+}
+
+// allowRegionSuppressed reports whether a match starting at offset belongs to
+// a proven test-owned path token. The match must START inside the region, not
+// merely intersect it: a run that begins before the token and crosses into it
+// is still reported.
+func (s *scanner) allowRegionSuppressed(offset int) bool {
+	for _, region := range s.allowRegions {
+		if offset >= region.start && offset < region.end {
 			return true
 		}
 	}
@@ -364,23 +423,19 @@ func (s *scanner) findSecrets() {
 		if !mixedCaseAndDigits(s.data[match[0]:match[1]]) {
 			continue
 		}
-		// Suppress only runs fully contained in an exact test-owned allow-root
-		// span. A run that continues past the covered root is still reported,
-		// so a token appended to the root cannot hide inside it.
-		if s.allowSpanContains(match[0], match[1]) {
-			continue
-		}
+		// Suppression is centralized in add: a run that starts inside an
+		// extended test-owned path token is discarded, while a run that starts
+		// to the left of the token is still reported.
 		s.add(RuleHighEntropyB64, match[0])
 	}
 }
 
 func (s *scanner) add(rule string, offset int) {
-	// Secret-shaped matches inside the exact test-owned temp root are false
-	// positives produced by the root's own spelling. High-entropy runs use
-	// allowSpanContains instead, so a run crossing the root boundary is not
-	// hidden. Host-path rules keep allowed's exact-root semantics so a
+	// Secret-shaped matches inside the test-owned root's path token are false
+	// positives produced by the root's own spelling (including JSON-escaped
+	// descendants). Host-path rules keep allowed's exact-root semantics so a
 	// descendant remains a finding.
-	if rule != RuleHighEntropyB64 && !hostPathRule(rule) && s.inAllowSpan(offset) {
+	if !hostPathRule(rule) && s.allowRegionSuppressed(offset) {
 		return
 	}
 	key := fmt.Sprintf("%s:%d", rule, offset)
