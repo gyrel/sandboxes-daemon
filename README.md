@@ -120,13 +120,29 @@ sandboxesd --state "$HOME/.sandboxes" \
 `--settings` defaults to `~/.config/rheic/settings.toml`. Supported overrides
 are `dns_upstream`, `default_policy_profile`, `default_cpus`,
 `default_memory_mib`, `docker_volume_size`, `mcp_remote_allowed_hosts`,
-`org_policy.enforce`, `org_policy.org` and the optional `policy_sync.*` block
-documented under [Policy sync](#policy-sync-opt-in-background-sync). The MCP
+`org_policy.enforce`, `org_policy.org`, `network.publish.allowedCIDRs` and the
+optional `policy_sync.*` block documented under
+[Policy sync](#policy-sync-opt-in-background-sync). The MCP
 value is a comma-separated exact DNS host allowlist, for example
 `mcp_remote_allowed_hosts = "mcp.example.com,api.example.com"`; wildcards and
 IP literals are rejected, and an empty value disables remote MCP. The file is
 strict, mode-checked and never contains secrets. Settings need a daemon restart
 to take effect; new sandboxes use the policy profile and resource defaults.
+
+Host port publishes bind to loopback only by default. To permit a non-loopback
+bind, grant the exact CIDR that contains the requested host IP:
+
+```toml
+network.publish.allowedCIDRs = ["192.0.2.0/24", "2001:db8::/32"]
+```
+
+The value is a JSON array of CIDR prefixes (IPv4 or IPv6). Entries must have no
+host bits set; single-host `/32` and `/128` grants are allowed. An absent,
+empty, or malformed list grants nothing. A wildcard bind request (`0.0.0.0` or
+`::`) is always refused, even when the list contains `0.0.0.0/0` or `::/0`:
+the allowlist covers concrete addresses, not wildcard listeners. Each granted
+non-loopback publish emits `gyrel.port.publish-granted`, and removing a grant
+blocks the next start of a sandbox that stored a non-loopback port.
 
 ### Registry repository access
 

@@ -16,6 +16,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/netip"
 	neturl "net/url"
 	"os"
 	"os/exec"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/gyrel/sandboxes-daemon/internal/machinecode"
 	"github.com/gyrel/sandboxes-daemon/internal/ownership"
+	"github.com/gyrel/sandboxes-daemon/internal/publishallow"
 
 	"github.com/gyrel/slogx/events"
 
@@ -101,6 +103,9 @@ type Service struct {
 	KitAllowedSources   []string
 	KitAllowLocalKits   bool
 	KitRequireSignature bool
+	// PublishAllowedCIDRs is the restart-scoped operator grant for non-loopback
+	// host port binds. Empty or invalid grants nothing; loopback stays allowed.
+	PublishAllowedCIDRs []string
 	// QUICEnabled mirrors the gateway experimental UDP domain policy capability
 	// so the daemon can reject unenforceable effective policy before runtime.
 	QUICEnabled              bool
@@ -1464,10 +1469,15 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	if len(proxyServiceNames) != 0 && s.backend == nil {
 		return operation.Operation{}, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: service proxy requires a VM runtime", core.ErrConflict))
 	}
-	profile, ports, allow, deny, err := s.normalizeCreatePolicy(ctx, req)
+	sbID, err := newID("sb")
 	if err != nil {
 		return operation.Operation{}, err
 	}
+	profile, plan, err := s.normalizeCreatePolicy(ctx, sbID, req)
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	ports, allow, deny := plan.ports, plan.allow, plan.deny
 	profileSource := "default"
 	if strings.TrimSpace(req.PolicyProfile) != "" {
 		profileSource = "explicit"
@@ -1495,10 +1505,6 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 		return operation.Operation{}, err
 	}
 	now := s.now().UTC()
-	sbID, err := newID("sb")
-	if err != nil {
-		return operation.Operation{}, err
-	}
 	opID, err := newID("op")
 	if err != nil {
 		return operation.Operation{}, err
@@ -1517,6 +1523,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (operation.Oper
 	if err := s.store.Create(ctx, sb); err != nil {
 		return operation.Operation{}, err
 	}
+	s.emitPublishGrants(ctx, sbID, plan.grants)
 	// Transient pull progress exists only while this call blocks; the row is
 	// already durable so Watch callers can correlate it by id.
 	s.setCreateProgress(sbID, CreateProgressSnapshot{Phase: "preparing"})
@@ -1772,33 +1779,55 @@ func runtimeWorkspaces(workspaces []sandbox.Workspace) []runtime.Workspace {
 	return out
 }
 
+// portPublishGrant records one authorized non-loopback bind. It is the audit
+// payload; loopback binds are never granted and never produce one.
+type portPublishGrant struct {
+	GuestPort uint16
+	HostPort  uint16
+	Protocol  string
+	BindIP    string
+	CIDR      string
+}
+
 func normalizePorts(ports []sandbox.Port) ([]sandbox.Port, error) {
+	out, _, err := normalizePortsWithAllowlist(ports, nil)
+	return out, err
+}
+
+func normalizePortsWithAllowlist(ports []sandbox.Port, allow publishallow.Allowlist) ([]sandbox.Port, []portPublishGrant, error) {
 	if len(ports) > 32 {
-		return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: too many ports", core.ErrConflict))
+		return nil, nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: too many ports", core.ErrConflict))
 	}
 	seen := make(map[string]struct{}, len(ports))
 	out := make([]sandbox.Port, 0, len(ports))
+	var grants []portPublishGrant
 	for _, port := range ports {
 		if port.Host == 0 || port.Guest == 0 {
-			return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: host and guest ports must be non-zero", core.ErrConflict))
+			return nil, nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: host and guest ports must be non-zero", core.ErrConflict))
 		}
-		protocol, hostIP, err := normalizePortEndpoint(port.Protocol, port.HostIP)
+		protocol, hostIP, grant, err := normalizePortEndpoint(port.Protocol, port.HostIP, allow)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		port.Protocol = protocol
 		port.HostIP = hostIP
 		key := port.Protocol + ":" + port.HostIP + ":" + strconv.Itoa(int(port.Host))
 		if _, exists := seen[key]; exists {
-			return nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: duplicate host port", core.ErrConflict))
+			return nil, nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: duplicate host port", core.ErrConflict))
 		}
 		seen[key] = struct{}{}
 		out = append(out, port)
+		if grant != nil {
+			grant.GuestPort = port.Guest
+			grant.HostPort = port.Host
+			grant.Protocol = protocol
+			grants = append(grants, *grant)
+		}
 	}
-	return out, nil
+	return out, grants, nil
 }
 
-func normalizePortEndpoint(protocol, hostIP string) (string, string, error) {
+func normalizePortProtocol(protocol string) (string, string, error) {
 	protocol = strings.ToLower(strings.TrimSpace(protocol))
 	if protocol == "" {
 		protocol = tcpProtocol
@@ -1823,24 +1852,65 @@ func normalizePortEndpoint(protocol, hostIP string) (string, string, error) {
 	default:
 		return "", "", machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: port protocol must be tcp, udp, tcp4, udp4, tcp6 or udp6", core.ErrConflict))
 	}
+	return protocol, explicitFamily, nil
+}
+
+func normalizePortEndpoint(protocol, hostIP string, allow publishallow.Allowlist) (string, string, *portPublishGrant, error) {
+	protocol, explicitFamily, err := normalizePortProtocol(protocol)
+	if err != nil {
+		return "", "", nil, err
+	}
 	if hostIP == "" {
 		hostIP = "127.0.0.1"
 		if explicitFamily == "6" {
 			hostIP = "::1"
 		}
 	}
-	ip := net.ParseIP(hostIP)
-	if ip == nil || !ip.IsLoopback() {
-		return "", "", machinecode.Attach(machinecode.BindForbidden, fmt.Errorf("%w: host IP must be loopback (127.0.0.1 or ::1)", core.ErrConflict))
+	ip, err := netip.ParseAddr(hostIP)
+	if err != nil {
+		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, fmt.Errorf("%w: host IP must be a loopback address or inside %s", core.ErrConflict, publishallow.SettingKey))
+	}
+	ip = ip.Unmap()
+	// A wildcard bind request is never authorized, even when an allowlist entry
+	// such as 0.0.0.0/0 would otherwise contain it. A wildcard ALLOW covers
+	// specific addresses; it does not turn a wildcard BIND into an allowed one.
+	if ip.IsUnspecified() {
+		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, fmt.Errorf("%w: wildcard host IP binds are always forbidden", core.ErrConflict))
 	}
 	family := "4"
-	if ip.To4() == nil {
+	if !ip.Is4() {
 		family = "6"
 	}
 	if explicitFamily != "" && explicitFamily != family {
-		return "", "", machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: host IP family does not match port protocol", core.ErrConflict))
+		return "", "", nil, machinecode.Attach(machinecode.SpecInvalid, fmt.Errorf("%w: host IP family does not match port protocol", core.ErrConflict))
 	}
-	return protocol, ip.String(), nil
+	if ip.IsLoopback() {
+		return protocol, ip.String(), nil, nil
+	}
+	entry, ok := allow.Match(ip)
+	if !ok {
+		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, fmt.Errorf("%w: non-loopback host IP is not inside %s", core.ErrConflict, publishallow.SettingKey))
+	}
+	return protocol, ip.String(), &portPublishGrant{BindIP: ip.String(), CIDR: entry.Text}, nil
+}
+
+// publishAllowlist compiles the configured grant at use time. A malformed
+// value compiles to an empty list, so the next non-loopback bind fails closed.
+func (s *Service) publishAllowlist() publishallow.Allowlist {
+	return publishallow.Compile(s.PublishAllowedCIDRs)
+}
+
+func (s *Service) normalizePortsForPublish(ctx context.Context, sandboxID string, ports []sandbox.Port) ([]sandbox.Port, []portPublishGrant, error) {
+	out, grants, err := normalizePortsWithAllowlist(ports, s.publishAllowlist())
+	if err != nil {
+		if code, ok := machinecode.Of(err); ok && code == machinecode.BindForbidden {
+			// No denial catalog event exists for publish refusals; emit a
+			// structured warning. The detail carries only ports and an IP.
+			slog.WarnContext(ctx, "port publish refused", "sandbox_id", sandboxID, "reason", "bind_forbidden", "detail", err)
+		}
+		return nil, nil, err
+	}
+	return out, grants, nil
 }
 
 func runtimePorts(ports []sandbox.Port) []runtime.Port {
@@ -1870,19 +1940,26 @@ func sandboxDetached(sb sandbox.Sandbox) bool {
 	return sb.Meta != nil && sb.Meta.Detached
 }
 
-func normalizeCreateNetwork(req CreateRequest, ipv6Enabled bool) ([]sandbox.Port, []sandbox.NetworkRule, []sandbox.NetworkRule, error) {
-	ports, err := normalizePorts(req.Ports)
+type createNetworkPlan struct {
+	ports  []sandbox.Port
+	grants []portPublishGrant
+	allow  []sandbox.NetworkRule
+	deny   []sandbox.NetworkRule
+}
+
+func (s *Service) normalizeCreateNetwork(ctx context.Context, sandboxID string, req CreateRequest) (createNetworkPlan, error) {
+	ports, grants, err := s.normalizePortsForPublish(ctx, sandboxID, req.Ports)
 	if err != nil {
-		return nil, nil, nil, err
+		return createNetworkPlan{}, err
 	}
 	if err := checkHostPorts(ports); err != nil {
-		return nil, nil, nil, err
+		return createNetworkPlan{}, err
 	}
-	allow, deny, err := normalizeCreateRules(req, ipv6Enabled)
+	allow, deny, err := normalizeCreateRules(req, s.IPv6Enabled)
 	if err != nil {
-		return nil, nil, nil, err
+		return createNetworkPlan{}, err
 	}
-	return ports, allow, deny, nil
+	return createNetworkPlan{ports: ports, grants: grants, allow: allow, deny: deny}, nil
 }
 
 func checkHostPorts(ports []sandbox.Port) error {
@@ -2362,24 +2439,24 @@ const (
 	anyIPv4CIDR          = "0.0.0.0/0"
 )
 
-func (s *Service) normalizeCreatePolicy(ctx context.Context, req CreateRequest) (string, []sandbox.Port, []sandbox.NetworkRule, []sandbox.NetworkRule, error) {
-	ports, allow, deny, err := normalizeCreateNetwork(req, s.IPv6Enabled)
+func (s *Service) normalizeCreatePolicy(ctx context.Context, sandboxID string, req CreateRequest) (string, createNetworkPlan, error) {
+	plan, err := s.normalizeCreateNetwork(ctx, sandboxID, req)
 	if err != nil {
-		return "", nil, nil, nil, err
+		return "", createNetworkPlan{}, err
 	}
 	profile, rules, err := s.resolveCreateProfile(ctx, req.PolicyProfile)
 	if err != nil {
-		return "", nil, nil, nil, err
+		return "", createNetworkPlan{}, err
 	}
-	allow, err = normalizeRules(mergePolicyRules(rules, allow), s.IPv6Enabled)
+	plan.allow, err = normalizeRules(mergePolicyRules(rules, plan.allow), s.IPv6Enabled)
 	if err != nil {
-		return "", nil, nil, nil, err
+		return "", createNetworkPlan{}, err
 	}
-	deny, err = normalizeRules(deny, s.IPv6Enabled)
+	plan.deny, err = normalizeRules(plan.deny, s.IPv6Enabled)
 	if err != nil {
-		return "", nil, nil, nil, err
+		return "", createNetworkPlan{}, err
 	}
-	return profile, ports, allow, deny, nil
+	return profile, plan, nil
 }
 
 // effectivePolicy combines global rules with the sandbox snapshot. Global
@@ -2872,29 +2949,37 @@ func (s *Service) setDockerProfile(ctx context.Context, id string, enabled bool)
 // sandboxStartHandle resolves the effective global, organization and sandbox
 // policy and builds the runtime handle used for every sandbox start. Callers
 // must share this path so no start surface can silently omit the global policy.
-func (s *Service) sandboxStartHandle(ctx context.Context, sb sandbox.Sandbox) (runtime.Handle, error) {
+func (s *Service) sandboxStartHandle(ctx context.Context, sb sandbox.Sandbox) (runtime.Handle, []portPublishGrant, error) {
+	// Re-authorize the persisted ports against the allowlist in force at this
+	// startup. Revoking the setting therefore blocks the next publish instead
+	// of honoring a stale grant, and each republish is audited again.
+	ports, grants, err := s.normalizePortsForPublish(ctx, sb.ID, sb.Ports)
+	if err != nil {
+		return runtime.Handle{}, nil, err
+	}
 	allow, deny, err := s.effectivePolicy(ctx, sb)
 	if err != nil {
-		return runtime.Handle{}, err
+		return runtime.Handle{}, nil, err
 	}
 	if err := s.prepareStoredProxy(ctx, sb); err != nil {
-		return runtime.Handle{}, err
+		return runtime.Handle{}, nil, err
 	}
 	handle := s.backend.Handle(sb.Name)
-	handle.Ports = runtimePorts(sb.Ports)
+	handle.Ports = runtimePorts(ports)
 	handle.Allow = runtimeRules(allow)
 	handle.Deny = runtimeRules(deny)
-	return handle, nil
+	return handle, grants, nil
 }
 
 func (s *Service) startRuntimeSandbox(ctx context.Context, sb sandbox.Sandbox) error {
-	handle, err := s.sandboxStartHandle(ctx, sb)
+	handle, grants, err := s.sandboxStartHandle(ctx, sb)
 	if err != nil {
 		return err
 	}
 	if err := s.backend.Start(ctx, handle); err != nil {
 		return err
 	}
+	s.emitPublishGrants(ctx, sb.ID, grants)
 	enabled, err := s.dockerProfileEnabled(ctx, sb.ID)
 	if err != nil {
 		return err
@@ -3605,6 +3690,12 @@ func (s *Service) Start(ctx context.Context, id string) (operation.Operation, er
 	if err := s.requireOrgPolicy(ctx); err != nil {
 		return operation.Operation{}, err
 	}
+	// A stored non-loopback port must still be authorized by the allowlist in
+	// force at this startup. Refuse before any runtime call so revoking the
+	// setting cannot honor a stale grant and cannot mark the sandbox unknown.
+	if _, _, err := s.normalizePortsForPublish(ctx, sb.ID, sb.Ports); err != nil {
+		return operation.Operation{}, err
+	}
 	if s.backend != nil {
 		if err := s.prepareSandboxForStart(ctx, &sb); err != nil {
 			return operation.Operation{}, s.markRuntimeUnknown(ctx, sb, err)
@@ -3673,7 +3764,7 @@ func (s *Service) UpdatePorts(ctx context.Context, id string, ports []sandbox.Po
 	if sb.State == sandbox.Deleting || sb.State == sandbox.Deleted {
 		return sandbox.Sandbox{}, machinecode.Attach(machinecode.Busy, fmt.Errorf("%w: sandbox is being deleted", core.ErrConflict))
 	}
-	normalized, err := normalizePorts(ports)
+	normalized, grants, err := s.normalizePortsForPublish(ctx, id, ports)
 	if err != nil {
 		return sandbox.Sandbox{}, err
 	}
@@ -3707,6 +3798,7 @@ func (s *Service) UpdatePorts(ctx context.Context, id string, ports []sandbox.Po
 	if err := s.store.Update(ctx, sb); err != nil {
 		return sandbox.Sandbox{}, err
 	}
+	s.emitPublishGrants(ctx, id, grants)
 	return sb, nil
 }
 

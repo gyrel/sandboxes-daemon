@@ -63,6 +63,9 @@ type Config struct {
 	KitAllowLocalKits     bool
 	KitRequireSignature   bool
 	MCPRemoteAllowedHosts []string
+	// PublishAllowedCIDRs grants non-loopback host port binds. Empty or invalid
+	// keeps the loopback-only default; the list is read at daemon start.
+	PublishAllowedCIDRs []string
 	// RegistryPrivate configures one allowlisted private registry reached
 	// through the guest registry proxy (ADR-0006).
 	RegistryDockerGrants     []string
@@ -280,6 +283,7 @@ func applyConfig(svc *service.Service, cfg Config) {
 	svc.KitAllowedSources = cfg.KitAllowedSources
 	svc.KitAllowLocalKits = cfg.KitAllowLocalKits
 	svc.KitRequireSignature = cfg.KitRequireSignature
+	svc.PublishAllowedCIDRs = cfg.PublishAllowedCIDRs
 	svc.SetMCPRemoteAllowlist(cfg.MCPRemoteAllowedHosts)
 	if cfg.DockerVolumeSize != "" {
 		svc.DockerVolumeSize = cfg.DockerVolumeSize
