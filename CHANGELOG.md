@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.107 — 2026-11-28
+
+### Fixed
+
+- Adopted runtime v0.1.4: a failed create now retires its journal record and
+  stale pending records are reclaimed on retry, so a same-name recreate after
+  a mid-create failure no longer blocks on `start create journal … file
+  exists` (J-1, reproduced live during r7 acceptance).
+
 ## v0.0.106 — 2026-11-27
 
 ### Security
