@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.106 — 2026-11-27
+
+### Security
+
+- Sandbox labels: create validates through the core grammar and refuses with
+  `LABEL_INVALID` before any state mutation; schema v9 persists labels;
+  corrupted stored records classify `UNKNOWN_STATE` ahead of ownership checks.
+  Get/List return labels with nil omitted; create-replay compares the map.
+- Test infrastructure: a redaction assertion harness with a mandatory
+  self-detection control covers the verb paths (X-3).
+
 ## v0.0.105 — 2026-11-27
 
 ### Security
