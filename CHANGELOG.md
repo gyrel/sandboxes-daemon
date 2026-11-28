@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.110 — 2026-11-28
+
+### Fixed
+
+- Adopted gateway v0.1.1: non-loopback publishes gated solely by the daemon
+  `network.publish.allowedCIDRs` allowlist end-to-end (the transport layer no
+  longer duplicates a loopback-only refusal); wildcard binds remain refused.
+
 ## v0.0.109 — 2026-11-28
 
 ### Changed
