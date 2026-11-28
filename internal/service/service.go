@@ -1789,6 +1789,19 @@ type portPublishGrant struct {
 	CIDR      string
 }
 
+// portPublishRefusalError carries the requested bind and refusal class alongside a
+// BindForbidden error so the caller can emit the catalog refusal event without
+// re-deriving the policy decision. allowlistMiss distinguishes a non-loopback
+// address outside the allowlist from an unparsable or wildcard request.
+type portPublishRefusalError struct {
+	err           error
+	requestedIP   string
+	allowlistMiss bool
+}
+
+func (r *portPublishRefusalError) Error() string { return r.err.Error() }
+func (r *portPublishRefusalError) Unwrap() error { return r.err }
+
 func normalizePorts(ports []sandbox.Port) ([]sandbox.Port, error) {
 	out, _, err := normalizePortsWithAllowlist(ports, nil)
 	return out, err
@@ -1868,14 +1881,20 @@ func normalizePortEndpoint(protocol, hostIP string, allow publishallow.Allowlist
 	}
 	ip, err := netip.ParseAddr(hostIP)
 	if err != nil {
-		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, fmt.Errorf("%w: host IP must be a loopback address or inside %s", core.ErrConflict, publishallow.SettingKey))
+		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, &portPublishRefusalError{
+			err:         fmt.Errorf("%w: host IP must be a loopback address or inside %s", core.ErrConflict, publishallow.SettingKey),
+			requestedIP: hostIP,
+		})
 	}
 	ip = ip.Unmap()
 	// A wildcard bind request is never authorized, even when an allowlist entry
 	// such as 0.0.0.0/0 would otherwise contain it. A wildcard ALLOW covers
 	// specific addresses; it does not turn a wildcard BIND into an allowed one.
 	if ip.IsUnspecified() {
-		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, fmt.Errorf("%w: wildcard host IP binds are always forbidden", core.ErrConflict))
+		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, &portPublishRefusalError{
+			err:         fmt.Errorf("%w: wildcard host IP binds are always forbidden", core.ErrConflict),
+			requestedIP: ip.String(),
+		})
 	}
 	family := "4"
 	if !ip.Is4() {
@@ -1889,7 +1908,11 @@ func normalizePortEndpoint(protocol, hostIP string, allow publishallow.Allowlist
 	}
 	entry, ok := allow.Match(ip)
 	if !ok {
-		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, fmt.Errorf("%w: non-loopback host IP is not inside %s", core.ErrConflict, publishallow.SettingKey))
+		return "", "", nil, machinecode.Attach(machinecode.BindForbidden, &portPublishRefusalError{
+			err:           fmt.Errorf("%w: non-loopback host IP is not inside %s", core.ErrConflict, publishallow.SettingKey),
+			requestedIP:   ip.String(),
+			allowlistMiss: true,
+		})
 	}
 	return protocol, ip.String(), &portPublishGrant{BindIP: ip.String(), CIDR: entry.Text}, nil
 }
@@ -1901,16 +1924,33 @@ func (s *Service) publishAllowlist() publishallow.Allowlist {
 }
 
 func (s *Service) normalizePortsForPublish(ctx context.Context, sandboxID string, ports []sandbox.Port) ([]sandbox.Port, []portPublishGrant, error) {
-	out, grants, err := normalizePortsWithAllowlist(ports, s.publishAllowlist())
-	if err != nil {
-		if code, ok := machinecode.Of(err); ok && code == machinecode.BindForbidden {
-			// No denial catalog event exists for publish refusals; emit a
-			// structured warning. The detail carries only ports and an IP.
-			slog.WarnContext(ctx, "port publish refused", "sandbox_id", sandboxID, "reason", "bind_forbidden", "detail", err)
-		}
-		return nil, nil, err
+	allow := s.publishAllowlist()
+	out, grants, err := normalizePortsWithAllowlist(ports, allow)
+	if err == nil {
+		return out, grants, nil
 	}
-	return out, grants, nil
+	if code, ok := machinecode.Of(err); ok && code == machinecode.BindForbidden {
+		s.emitPublishRefusal(ctx, sandboxID, err, allow)
+	}
+	return nil, nil, err
+}
+
+// emitPublishRefusal keeps the structured warning and adds the catalog refusal
+// audit event. The detail carries only ports and an IP.
+func (s *Service) emitPublishRefusal(ctx context.Context, sandboxID string, err error, allow publishallow.Allowlist) {
+	reason := events.PortPublishRefusedReasonBindForbidden
+	requestedIP := ""
+	var refusal *portPublishRefusalError
+	if errors.As(err, &refusal) {
+		requestedIP = refusal.requestedIP
+		// Compile discards the whole list when any entry is malformed, so a
+		// non-empty configured list that compiled empty is invalid.
+		if refusal.allowlistMiss && len(s.PublishAllowedCIDRs) > 0 && len(allow) == 0 {
+			reason = events.PortPublishRefusedReasonAllowlistInvalid
+		}
+	}
+	slog.WarnContext(ctx, "port publish refused", "sandbox_id", sandboxID, "reason", string(reason), "detail", err)
+	emitPortPublishRefused(ctx, sandboxID, requestedIP, reason)
 }
 
 func runtimePorts(ports []sandbox.Port) []runtime.Port {

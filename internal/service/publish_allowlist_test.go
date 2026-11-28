@@ -15,6 +15,7 @@ import (
 	core "github.com/gyrel/sandboxes-core"
 	"github.com/gyrel/sandboxes-core/ids"
 	"github.com/gyrel/sandboxes-core/sandbox"
+	"github.com/gyrel/slogx/events"
 
 	"github.com/gyrel/sandboxes-daemon/internal/machinecode"
 	"github.com/gyrel/sandboxes-daemon/internal/store"
@@ -105,9 +106,9 @@ func TestPortPublishAllowlistDecisionMatrix(t *testing.T) {
 }
 
 func TestPublishGrantedEventFields(t *testing.T) {
-	var buf bytes.Buffer
+	capture := &captureHandler{}
 	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	slog.SetDefault(slog.New(capture))
 	defer slog.SetDefault(previous)
 
 	svc := newPublishTestService(t)
@@ -119,33 +120,100 @@ func TestPublishGrantedEventFields(t *testing.T) {
 	}
 	svc.emitPublishGrants(ctx, "sb-audit", grants)
 
-	line := strings.TrimSpace(buf.String())
-	if line == "" {
+	record, ok := capture.find("gyrel.port.publish-granted")
+	if !ok {
 		t.Fatal("granted event was not emitted")
 	}
-	var record map[string]any
-	if err := json.Unmarshal([]byte(line), &record); err != nil {
-		t.Fatalf("event is not JSON: %v (%s)", err, line)
+
+	op, req := ids.FromContext(ctx)
+	opID, reqID := events.ID(op), events.ID(req)
+	wantEvent, err := events.PortPublishGranted(events.OutcomeOK, events.PortPublishGrantedParams{
+		SandboxID:     "sb-audit",
+		GuestPort:     8080,
+		HostPort:      18080,
+		Protocol:      "tcp",
+		BindCIDRLabel: "192.0.2.0/24",
+		BindIP:        "192.0.2.10",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	want := map[string]any{
-		"schema_version":  float64(1),
-		"event":           "gyrel.port.publish-granted",
-		"component":       "daemon",
-		"outcome":         "ok",
-		"sandbox_id":      "sb-audit",
-		"guest_port":      float64(8080),
-		"host_port":       float64(18080),
-		"protocol":        "tcp",
-		"bind_cidr_label": "192.0.2.0/24",
-		"bind_ip":         "192.0.2.10",
+	// Field set, deterministic ordering and value kinds must match the catalog
+	// constructor exactly: the raw slog.Int emission used Int64 for the ports,
+	// while the catalog emits Uint64.
+	want := wantEvent.Attrs(events.Standard{OpID: &opID, ReqID: &reqID})
+	if len(record.attrs) != len(want) {
+		t.Fatalf("granted event attrs = %v, want %v", attrKeys(record.attrs), attrKeys(want))
 	}
-	for key, value := range want {
-		if record[key] != value {
-			t.Errorf("%s = %v, want %v", key, record[key], value)
+	for i := range want {
+		got := record.attrs[i]
+		if got.Key != want[i].Key || !got.Value.Equal(want[i].Value) {
+			t.Fatalf("granted attr[%d] = %s(%v), want %s(%v)", i, got.Key, got.Value, want[i].Key, want[i].Value)
 		}
 	}
-	if record["op_id"] == nil || record["req_id"] == nil {
-		t.Fatalf("correlation fields missing: %v", record)
+}
+
+func TestPublishRefusedEventFields(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		allow      []string
+		hostIP     string
+		wantReason events.PortPublishRefusedReason
+	}{
+		{name: "allowlist absent", hostIP: "192.0.2.10", wantReason: events.PortPublishRefusedReasonBindForbidden},
+		{name: "outside allowlist", allow: []string{"198.51.100.0/24"}, hostIP: "192.0.2.10", wantReason: events.PortPublishRefusedReasonBindForbidden},
+		{name: "wildcard bind", allow: []string{"0.0.0.0/0"}, hostIP: "0.0.0.0", wantReason: events.PortPublishRefusedReasonBindForbidden},
+		{name: "malformed allowlist", allow: []string{"garbage"}, hostIP: "192.0.2.10", wantReason: events.PortPublishRefusedReasonAllowlistInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := &captureHandler{}
+			previous := slog.Default()
+			slog.SetDefault(slog.New(capture))
+			defer slog.SetDefault(previous)
+
+			svc := newPublishTestService(t)
+			svc.PublishAllowedCIDRs = tc.allow
+			ctx := ids.WithReqID(ids.WithOpID(context.Background(), ids.NewOpID()), ids.NewReqID())
+			_, _, err := svc.normalizePortsForPublish(ctx, "sb-refused", []sandbox.Port{{Host: 18081, Guest: 8080, HostIP: tc.hostIP}})
+			if code, ok := machinecode.Of(err); !ok || code != machinecode.BindForbidden {
+				t.Fatalf("error = %v, reason = %q, want BIND_FORBIDDEN", err, code)
+			}
+
+			record, ok := capture.find("gyrel.port.publish-refused")
+			if !ok {
+				t.Fatal("refused event was not emitted")
+			}
+			op, req := ids.FromContext(ctx)
+			opID, reqID := events.ID(op), events.ID(req)
+			wantEvent, err := events.PortPublishRefused(events.OutcomeDenied, events.PortPublishRefusedParams{
+				SandboxID:   "sb-refused",
+				RequestedIP: tc.hostIP,
+				Reason:      tc.wantReason,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := wantEvent.Attrs(events.Standard{OpID: &opID, ReqID: &reqID})
+			if len(record.attrs) != len(want) {
+				t.Fatalf("refused event attrs = %v, want %v", attrKeys(record.attrs), attrKeys(want))
+			}
+			for i := range want {
+				got := record.attrs[i]
+				if got.Key != want[i].Key || !got.Value.Equal(want[i].Value) {
+					t.Fatalf("refused attr[%d] = %s(%v), want %s(%v)", i, got.Key, got.Value, want[i].Key, want[i].Value)
+				}
+			}
+
+			// The structured warning is additive; the refusal event must not
+			// replace it.
+			warning, ok := capture.find("port publish refused")
+			if !ok {
+				t.Fatal("structured refusal warning was not emitted")
+			}
+			if reason := warning.attrString("reason"); reason != string(tc.wantReason) {
+				t.Fatalf("warning reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
 	}
 }
 
@@ -344,4 +412,56 @@ func freeTCPPortOn(t *testing.T, ip netip.Addr) uint16 {
 		t.Fatal(err)
 	}
 	return port
+}
+
+// captureHandler records raw slog attributes so catalog emissions can be
+// compared field-for-field with their constructor's Attrs output.
+type captureHandler struct {
+	records []captureRecord
+}
+
+type captureRecord struct {
+	message string
+	attrs   []slog.Attr
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, record slog.Record) error {
+	attrs := make([]slog.Attr, 0, record.NumAttrs())
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs = append(attrs, attr)
+		return true
+	})
+	h.records = append(h.records, captureRecord{message: record.Message, attrs: attrs})
+	return nil
+}
+
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *captureHandler) find(message string) (captureRecord, bool) {
+	for _, record := range h.records {
+		if record.message == message {
+			return record, true
+		}
+	}
+	return captureRecord{}, false
+}
+
+func (r captureRecord) attrString(key string) string {
+	for _, attr := range r.attrs {
+		if attr.Key == key && attr.Value.Kind() == slog.KindString {
+			return attr.Value.String()
+		}
+	}
+	return ""
+}
+
+func attrKeys(attrs []slog.Attr) []string {
+	keys := make([]string, len(attrs))
+	for i := range attrs {
+		keys[i] = attrs[i].Key
+	}
+	return keys
 }
