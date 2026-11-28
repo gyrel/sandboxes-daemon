@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.109 — 2026-11-28
+
+### Changed
+
+- Port publish audit events now emit through the slogx v0.3.1 event catalog
+  constructors (`gyrel.port.publish-granted`/`gyrel.port.publish-refused`)
+  instead of free-form attributes; refusals gained the catalog event on top of
+  the existing boundary warning, and a granted-publish construction failure now
+  warns instead of silently dropping the audit line.
+
 ## v0.0.108 — 2026-11-28
 
 ### Added
