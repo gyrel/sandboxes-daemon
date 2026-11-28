@@ -69,8 +69,8 @@ github.com/gyrel/sandboxes-gateway v0.1.0 h1:DYIWZl4V2+Io++uujA5OlsgHF7Aa3GRpa/8
 github.com/gyrel/sandboxes-gateway v0.1.0/go.mod h1:d9Sgr2R9nd1AblrhMrmaoLwr5Su5EY9dKH6L9m2YQ6U=
 github.com/gyrel/sandboxes-runtime v0.1.4 h1:cwFf0+ZD2UeFPTvhbHoJOE5SOeWEFJ7Glr0ogDcdO/I=
 github.com/gyrel/sandboxes-runtime v0.1.4/go.mod h1:vOpQ8kyMbH8oJDEzwhpzD4ciY3ss9m0dohOUXTZsL+w=
-github.com/gyrel/slogx v0.3.0 h1:Brh1DWc4wEOTEDMd7Z7m1Q4r3yfEY1W8VW45F/mXBdY=
-github.com/gyrel/slogx v0.3.0/go.mod h1:6rWerUgt7EuJiL8s11qqlvjJ8U75kj5RuTf4D7PDAIQ=
+github.com/gyrel/slogx v0.3.1 h1:vkfLDLyWqf86xAjalKF5/y3ClBLrBb5f/Dfm58jtc98=
+github.com/gyrel/slogx v0.3.1/go.mod h1:6rWerUgt7EuJiL8s11qqlvjJ8U75kj5RuTf4D7PDAIQ=
 github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/klauspost/compress v1.20.2 h1:v5tiZvm1KGLyg5d5oXdXe3lsSPrbEUiKoXGia//I7Qo=

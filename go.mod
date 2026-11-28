@@ -8,7 +8,7 @@ require (
 	github.com/gyrel/sandboxes-core v0.1.1
 	github.com/gyrel/sandboxes-gateway v0.1.0
 	github.com/gyrel/sandboxes-runtime v0.1.4
-	github.com/gyrel/slogx v0.3.0
+	github.com/gyrel/slogx v0.3.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.50.0

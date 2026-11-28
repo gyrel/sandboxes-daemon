@@ -8,37 +8,63 @@ import (
 	"github.com/gyrel/slogx/events"
 )
 
-// portPublishGrantedEvent is the catalog name for an authorized non-loopback
-// host port publish. slogx v0.3.0 has no constructor for this name and the
-// dependency is pinned, so the daemon emits the catalog shape directly:
-// schema_version, event, component, outcome, typed fields, then correlation.
-const portPublishGrantedEvent = "gyrel.port.publish-granted"
-
 func (s *Service) emitPublishGrants(ctx context.Context, sandboxID string, grants []portPublishGrant) {
 	for _, grant := range grants {
 		emitPortPublishGranted(ctx, sandboxID, grant)
 	}
 }
 
+// emitPortPublishGranted records one authorized non-loopback bind from the
+// catalog constructor. Correlation ids travel in events.Standard, the same
+// way every other catalog emitter in the daemon attaches them.
 func emitPortPublishGranted(ctx context.Context, sandboxID string, grant portPublishGrant) {
-	attrs := []slog.Attr{
-		slog.Int("schema_version", 1),
-		slog.String("event", portPublishGrantedEvent),
-		slog.String("component", "daemon"),
-		slog.String("outcome", string(events.OutcomeOK)),
-		slog.String("sandbox_id", sandboxID),
-		slog.Int("guest_port", int(grant.GuestPort)),
-		slog.Int("host_port", int(grant.HostPort)),
-		slog.String("protocol", grant.Protocol),
-		slog.String("bind_cidr_label", grant.CIDR),
-		slog.String("bind_ip", grant.BindIP),
+	event, err := events.PortPublishGranted(events.OutcomeOK, events.PortPublishGrantedParams{
+		SandboxID:     sandboxID,
+		GuestPort:     grant.GuestPort,
+		HostPort:      grant.HostPort,
+		Protocol:      grant.Protocol,
+		BindCIDRLabel: grant.CIDR,
+		BindIP:        grant.BindIP,
+	})
+	if err != nil {
+		// A granted publish must never lose its audit trail silently.
+		slog.Warn("port publish granted event construction failed", "sandbox_id", sandboxID, "host_port", int(grant.HostPort), "error", err)
+		return
 	}
 	op, req := ids.FromContext(ctx)
+	standard := events.Standard{}
 	if ids.Validate(op) == nil {
-		attrs = append(attrs, slog.String("op_id", op))
+		id := events.ID(op)
+		standard.OpID = &id
 	}
 	if ids.Validate(req) == nil {
-		attrs = append(attrs, slog.String("req_id", req))
+		id := events.ID(req)
+		standard.ReqID = &id
 	}
-	slog.LogAttrs(ctx, slog.LevelInfo, portPublishGrantedEvent, attrs...)
+	event.Emit(ctx, slog.Default(), standard)
+}
+
+// emitPortPublishRefused records one denied non-loopback bind from the catalog
+// constructor. The structured warning at the policy boundary remains in place;
+// this event is additive audit.
+func emitPortPublishRefused(ctx context.Context, sandboxID, requestedIP string, reason events.PortPublishRefusedReason) {
+	event, err := events.PortPublishRefused(events.OutcomeDenied, events.PortPublishRefusedParams{
+		SandboxID:   sandboxID,
+		RequestedIP: requestedIP,
+		Reason:      reason,
+	})
+	if err != nil {
+		return
+	}
+	op, req := ids.FromContext(ctx)
+	standard := events.Standard{}
+	if ids.Validate(op) == nil {
+		id := events.ID(op)
+		standard.OpID = &id
+	}
+	if ids.Validate(req) == nil {
+		id := events.ID(req)
+		standard.ReqID = &id
+	}
+	event.Emit(ctx, slog.Default(), standard)
 }
