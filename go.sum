@@ -65,8 +65,8 @@ github.com/gyrel/sandboxes-api v0.0.40 h1:CrU0K7VUkUOa9nXOLZdsmdXc0FCtYpZafwSEw+
 github.com/gyrel/sandboxes-api v0.0.40/go.mod h1:j7kO9zc/LChMngqN7LLCStrIMEi90vx/z8ZvAiqBBeQ=
 github.com/gyrel/sandboxes-core v0.1.1 h1:+6i0F37uNDYw85g7va242CxWnoZLLFEAE8H6JWJpEI0=
 github.com/gyrel/sandboxes-core v0.1.1/go.mod h1:YBj+y43cTdfyB1Wg7MPSd0cF3FE9oxvrp/9MEhIOPc0=
-github.com/gyrel/sandboxes-gateway v0.1.0 h1:DYIWZl4V2+Io++uujA5OlsgHF7Aa3GRpa/8RSABbTPY=
-github.com/gyrel/sandboxes-gateway v0.1.0/go.mod h1:d9Sgr2R9nd1AblrhMrmaoLwr5Su5EY9dKH6L9m2YQ6U=
+github.com/gyrel/sandboxes-gateway v0.1.1 h1:PNUvgnMAD531P4CFbVOvD+lMMhugwKYJtJ9s5afkm/Y=
+github.com/gyrel/sandboxes-gateway v0.1.1/go.mod h1:d9Sgr2R9nd1AblrhMrmaoLwr5Su5EY9dKH6L9m2YQ6U=
 github.com/gyrel/sandboxes-runtime v0.1.4 h1:cwFf0+ZD2UeFPTvhbHoJOE5SOeWEFJ7Glr0ogDcdO/I=
 github.com/gyrel/sandboxes-runtime v0.1.4/go.mod h1:vOpQ8kyMbH8oJDEzwhpzD4ciY3ss9m0dohOUXTZsL+w=
 github.com/gyrel/slogx v0.3.1 h1:vkfLDLyWqf86xAjalKF5/y3ClBLrBb5f/Dfm58jtc98=

@@ -6,7 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/gyrel/sandboxes-api v0.0.40
 	github.com/gyrel/sandboxes-core v0.1.1
-	github.com/gyrel/sandboxes-gateway v0.1.0
+	github.com/gyrel/sandboxes-gateway v0.1.1
 	github.com/gyrel/sandboxes-runtime v0.1.4
 	github.com/gyrel/slogx v0.3.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
